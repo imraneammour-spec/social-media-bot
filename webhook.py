@@ -22,9 +22,20 @@ from google.genai import types
 BASE_DIR = Path(__file__).resolve().parent
 ENV_FILE = BASE_DIR / ".env"
 
-POSTS_FILE = BASE_DIR / "posts.json"
-PROCESSED_FILE = BASE_DIR / "processed_comments.json"
-PENDING_ACCESS_FILE = BASE_DIR / "pending_access.json"
+# Persistent data:
+# - On Railway, the mounted volume is /app/data.
+# - Locally, keep using the project's data folder.
+RAILWAY_DATA_DIR = Path("/app/data")
+DATA_DIR = (
+    RAILWAY_DATA_DIR
+    if RAILWAY_DATA_DIR.exists()
+    else BASE_DIR / "data"
+)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+POSTS_FILE = DATA_DIR / "posts.json"
+PROCESSED_FILE = DATA_DIR / "processed_comments.json"
+PENDING_ACCESS_FILE = DATA_DIR / "pending_access.json"
 
 load_dotenv(ENV_FILE)
 
@@ -2473,6 +2484,7 @@ def receive_webhook():
     )
 
     worker = threading.Thread(
+
         target=
             process_webhook_background,
 
