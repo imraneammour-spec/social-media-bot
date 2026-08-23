@@ -3099,7 +3099,125 @@ def receive_webhook():
 # ==================================================
 # RUN
 # ==================================================
+# ============================================================
+# DASHBOARD - GEMINI CONTENT GENERATOR
+# ============================================================
 
+@app.route("/api/generate-content", methods=["POST"])
+def generate_dashboard_content():
+
+    if GEMINI_CLIENT is None:
+        return {
+            "error": "Gemini client is not available."
+        }, 500
+
+    images = request.files.getlist("images")
+
+    if not images:
+        return {
+            "error": "Please upload at least one image."
+        }, 400
+
+    prompt = """
+You are the content assistant for the Instagram account @imran.prompts.
+
+Analyze the uploaded image or carousel.
+
+Generate Instagram content and return ONLY valid JSON.
+
+Use exactly this structure:
+
+{
+  "caption": "...",
+  "cta": "...",
+  "hashtags": "..."
+}
+
+CAPTION RULES:
+- English.
+- Modern, premium and natural.
+- Suitable for AI photography / AI prompts content.
+- Describe the visual concept.
+- Do not invent personal information.
+- Keep it concise.
+- Do not put hashtags inside the caption.
+
+CTA RULES:
+- Short.
+- Encourage the user to comment AI.
+- Example style:
+  "Comment AI and I'll send you the prompt."
+
+HASHTAGS:
+- Exactly 5 relevant hashtags.
+- One line.
+- Avoid spammy or unrelated hashtags.
+"""
+
+    contents = [prompt]
+
+    image_count = 0
+
+    for image in images[:10]:
+
+        image_bytes = image.read()
+
+        if not image_bytes:
+            continue
+
+        mime_type = image.mimetype or "image/jpeg"
+
+        contents.append(
+            types.Part.from_bytes(
+                data=image_bytes,
+                mime_type=mime_type
+            )
+        )
+
+        image_count += 1
+
+    if image_count == 0:
+        return {
+            "error": "The uploaded images are empty."
+        }, 400
+
+    try:
+
+        response = GEMINI_CLIENT.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.7
+            )
+        )
+
+        result = json.loads(response.text)
+
+        return {
+            "caption": str(
+                result.get("caption", "")
+            ).strip(),
+
+            "cta": str(
+                result.get("cta", "")
+            ).strip(),
+
+            "hashtags": str(
+                result.get("hashtags", "")
+            ).strip()
+        }, 200
+
+    except Exception as error:
+
+        print(
+            "DASHBOARD GEMINI ERROR:",
+            error
+        )
+
+        return {
+            "error": "Gemini could not generate the content."
+        }, 500
 # ============================================================
 # DASHBOARD
 # ============================================================

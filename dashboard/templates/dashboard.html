@@ -464,17 +464,43 @@ imageInput.addEventListener(
 
 document
     .getElementById("generateButton")
-    .addEventListener(
-        "click",
-        function () {
+    .addEventListener("click", async function () {
 
-            alert(
-                "Gemini connection comes in the next step."
-            );
+        const button = this;
+        const caption = document.getElementById("caption");
+        const cta = document.getElementById("cta");
+        const hashtags = document.getElementById("hashtags");
 
+        button.disabled = true;
+        button.textContent = "Generating with Gemini... ✨";
+
+        try {
+            const response = await fetch("/api/generate-content", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({})
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.error || "Generation failed");
+            }
+
+            caption.value = data.caption || "";
+            cta.value = data.cta || "";
+            hashtags.value = data.hashtags || "";
+
+        } catch (error) {
+            console.error(error);
+            alert("Gemini error: " + error.message);
+        } finally {
+            button.disabled = false;
+            button.textContent = "Generate with Gemini ✨";
         }
-    );
-
+    });
 </script>
 
 </body>
