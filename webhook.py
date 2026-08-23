@@ -2397,6 +2397,21 @@ def process_comment(
         "id"
     )
 
+    # Ignore comments/replies created by our own Instagram account.
+    # This prevents the bot's public reply (which can contain words like
+    # "prompts" or "access") from triggering the automation again.
+    if (
+        str(commenter_id or "") == str(INSTAGRAM_USER_ID)
+        or str(username or "").strip().lower() == "imran.prompts"
+    ):
+
+        print(
+            "Own Instagram comment ignored:",
+            comment_id
+        )
+
+        return
+
     if (
         not comment_id
         or
