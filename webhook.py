@@ -37,6 +37,7 @@ POSTS_FILE = DATA_DIR / "posts.json"
 PROCESSED_FILE = DATA_DIR / "processed_comments.json"
 PENDING_ACCESS_FILE = DATA_DIR / "pending_access.json"
 REQUESTS_FILE = DATA_DIR / "requests.json"
+SMART_REPLY_ACTIVITY_FILE = DATA_DIR / "smart_reply_activity.json"
 
 load_dotenv(ENV_FILE)
 
@@ -58,6 +59,9 @@ API_VERSION = "v25.0"
 
 TRIGGER_WORDS = {"ai", "prompt", "prompts", "send", "access"}
 REQUEST_COOLDOWN_MINUTES = 10
+SMART_REPLY_MIN_INTERVAL_SECONDS = 15
+SMART_REPLY_MAX_PER_HOUR = 20
+SMART_REPLY_MAX_LENGTH = 180
 
 PUBLIC_REPLY_MESSAGES = [
     "Sent! Check your DMs ✨",
@@ -566,6 +570,366 @@ def log_prompt_request(
         save_json_file(
             REQUESTS_FILE,
             data
+        )
+
+
+# ==================================================
+# SMART COMMENT REPLIES
+# ==================================================
+
+def should_smart_reply(comment_text):
+
+    text = str(comment_text or "").strip()
+
+    if not text:
+        return False
+
+    words = re.findall(
+        r"\b\w+\b",
+        text.lower()
+    )
+
+    if any(
+        word in TRIGGER_WORDS
+        for word in words
+    ):
+        return False
+
+    meaningful = re.sub(
+        r"[^\w]+",
+        "",
+        text,
+        flags=re.UNICODE
+    )
+
+    # Skip emoji-only / tiny-noise comments.
+    if len(meaningful) < 2:
+        return False
+
+    return True
+
+
+def load_smart_reply_activity():
+
+    data = load_json_file(
+        SMART_REPLY_ACTIVITY_FILE,
+        []
+    )
+
+    if not isinstance(data, list):
+        return []
+
+    return data
+
+
+def smart_reply_rate_allowed():
+
+    now = datetime.now(timezone.utc)
+    one_hour_ago = now.timestamp() - 3600
+
+    with STATE_LOCK:
+
+        data = load_smart_reply_activity()
+        recent = []
+
+        for item in data:
+
+            created_at = item.get("created_at")
+
+            if not created_at:
+                continue
+
+            try:
+                dt = datetime.fromisoformat(created_at)
+            except Exception:
+                continue
+
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+
+            if dt.timestamp() >= one_hour_ago:
+                recent.append(item)
+
+        if len(recent) >= SMART_REPLY_MAX_PER_HOUR:
+            return False
+
+        if recent:
+
+            last_created = recent[-1].get("created_at")
+
+            try:
+                last_dt = datetime.fromisoformat(last_created)
+
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=timezone.utc)
+
+                elapsed = (
+                    now - last_dt
+                ).total_seconds()
+
+                if elapsed < SMART_REPLY_MIN_INTERVAL_SECONDS:
+                    return False
+
+            except Exception:
+                pass
+
+    return True
+
+
+def record_smart_reply(
+    comment_id,
+    commenter_id,
+    username,
+    reply_text
+):
+
+    entry = {
+        "comment_id": str(comment_id or ""),
+        "commenter_id": str(commenter_id or ""),
+        "username": str(username or ""),
+        "reply_text": str(reply_text or ""),
+        "created_at": datetime.now(
+            timezone.utc
+        ).isoformat()
+    }
+
+    with STATE_LOCK:
+
+        data = load_smart_reply_activity()
+        data.append(entry)
+
+        # Keep only the latest 1000 successful smart replies.
+        if len(data) > 1000:
+            data = data[-1000:]
+
+        save_json_file(
+            SMART_REPLY_ACTIVITY_FILE,
+            data
+        )
+
+
+def generate_smart_reply(
+    comment_text,
+    username=""
+):
+
+    if GEMINI_CLIENT is None:
+        return ""
+
+    source_text = str(
+        comment_text or ""
+    ).strip()
+
+    if not source_text:
+        return ""
+
+    instructions = f"""
+You are replying as the owner of the Instagram account @imran.prompts.
+
+Write ONE short, natural Instagram comment reply to the user's comment below.
+
+Rules:
+- Reply in the same language as the comment whenever possible.
+- Keep it friendly, casual and human-sounding.
+- Maximum 1 short sentence, ideally under 120 characters.
+- Never mention that you are an AI, bot or automation.
+- Do not use hashtags or links.
+- Do not ask the user to DM unless their comment clearly asks for more information.
+- Do not invent facts, prices, personal details, project details or promises.
+- If the comment asks for specific information that is not present, answer politely without making up details.
+- Avoid repeating the exact wording of the user's comment.
+- Use at most one emoji, and only when it feels natural.
+- Do not use salesy language.
+- Return ONLY the reply text, nothing else.
+
+Username: @{username or 'visitor'}
+Comment: {source_text}
+"""
+
+    try:
+
+        response = (
+            GEMINI_CLIENT
+            .models
+            .generate_content(
+
+                model=GEMINI_MODEL,
+
+                contents=instructions,
+
+                config=
+                    types.GenerateContentConfig(
+
+                        temperature=0.7
+                    )
+            )
+        )
+
+        reply = str(
+            response.text or ""
+        ).strip()
+
+        reply = re.sub(
+            r"\s+",
+            " ",
+            reply
+        ).strip()
+
+        reply = reply.strip(
+            '"\''
+        )
+
+        if len(reply) > SMART_REPLY_MAX_LENGTH:
+            reply = reply[:SMART_REPLY_MAX_LENGTH].rstrip()
+
+        return reply
+
+    except Exception as error:
+
+        print(
+            "SMART REPLY GEMINI ERROR:",
+            error
+        )
+
+        return ""
+
+
+def send_comment_reply_text(
+    comment_id,
+    message
+):
+
+    if (
+        not INSTAGRAM_ACCESS_TOKEN
+        or not comment_id
+        or not message
+    ):
+        return False
+
+    url = (
+        f"https://graph.instagram.com/"
+        f"{API_VERSION}/"
+        f"{comment_id}/replies"
+    )
+
+    payload = {
+        "message": str(message).strip(),
+        "access_token": INSTAGRAM_ACCESS_TOKEN
+    }
+
+    try:
+
+        response = requests.post(
+            url,
+            data=payload,
+            timeout=30
+        )
+
+        print(
+            "Comment Reply:",
+            response.status_code
+        )
+
+        if not response.ok:
+            print(response.text)
+
+        return response.ok
+
+    except requests.RequestException as error:
+
+        print(
+            "COMMENT REPLY ERROR:",
+            error
+        )
+
+        return False
+
+
+def process_smart_comment(
+    comment_id,
+    comment_text,
+    commenter_id,
+    username
+):
+
+    if not should_smart_reply(
+        comment_text
+    ):
+        return
+
+    if not claim_comment(
+        comment_id
+    ):
+        return
+
+    try:
+
+        if not smart_reply_rate_allowed():
+
+            print(
+                "Smart reply skipped by rate limit."
+            )
+
+            mark_comment_done(
+                comment_id
+            )
+
+            return
+
+        reply_text = generate_smart_reply(
+            comment_text,
+            username
+        )
+
+        if not reply_text:
+
+            print(
+                "No smart reply generated."
+            )
+
+            mark_comment_done(
+                comment_id
+            )
+
+            return
+
+        success = send_comment_reply_text(
+            comment_id,
+            reply_text
+        )
+
+        if success:
+
+            record_smart_reply(
+                comment_id,
+                commenter_id,
+                username,
+                reply_text
+            )
+
+            mark_comment_done(
+                comment_id
+            )
+
+            print(
+                "Smart comment reply sent successfully."
+            )
+
+        else:
+
+            release_comment(
+                comment_id
+            )
+
+    except Exception as error:
+
+        print(
+            "SMART COMMENT PROCESS ERROR:",
+            error
+        )
+
+        release_comment(
+            comment_id
         )
 
 
@@ -2090,54 +2454,24 @@ def send_public_comment_reply(
     username=""
 ):
 
-    if not INSTAGRAM_ACCESS_TOKEN or not comment_id:
+    if not comment_id:
         return False
 
-    # Deterministic rotation avoids always posting the exact same reply.
     try:
-        reply_index = int(str(comment_id)[-6:]) % len(PUBLIC_REPLY_MESSAGES)
+        reply_index = int(
+            str(comment_id)[-6:]
+        ) % len(PUBLIC_REPLY_MESSAGES)
     except Exception:
         reply_index = 0
 
-    message = PUBLIC_REPLY_MESSAGES[reply_index]
+    message = PUBLIC_REPLY_MESSAGES[
+        reply_index
+    ]
 
-    url = (
-        f"https://graph.instagram.com/"
-        f"{API_VERSION}/"
-        f"{comment_id}/replies"
+    return send_comment_reply_text(
+        comment_id,
+        message
     )
-
-    payload = {
-        "message": message,
-        "access_token": INSTAGRAM_ACCESS_TOKEN
-    }
-
-    try:
-
-        response = requests.post(
-            url,
-            data=payload,
-            timeout=30
-        )
-
-        print(
-            "Public Comment Reply:",
-            response.status_code
-        )
-
-        if not response.ok:
-            print(response.text)
-
-        return response.ok
-
-    except requests.RequestException as error:
-
-        print(
-            "PUBLIC COMMENT REPLY ERROR:",
-            error
-        )
-
-        return False
 
 
 # ==================================================
@@ -2425,10 +2759,19 @@ def process_comment(
         comment_text.lower()
     )
 
-    if not any(
+    is_prompt_request = any(
         word in TRIGGER_WORDS
         for word in words
-    ):
+    )
+
+    if not is_prompt_request:
+
+        process_smart_comment(
+            comment_id,
+            comment_text,
+            commenter_id,
+            username
+        )
 
         return
 
