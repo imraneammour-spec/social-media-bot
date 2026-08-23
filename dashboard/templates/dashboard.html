@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IMRAN PROMPTS — Dashboard</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background: #0b0b0d;
+            color: #f5f5f7;
+            font-family: Arial, sans-serif;
+            min-height: 100vh;
+        }
+
+        .app {
+            display: grid;
+            grid-template-columns: 240px 1fr;
+            min-height: 100vh;
+        }
+
+        .sidebar {
+            border-right: 1px solid #24242a;
+            background: #111114;
+            padding: 28px 18px;
+        }
+
+        .logo {
+            font-size: 18px;
+            font-weight: 800;
+            margin-bottom: 40px;
+        }
+
+        .logo span {
+            color: #888892;
+        }
+
+        .nav {
+            display: grid;
+            gap: 8px;
+        }
+
+        .nav button {
+            border: 0;
+            background: transparent;
+            color: #aaaab4;
+            text-align: left;
+            padding: 13px 14px;
+            border-radius: 12px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .nav button.active {
+            background: #202025;
+            color: white;
+        }
+
+        .main {
+            padding: 32px;
+            max-width: 1250px;
+            width: 100%;
+            margin: auto;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+        }
+
+        h1 {
+            font-size: 30px;
+        }
+
+        .status {
+            color: #8d8d96;
+            font-size: 13px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 22px;
+        }
+
+        .card {
+            background: #151518;
+            border: 1px solid #29292f;
+            border-radius: 20px;
+            padding: 22px;
+        }
+
+        .card h2 {
+            font-size: 17px;
+            margin-bottom: 18px;
+        }
+
+        .upload {
+            border: 1px dashed #3b3b44;
+            border-radius: 16px;
+            min-height: 250px;
+            display: grid;
+            place-items: center;
+            text-align: center;
+            cursor: pointer;
+            color: #9999a3;
+            padding: 25px;
+        }
+
+        .upload:hover {
+            border-color: #656570;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        textarea,
+        input[type="text"],
+        input[type="datetime-local"] {
+            width: 100%;
+            background: #0f0f12;
+            color: white;
+            border: 1px solid #303038;
+            border-radius: 12px;
+            padding: 13px;
+            margin-bottom: 14px;
+            outline: none;
+            font-family: inherit;
+        }
+
+        textarea {
+            min-height: 125px;
+            resize: vertical;
+        }
+
+        label {
+            display: block;
+            color: #aaaab3;
+            font-size: 12px;
+            margin-bottom: 7px;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 13px 16px;
+            border-radius: 12px;
+            border: 0;
+            cursor: pointer;
+            font-weight: 700;
+            margin-top: 8px;
+        }
+
+        .btn-primary {
+            background: white;
+            color: #111;
+        }
+
+        .btn-secondary {
+            background: #27272d;
+            color: white;
+        }
+
+        .approval {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .approve {
+            background: #ffffff;
+            color: #111;
+        }
+
+        .reject {
+            background: #2a2a30;
+            color: #ddd;
+        }
+
+        .preview-images {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 15px;
+        }
+
+        .preview-images img {
+            width: 80px;
+            height: 80px;
+            object-fit: cover;
+            border-radius: 10px;
+            border: 1px solid #333;
+        }
+
+        .section-title {
+            margin: 28px 0 15px;
+            color: #aaaab4;
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: .08em;
+        }
+
+        .draft {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .badge {
+            background: #29292f;
+            padding: 7px 10px;
+            border-radius: 999px;
+            font-size: 11px;
+            color: #aaaab3;
+        }
+
+        @media(max-width: 850px) {
+            .app {
+                grid-template-columns: 1fr;
+            }
+
+            .sidebar {
+                display: none;
+            }
+
+            .grid {
+                grid-template-columns: 1fr;
+            }
+
+            .main {
+                padding: 18px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="app">
+
+    <aside class="sidebar">
+
+        <div class="logo">
+            IMRAN <span>PROMPTS</span>
+        </div>
+
+        <div class="nav">
+            <button class="active">Dashboard</button>
+            <button>New Post</button>
+            <button>Drafts</button>
+            <button>Scheduled</button>
+            <button>Published</button>
+            <button>Analytics</button>
+        </div>
+
+    </aside>
+
+    <main class="main">
+
+        <div class="header">
+            <div>
+                <h1>Content Dashboard</h1>
+                <div class="status">
+                    Instagram automation • Online
+                </div>
+            </div>
+        </div>
+
+        <div class="grid">
+
+            <section class="card">
+
+                <h2>1. Upload Post</h2>
+
+                <label class="upload" for="images">
+
+                    <div>
+                        <strong>Upload images</strong>
+                        <br><br>
+                        Click here to select your Instagram post images.
+                    </div>
+
+                </label>
+
+                <input
+                    id="images"
+                    type="file"
+                    accept="image/*"
+                    multiple
+                >
+
+                <div
+                    id="preview"
+                    class="preview-images">
+                </div>
+
+                <button
+                    id="generateButton"
+                    class="btn btn-primary">
+                    Generate with Gemini ✨
+                </button>
+
+            </section>
+
+            <section class="card">
+
+                <h2>2. AI Content</h2>
+
+                <label>Caption</label>
+
+                <textarea
+                    id="caption"
+                    placeholder="Gemini will generate the Instagram caption here..."
+                ></textarea>
+
+                <label>Call to Action</label>
+
+                <input
+                    id="cta"
+                    type="text"
+                    placeholder="Example: Comment AI and I’ll send you the prompt."
+                >
+
+                <label>Hashtags</label>
+
+                <textarea
+                    id="hashtags"
+                    placeholder="#ai #aiprompts #midjourney"
+                    style="min-height:80px;"
+                ></textarea>
+
+                <div class="approval">
+
+                    <button
+                        class="btn approve">
+                        Approve ✓
+                    </button>
+
+                    <button
+                        class="btn reject">
+                        Reject
+                    </button>
+
+                </div>
+
+            </section>
+
+        </div>
+
+        <div class="section-title">
+            Publishing
+        </div>
+
+        <section class="card">
+
+            <div class="grid">
+
+                <div>
+
+                    <label>Publish date & time</label>
+
+                    <input
+                        id="schedule"
+                        type="datetime-local"
+                    >
+
+                </div>
+
+                <div>
+
+                    <label>Publishing action</label>
+
+                    <button class="btn btn-secondary">
+                        Schedule Post
+                    </button>
+
+                    <button class="btn btn-primary">
+                        Publish Now
+                    </button>
+
+                </div>
+
+            </div>
+
+        </section>
+
+        <div class="section-title">
+            Recent Drafts
+        </div>
+
+        <section class="card">
+
+            <div class="draft">
+
+                <div>
+                    <strong>No drafts yet</strong>
+                    <div class="status">
+                        Your AI generated posts will appear here.
+                    </div>
+                </div>
+
+                <span class="badge">
+                    Waiting
+                </span>
+
+            </div>
+
+        </section>
+
+    </main>
+
+</div>
+
+<script>
+
+const imageInput =
+    document.getElementById("images");
+
+const preview =
+    document.getElementById("preview");
+
+imageInput.addEventListener(
+    "change",
+    function () {
+
+        preview.innerHTML = "";
+
+        Array.from(this.files).forEach(
+            function (file) {
+
+                const reader =
+                    new FileReader();
+
+                reader.onload =
+                    function (event) {
+
+                        const img =
+                            document.createElement("img");
+
+                        img.src =
+                            event.target.result;
+
+                        preview.appendChild(img);
+
+                    };
+
+                reader.readAsDataURL(file);
+
+            }
+        );
+
+    }
+);
+
+document
+    .getElementById("generateButton")
+    .addEventListener(
+        "click",
+        function () {
+
+            alert(
+                "Gemini connection comes in the next step."
+            );
+
+        }
+    );
+
+</script>
+
+</body>
+</html>
