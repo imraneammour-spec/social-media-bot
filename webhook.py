@@ -59,6 +59,13 @@ API_VERSION = "v25.0"
 TRIGGER_WORDS = {"ai", "prompt", "prompts", "send", "access"}
 REQUEST_COOLDOWN_MINUTES = 10
 
+PUBLIC_REPLY_MESSAGES = [
+    "Sent! Check your DMs ✨",
+    "Your prompts are ready 👀 Check your DMs.",
+    "Done ✨ I sent you the access in DM.",
+    "Check your DMs 🚀 Your AI prompts are waiting."
+]
+
 GEMINI_MODEL = "gemini-3.6-flash"
 
 STATE_LOCK = threading.Lock()
@@ -2075,6 +2082,65 @@ def clear_pending_access(user_id):
 
 
 # ==================================================
+# INSTAGRAM PUBLIC COMMENT REPLY
+# ==================================================
+
+def send_public_comment_reply(
+    comment_id,
+    username=""
+):
+
+    if not INSTAGRAM_ACCESS_TOKEN or not comment_id:
+        return False
+
+    # Deterministic rotation avoids always posting the exact same reply.
+    try:
+        reply_index = int(str(comment_id)[-6:]) % len(PUBLIC_REPLY_MESSAGES)
+    except Exception:
+        reply_index = 0
+
+    message = PUBLIC_REPLY_MESSAGES[reply_index]
+
+    url = (
+        f"https://graph.instagram.com/"
+        f"{API_VERSION}/"
+        f"{comment_id}/replies"
+    )
+
+    payload = {
+        "message": message,
+        "access_token": INSTAGRAM_ACCESS_TOKEN
+    }
+
+    try:
+
+        response = requests.post(
+            url,
+            data=payload,
+            timeout=30
+        )
+
+        print(
+            "Public Comment Reply:",
+            response.status_code
+        )
+
+        if not response.ok:
+            print(response.text)
+
+        return response.ok
+
+    except requests.RequestException as error:
+
+        print(
+            "PUBLIC COMMENT REPLY ERROR:",
+            error
+        )
+
+        return False
+
+
+# ==================================================
 # INSTAGRAM PRIVATE REPLY
 # ==================================================
 
@@ -2409,6 +2475,20 @@ def process_comment(
             f"{public_base_url}"
             f"/p/{media_id}"
         )
+
+        public_reply_ok = send_public_comment_reply(
+            comment_id,
+            username
+        )
+
+        if public_reply_ok:
+            print(
+                "Public reply sent successfully."
+            )
+        else:
+            print(
+                "Public reply failed; continuing with DM flow."
+            )
 
         recipient_id = send_access_request(
             comment_id
