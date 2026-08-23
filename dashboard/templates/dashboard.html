@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
     <title>IMRAN PROMPTS — Dashboard</title>
 
     <style>
@@ -159,6 +160,11 @@
             margin-top: 8px;
         }
 
+        .btn:disabled {
+            opacity: .55;
+            cursor: not-allowed;
+        }
+
         .btn-primary {
             background: white;
             color: #111;
@@ -224,6 +230,26 @@
             color: #aaaab3;
         }
 
+        .message {
+            display: none;
+            margin-top: 12px;
+            padding: 12px;
+            border-radius: 10px;
+            font-size: 13px;
+        }
+
+        .message.success {
+            display: block;
+            background: #18251d;
+            border: 1px solid #2a5034;
+        }
+
+        .message.error {
+            display: block;
+            background: #2b1818;
+            border: 1px solid #633333;
+        }
+
         @media(max-width: 850px) {
             .app {
                 grid-template-columns: 1fr;
@@ -268,25 +294,35 @@
     <main class="main">
 
         <div class="header">
+
             <div>
                 <h1>Content Dashboard</h1>
+
                 <div class="status">
                     Instagram automation • Online
                 </div>
             </div>
+
         </div>
 
         <div class="grid">
+
+            <!-- UPLOAD -->
 
             <section class="card">
 
                 <h2>1. Upload Post</h2>
 
-                <label class="upload" for="images">
+                <label
+                    class="upload"
+                    for="images"
+                >
 
                     <div>
                         <strong>Upload images</strong>
+
                         <br><br>
+
                         Click here to select your Instagram post images.
                     </div>
 
@@ -295,22 +331,31 @@
                 <input
                     id="images"
                     type="file"
-                    accept="image/*"
+                    accept="image/jpeg,image/png,image/webp"
                     multiple
                 >
 
                 <div
                     id="preview"
-                    class="preview-images">
-                </div>
+                    class="preview-images"
+                ></div>
 
                 <button
                     id="generateButton"
-                    class="btn btn-primary">
+                    class="btn btn-primary"
+                    type="button"
+                >
                     Generate with Gemini ✨
                 </button>
 
+                <div
+                    id="generationMessage"
+                    class="message"
+                ></div>
+
             </section>
+
+            <!-- AI CONTENT -->
 
             <section class="card">
 
@@ -335,19 +380,25 @@
 
                 <textarea
                     id="hashtags"
-                    placeholder="#ai #aiprompts #midjourney"
+                    placeholder="#ai #aiprompts #aiphotography"
                     style="min-height:80px;"
                 ></textarea>
 
                 <div class="approval">
 
                     <button
-                        class="btn approve">
+                        id="approveButton"
+                        class="btn approve"
+                        type="button"
+                    >
                         Approve ✓
                     </button>
 
                     <button
-                        class="btn reject">
+                        id="rejectButton"
+                        class="btn reject"
+                        type="button"
+                    >
                         Reject
                     </button>
 
@@ -356,6 +407,8 @@
             </section>
 
         </div>
+
+        <!-- PUBLISHING -->
 
         <div class="section-title">
             Publishing
@@ -367,7 +420,9 @@
 
                 <div>
 
-                    <label>Publish date & time</label>
+                    <label>
+                        Publish date & time
+                    </label>
 
                     <input
                         id="schedule"
@@ -378,13 +433,23 @@
 
                 <div>
 
-                    <label>Publishing action</label>
+                    <label>
+                        Publishing action
+                    </label>
 
-                    <button class="btn btn-secondary">
+                    <button
+                        id="scheduleButton"
+                        class="btn btn-secondary"
+                        type="button"
+                    >
                         Schedule Post
                     </button>
 
-                    <button class="btn btn-primary">
+                    <button
+                        id="publishButton"
+                        class="btn btn-primary"
+                        type="button"
+                    >
                         Publish Now
                     </button>
 
@@ -393,6 +458,8 @@
             </div>
 
         </section>
+
+        <!-- DRAFTS -->
 
         <div class="section-title">
             Recent Drafts
@@ -404,6 +471,7 @@
 
                 <div>
                     <strong>No drafts yet</strong>
+
                     <div class="status">
                         Your AI generated posts will appear here.
                     </div>
@@ -421,6 +489,7 @@
 
 </div>
 
+
 <script>
 
 const imageInput =
@@ -429,11 +498,37 @@ const imageInput =
 const preview =
     document.getElementById("preview");
 
+const generateButton =
+    document.getElementById("generateButton");
+
+const generationMessage =
+    document.getElementById("generationMessage");
+
+const caption =
+    document.getElementById("caption");
+
+const cta =
+    document.getElementById("cta");
+
+const hashtags =
+    document.getElementById("hashtags");
+
+
+/* =========================================================
+   IMAGE PREVIEW
+========================================================= */
+
 imageInput.addEventListener(
     "change",
     function () {
 
         preview.innerHTML = "";
+
+        generationMessage.className =
+            "message";
+
+        generationMessage.textContent =
+            "";
 
         Array.from(this.files).forEach(
             function (file) {
@@ -462,45 +557,218 @@ imageInput.addEventListener(
     }
 );
 
-document
-    .getElementById("generateButton")
-    .addEventListener("click", async function () {
 
-        const button = this;
-        const caption = document.getElementById("caption");
-        const cta = document.getElementById("cta");
-        const hashtags = document.getElementById("hashtags");
+/* =========================================================
+   GENERATE WITH GEMINI
+========================================================= */
 
-        button.disabled = true;
-        button.textContent = "Generating with Gemini... ✨";
+generateButton.addEventListener(
+    "click",
+    async function () {
+
+        if (!imageInput.files.length) {
+
+            generationMessage.className =
+                "message error";
+
+            generationMessage.textContent =
+                "Please select at least one image.";
+
+            return;
+        }
+
+
+        const formData =
+            new FormData();
+
+
+        Array.from(
+            imageInput.files
+        ).forEach(
+            function (file) {
+
+                formData.append(
+                    "images",
+                    file,
+                    file.name
+                );
+
+            }
+        );
+
+
+        generateButton.disabled =
+            true;
+
+        generateButton.textContent =
+            "Generating with Gemini... ✨";
+
+
+        generationMessage.className =
+            "message";
+
+        generationMessage.textContent =
+            "";
+
 
         try {
-            const response = await fetch("/api/generate-content", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify({})
-            });
 
-            const data = await response.json();
+            const response =
+                await fetch(
+                    "/api/generate-content",
+                    {
+                        method: "POST",
+                        body: formData
+                    }
+                );
 
-            if (!response.ok) {
-                throw new Error(data.error || "Generation failed");
+
+            let data;
+
+
+            try {
+
+                data =
+                    await response.json();
+
+            } catch {
+
+                throw new Error(
+                    "The server returned an invalid response."
+                );
+
             }
 
-            caption.value = data.caption || "";
-            cta.value = data.cta || "";
-            hashtags.value = data.hashtags || "";
 
-        } catch (error) {
-            console.error(error);
-            alert("Gemini error: " + error.message);
-        } finally {
-            button.disabled = false;
-            button.textContent = "Generate with Gemini ✨";
+            if (!response.ok) {
+
+                throw new Error(
+                    data.error ||
+                    "Gemini generation failed."
+                );
+
+            }
+
+
+            caption.value =
+                data.caption || "";
+
+            cta.value =
+                data.cta || "";
+
+            hashtags.value =
+                data.hashtags || "";
+
+
+            generationMessage.className =
+                "message success";
+
+            generationMessage.textContent =
+                "AI content generated successfully.";
+
         }
-    });
+
+        catch (error) {
+
+            console.error(
+                "Dashboard Gemini error:",
+                error
+            );
+
+
+            generationMessage.className =
+                "message error";
+
+            generationMessage.textContent =
+                error.message;
+
+        }
+
+        finally {
+
+            generateButton.disabled =
+                false;
+
+            generateButton.textContent =
+                "Generate with Gemini ✨";
+
+        }
+
+    }
+);
+
+
+/* =========================================================
+   APPROVE / REJECT
+   We will connect these to the backend next.
+========================================================= */
+
+document
+    .getElementById("approveButton")
+    .addEventListener(
+        "click",
+        function () {
+
+            alert(
+                "Approval system will be connected next."
+            );
+
+        }
+    );
+
+
+document
+    .getElementById("rejectButton")
+    .addEventListener(
+        "click",
+        function () {
+
+            caption.value = "";
+            cta.value = "";
+            hashtags.value = "";
+
+            generationMessage.className =
+                "message";
+
+            generationMessage.textContent =
+                "";
+
+        }
+    );
+
+
+/* =========================================================
+   PUBLISHING
+   We will connect these after approval works.
+========================================================= */
+
+document
+    .getElementById("scheduleButton")
+    .addEventListener(
+        "click",
+        function () {
+
+            alert(
+                "Scheduling will be connected after approval."
+            );
+
+        }
+    );
+
+
+document
+    .getElementById("publishButton")
+    .addEventListener(
+        "click",
+        function () {
+
+            alert(
+                "Publishing will be connected after approval."
+            );
+
+        }
+    );
+
 </script>
 
 </body>
