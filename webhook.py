@@ -36,6 +36,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 POSTS_FILE = DATA_DIR / "posts.json"
 PROCESSED_FILE = DATA_DIR / "processed_comments.json"
 PENDING_ACCESS_FILE = DATA_DIR / "pending_access.json"
+REQUESTS_FILE = DATA_DIR / "requests.json"
 
 load_dotenv(ENV_FILE)
 
@@ -55,7 +56,8 @@ INSTAGRAM_USER_ID = "17841438617458289"
 
 API_VERSION = "v25.0"
 
-TRIGGER_WORD = "ai"
+TRIGGER_WORDS = {"ai", "prompt", "prompts", "send", "access"}
+REQUEST_COOLDOWN_MINUTES = 10
 
 GEMINI_MODEL = "gemini-3.6-flash"
 
@@ -431,6 +433,131 @@ def save_post(
 
         save_json_file(
             POSTS_FILE,
+            data
+        )
+
+
+
+# ==================================================
+# REQUEST ANALYTICS + ANTI-SPAM
+# ==================================================
+
+def load_requests():
+
+    data = load_json_file(
+        REQUESTS_FILE,
+        []
+    )
+
+    if not isinstance(data, list):
+        return []
+
+    return data
+
+
+def request_identity(
+    media_id,
+    commenter_id,
+    username
+):
+
+    user_part = (
+        str(commenter_id)
+        if commenter_id
+        else str(username or "").strip().lower()
+    )
+
+    return f"{media_id}:{user_part}"
+
+
+def is_request_on_cooldown(
+    media_id,
+    commenter_id,
+    username
+):
+
+    key = request_identity(
+        media_id,
+        commenter_id,
+        username
+    )
+
+    if key.endswith(":"):
+        return False
+
+    now = datetime.now(timezone.utc)
+
+    with STATE_LOCK:
+
+        requests_data = load_requests()
+
+        for item in reversed(requests_data):
+
+            if item.get("request_key") != key:
+                continue
+
+            created_at = item.get("created_at")
+
+            if not created_at:
+                return False
+
+            try:
+                previous = datetime.fromisoformat(created_at)
+            except Exception:
+                return False
+
+            if previous.tzinfo is None:
+                previous = previous.replace(tzinfo=timezone.utc)
+
+            elapsed_seconds = (
+                now - previous
+            ).total_seconds()
+
+            cooldown_seconds = (
+                REQUEST_COOLDOWN_MINUTES
+                * 60
+            )
+
+            return elapsed_seconds < cooldown_seconds
+
+    return False
+
+
+def log_prompt_request(
+    media_id,
+    comment_id,
+    commenter_id,
+    username,
+    page_url
+):
+
+    entry = {
+        "request_key": request_identity(
+            media_id,
+            commenter_id,
+            username
+        ),
+        "media_id": str(media_id or ""),
+        "comment_id": str(comment_id or ""),
+        "commenter_id": str(commenter_id or ""),
+        "username": str(username or ""),
+        "page_url": str(page_url or ""),
+        "created_at": datetime.now(
+            timezone.utc
+        ).isoformat()
+    }
+
+    with STATE_LOCK:
+
+        data = load_requests()
+
+        data.append(entry)
+
+        if len(data) > 5000:
+            data = data[-5000:]
+
+        save_json_file(
+            REQUESTS_FILE,
             data
         )
 
@@ -2217,12 +2344,15 @@ def process_comment(
         comment_text.lower()
     )
 
-    if TRIGGER_WORD not in words:
+    if not any(
+        word in TRIGGER_WORDS
+        for word in words
+    ):
 
         return
 
     print(
-        f"AI comment from @{username}"
+        f"Prompt request comment from @{username}"
     )
 
     if not claim_comment(
@@ -2236,6 +2366,24 @@ def process_comment(
         if not media_id:
 
             release_comment(
+                comment_id
+            )
+
+            return
+
+        if is_request_on_cooldown(
+            media_id,
+            commenter_id,
+            username
+        ):
+
+            print(
+                "Repeated request ignored during cooldown:",
+                username or commenter_id,
+                media_id
+            )
+
+            mark_comment_done(
                 comment_id
             )
 
@@ -2279,6 +2427,14 @@ def process_comment(
 
             save_pending_access(
                 recipient_id,
+                page_url
+            )
+
+            log_prompt_request(
+                media_id,
+                comment_id,
+                commenter_id,
+                username,
                 page_url
             )
 
