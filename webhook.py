@@ -30,7 +30,7 @@ load_dotenv(ENV_FILE)
 
 app = Flask(__name__)
 
-VERIFY_TOKEN = "imran_social_media_bot_2026"
+VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "imran_social_media_bot_2026")
 
 INSTAGRAM_ACCESS_TOKEN = os.getenv(
     "INSTAGRAM_ACCESS_TOKEN"
@@ -2473,7 +2473,7 @@ def receive_webhook():
     )
 
     worker = threading.Thread(
-
+gemini-2.5-flash
         target=
             process_webhook_background,
 
