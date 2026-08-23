@@ -3123,29 +3123,6 @@ def dashboard():
 # RUN
 # ============================================================
 
-# ============================================================
-# DASHBOARD
-# ============================================================
-
-from flask import render_template
-
-# Dashboard folders
-app.template_folder = "dashboard/templates"
-app.static_folder = "dashboard/static"
-
-
-@app.route("/dashboard", methods=["GET"])
-def dashboard():
-    """
-    Main Social Media Bot Dashboard
-    """
-    return render_template("dashboard.html")
-
-
-# ============================================================
-# RUN
-# ============================================================
-
 if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
