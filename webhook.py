@@ -2473,7 +2473,6 @@ def receive_webhook():
     )
 
     worker = threading.Thread(
-gemini-2.5-flash
         target=
             process_webhook_background,
 
