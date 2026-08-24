@@ -3462,76 +3462,6 @@ def dashboard_draft_image(draft_id, filename):
         return Response(status=404)
 
 
-def verify_public_media_url(media_url):
-
-    try:
-
-        response = requests.get(
-            media_url,
-            headers={
-                "User-Agent":
-                    "Mozilla/5.0 InstagramMediaFetcher/1.0",
-                "Accept":
-                    "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
-            },
-            allow_redirects=True,
-            timeout=30
-        )
-
-        content_type = str(
-            response.headers.get(
-                "Content-Type",
-                ""
-            )
-        ).split(";")[0].strip().lower()
-
-        print(
-            "Public media preflight:",
-            response.status_code,
-            content_type,
-            len(response.content)
-        )
-
-        if response.status_code != 200:
-            return False, (
-                "Public media URL returned "
-                f"HTTP {response.status_code}."
-            )
-
-        if not content_type.startswith("image/"):
-            return False, (
-                "Public media URL did not return an image "
-                f"(Content-Type: {content_type or 'missing'})."
-            )
-
-        if not response.content:
-            return False, "Public media URL returned an empty file."
-
-        detected_type = detect_image_mimetype(
-            response.content
-        )
-
-        if not detected_type:
-            return False, (
-                "Public media URL returned bytes that are "
-                "not a supported image."
-            )
-
-        return True, ""
-
-    except Exception as error:
-
-        print(
-            "PUBLIC MEDIA PREFLIGHT ERROR:",
-            error
-        )
-
-        return False, (
-            "The public media URL could not be reached "
-            f"from Railway: {error}"
-        )
-
-
 # ============================================================
 # DASHBOARD - INSTAGRAM PUBLISHING
 # ============================================================
@@ -3677,20 +3607,6 @@ def publish_instagram_draft(draft, public_base_url):
 
     if not image_urls:
         return None, "No publishable images were found."
-
-    # Verify every public URL before asking Meta to fetch it.
-    # This gives a clear error if Railway is not serving the image
-    # as a normal public image response.
-    for media_url in image_urls:
-
-        media_ok, media_error = (
-            verify_public_media_url(
-                media_url
-            )
-        )
-
-        if not media_ok:
-            return None, media_error
 
     # Single image post
     if len(image_urls) == 1:
