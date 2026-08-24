@@ -178,6 +178,7 @@ const navButtons = Array.from(document.querySelectorAll(".nav button[data-view]"
 let currentDraftId = "";
 let currentView = "dashboard";
 let cachedDrafts = [];
+let cachedInstagramPublished = [];
 
 function setMessage(type, text) {
     generationMessage.className = "message" + (type ? " " + type : "");
@@ -536,6 +537,100 @@ async function loadDrafts() {
     }
 }
 
+async function loadInstagramPublished() {
+    draftsList.className = "empty-drafts";
+    draftsList.textContent = "Loading published posts...";
+
+    try {
+        const response = await fetch("/api/instagram-published", { cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || "Could not load published Instagram posts.");
+        }
+        cachedInstagramPublished = Array.isArray(data.posts) ? data.posts : [];
+        if (currentView === "published") {
+            renderInstagramPublishedList(cachedInstagramPublished);
+        }
+    } catch (error) {
+        console.error("Load Instagram published posts error:", error);
+        draftsList.className = "empty-drafts";
+        draftsList.textContent = error.message || "Could not load published Instagram posts.";
+    }
+}
+
+function renderInstagramPublishedList(items) {
+    if (!items.length) {
+        draftsList.className = "empty-drafts";
+        draftsList.textContent = "No published Instagram posts found.";
+        return;
+    }
+
+    draftsList.className = "published-grid";
+    draftsList.innerHTML = "";
+
+    items.forEach(function (post) {
+        const card = document.createElement("article");
+        card.className = "published-card";
+
+        const image = document.createElement("img");
+        image.className = "published-image";
+        image.alt = "Published Instagram post";
+        image.loading = "lazy";
+        image.src = post.media_url || post.thumbnail_url || "";
+        if (!image.src) image.style.display = "none";
+
+        const body = document.createElement("div");
+        body.className = "published-body";
+
+        const captionText = document.createElement("div");
+        captionText.className = "published-caption";
+        captionText.textContent = post.caption || "No caption";
+
+        const meta = document.createElement("div");
+        meta.className = "published-meta";
+
+        const publishedLine = document.createElement("div");
+        if (post.timestamp) {
+            try { publishedLine.textContent = "Published: " + new Date(post.timestamp).toLocaleString(); }
+            catch (e) { publishedLine.textContent = "Published"; }
+        } else {
+            publishedLine.textContent = "Published";
+        }
+
+        const idLine = document.createElement("div");
+        idLine.textContent = "Instagram Media ID: " + (post.id || "Unavailable");
+        meta.appendChild(publishedLine);
+        meta.appendChild(idLine);
+
+        const actions = document.createElement("div");
+        actions.className = "published-actions";
+
+        const badge = document.createElement("span");
+        badge.className = "badge";
+        badge.textContent = post.media_type || "Published";
+        actions.appendChild(badge);
+
+        const openButton = document.createElement("button");
+        openButton.type = "button";
+        openButton.className = "published-open";
+        openButton.textContent = "View on Instagram";
+        openButton.disabled = !post.permalink;
+        openButton.addEventListener("click", function () {
+            if (post.permalink) {
+                window.open(post.permalink, "_blank", "noopener,noreferrer");
+            }
+        });
+        actions.appendChild(openButton);
+
+        body.appendChild(captionText);
+        body.appendChild(meta);
+        body.appendChild(actions);
+        card.appendChild(image);
+        card.appendChild(body);
+        draftsList.appendChild(card);
+    });
+}
+
 function filteredDraftsForView() {
     if (currentView === "drafts") {
         return cachedDrafts.filter(d => ["approved", "schedule_failed"].includes(d.status || ""));
@@ -803,8 +898,13 @@ function renderCurrentView() {
 
     navButtons.forEach(btn => btn.classList.toggle("active", btn.dataset.view === currentView));
 
-    if (currentView === "analytics") renderAnalytics();
-    else renderDraftList(filteredDraftsForView());
+    if (currentView === "analytics") {
+        renderAnalytics();
+    } else if (currentView === "published") {
+        loadInstagramPublished();
+    } else {
+        renderDraftList(filteredDraftsForView());
+    }
 }
 
 function switchView(view) {

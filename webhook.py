@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 from dotenv import load_dotenv
-from flask import Flask, request, send_file, Response
+from flask import Flask, request, send_file, Response, url_for
 from werkzeug.utils import secure_filename
 
 from google import genai
@@ -3387,6 +3387,60 @@ def get_dashboard_drafts():
         })
 
     return {"drafts": result}, 200
+
+
+@app.route("/api/instagram-published", methods=["GET"])
+def get_instagram_published_posts():
+    """Read the latest published posts directly from Instagram.
+
+    Instagram is the source of truth for the Published view, so the dashboard
+    still shows posts even if a local draft status was lost during a deploy or
+    concurrent file write.
+    """
+    if not INSTAGRAM_ACCESS_TOKEN:
+        return {"error": "Instagram access token is missing."}, 500
+
+    try:
+        response = requests.get(
+            f"https://graph.instagram.com/{API_VERSION}/{INSTAGRAM_USER_ID}/media",
+            params={
+                "fields": "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp",
+                "limit": 25,
+                "access_token": INSTAGRAM_ACCESS_TOKEN
+            },
+            timeout=30
+        )
+        data = response.json()
+        if not response.ok:
+            error_message = (data.get("error") or {}).get("message") or "Could not load Instagram posts."
+            return {"error": error_message}, response.status_code
+
+        posts = data.get("data", [])
+        if not isinstance(posts, list):
+            posts = []
+
+        cleaned = []
+        for item in posts:
+            if not isinstance(item, dict):
+                continue
+            cleaned.append({
+                "id": str(item.get("id", "") or ""),
+                "caption": str(item.get("caption", "") or ""),
+                "media_type": str(item.get("media_type", "") or ""),
+                "media_url": str(item.get("media_url", "") or ""),
+                "thumbnail_url": str(item.get("thumbnail_url", "") or ""),
+                "permalink": str(item.get("permalink", "") or ""),
+                "timestamp": str(item.get("timestamp", "") or "")
+            })
+
+        return {"posts": cleaned}, 200
+
+    except requests.RequestException as error:
+        print("INSTAGRAM PUBLISHED POSTS ERROR:", error)
+        return {"error": "Could not connect to Instagram."}, 502
+    except Exception as error:
+        print("INSTAGRAM PUBLISHED POSTS ERROR:", error)
+        return {"error": "Could not load Instagram posts."}, 500
 
 
 @app.route("/api/published-permalink/<draft_id>", methods=["GET"])
