@@ -98,6 +98,23 @@
         .overview-best-meta { font-size:11px; color:#9999a3; }
         @media(max-width:850px) { .overview-grid { grid-template-columns:1fr 1fr; } .overview-layout { grid-template-columns:1fr; } }
 
+        .leads-stats { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:20px; }
+        .lead-stat { background:#17171b; border:1px solid #2c2c33; border-radius:16px; padding:20px; }
+        .lead-stat-value { font-size:28px; font-weight:800; margin-bottom:8px; }
+        .lead-stat-label { font-size:12px; color:#aeb2c1; text-transform:uppercase; letter-spacing:.04em; }
+        .leads-list { display:flex; flex-direction:column; gap:12px; }
+        .lead-card { display:grid; grid-template-columns:72px minmax(0,1fr) auto; gap:14px; align-items:center; padding:14px; background:#151519; border:1px solid #2c2c33; border-radius:14px; }
+        .lead-image { width:72px; height:72px; border-radius:11px; object-fit:cover; background:#222229; }
+        .lead-person { font-weight:800; margin-bottom:5px; }
+        .lead-post { color:#d7d9e2; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:680px; }
+        .lead-meta { color:#999eae; font-size:12px; margin-top:6px; }
+        .lead-actions { display:flex; flex-direction:column; align-items:flex-end; gap:8px; }
+        .lead-badge { font-size:11px; padding:7px 9px; border-radius:999px; border:1px solid #35353d; white-space:nowrap; }
+        .lead-badge.delivered { background:#102719; border-color:#285c3d; color:#baf5cb; }
+        .lead-badge.waiting_confirmation { background:#2b2411; border-color:#66552a; color:#f6df9b; }
+        .lead-link { display:inline-flex; padding:8px 10px; border-radius:9px; background:#fff; color:#000; text-decoration:none; font-size:12px; font-weight:800; }
+        .lead-empty { padding:24px; color:#aeb2c1; text-align:center; }
+        @media(max-width:850px) { .leads-stats { grid-template-columns:1fr 1fr; } .lead-card { grid-template-columns:56px minmax(0,1fr); } .lead-image { width:56px; height:56px; } .lead-actions { grid-column:1/-1; flex-direction:row; align-items:center; justify-content:flex-end; } }
         @media(max-width:850px) { .analytics-posts { grid-template-columns:1fr; } }
         @media(max-width:850px) { .published-grid { grid-template-columns:1fr; } }
         @media(max-width: 850px) { .stats-grid { grid-template-columns:1fr 1fr; } }
@@ -114,6 +131,7 @@
             <button data-view="drafts">Drafts</button>
             <button data-view="scheduled">Scheduled</button>
             <button data-view="published">Published</button>
+            <button data-view="leads">Requests / Leads</button>
             <button data-view="analytics">Analytics</button>
         </div>
     </aside>
@@ -215,6 +233,21 @@
 
         </div>
 
+        <div id="leadsSection" class="hidden">
+            <div class="leads-stats">
+                <div class="lead-stat"><div id="leadTotal" class="lead-stat-value">—</div><div class="lead-stat-label">Prompt requests</div></div>
+                <div class="lead-stat"><div id="leadUnique" class="lead-stat-value">—</div><div class="lead-stat-label">Unique people</div></div>
+                <div class="lead-stat"><div id="leadDelivered" class="lead-stat-value">—</div><div class="lead-stat-label">Delivered</div></div>
+                <div class="lead-stat"><div id="leadWaiting" class="lead-stat-value">—</div><div class="lead-stat-label">Waiting</div></div>
+            </div>
+            <section class="card">
+                <h2>Prompt requests</h2>
+                <div class="view-note">People who requested AI prompts from your Instagram comments.</div>
+                <div id="leadsStatus" class="analytics-status"></div>
+                <div id="leadsList" class="leads-list"><div class="lead-empty">Loading requests...</div></div>
+            </section>
+        </div>
+
         <div id="analyticsSection" class="hidden">
             <div class="stats-grid">
                 <div class="stat-card"><div id="statFollowers" class="stat-value">—</div><div class="stat-label">Followers</div></div>
@@ -256,6 +289,7 @@ const draftsList = document.getElementById("draftsList");
 const composerSection = document.getElementById("composerSection");
 const dashboardOverview = document.getElementById("dashboardOverview");
 const analyticsSection = document.getElementById("analyticsSection");
+const leadsSection = document.getElementById("leadsSection");
 const listSection = document.getElementById("listSection");
 const listTitle = document.getElementById("listTitle");
 const pageTitle = document.getElementById("pageTitle");
@@ -267,6 +301,8 @@ let cachedDrafts = [];
 let cachedInstagramPublished = [];
 let cachedInstagramAnalytics = null;
 let analyticsLoading = false;
+let cachedLeads = null;
+let leadsLoading = false;
 
 function setMessage(type, text) {
     generationMessage.className = "message" + (type ? " " + type : "");
@@ -1083,6 +1119,108 @@ function paintAnalytics(data) {
 }
 
 
+function formatLeadDate(value) {
+    if (!value) return "";
+    try { return new Date(value).toLocaleString(); }
+    catch (error) { return String(value); }
+}
+
+function renderLeads(data) {
+    const summary = data.summary || {};
+    const leads = Array.isArray(data.leads) ? data.leads : [];
+    document.getElementById("leadTotal").textContent = formatMetric(summary.total);
+    document.getElementById("leadUnique").textContent = formatMetric(summary.unique_people);
+    document.getElementById("leadDelivered").textContent = formatMetric(summary.delivered);
+    document.getElementById("leadWaiting").textContent = formatMetric(summary.waiting);
+
+    const list = document.getElementById("leadsList");
+    const status = document.getElementById("leadsStatus");
+    list.innerHTML = "";
+    status.textContent = leads.length ? "Latest " + leads.length + " recorded prompt request(s)." : "";
+
+    if (!leads.length) {
+        const empty = document.createElement("div");
+        empty.className = "lead-empty";
+        empty.textContent = "No prompt requests recorded yet.";
+        list.appendChild(empty);
+        return;
+    }
+
+    leads.forEach(function (lead) {
+        const card = document.createElement("div");
+        card.className = "lead-card";
+
+        const image = document.createElement("img");
+        image.className = "lead-image";
+        image.loading = "lazy";
+        image.alt = "Instagram post";
+        image.src = lead.post_thumbnail_url || lead.post_media_url || "";
+        image.onerror = function () { this.style.visibility = "hidden"; };
+
+        const body = document.createElement("div");
+        const person = document.createElement("div");
+        person.className = "lead-person";
+        person.textContent = lead.username ? "@" + lead.username : (lead.commenter_id ? "Instagram user " + lead.commenter_id : "Instagram user");
+        const post = document.createElement("div");
+        post.className = "lead-post";
+        post.textContent = lead.post_caption || (lead.media_id ? "Post " + lead.media_id : "Prompt request");
+        const meta = document.createElement("div");
+        meta.className = "lead-meta";
+        meta.textContent = formatLeadDate(lead.created_at) + (lead.comment_id ? " • Comment " + lead.comment_id : "");
+        body.appendChild(person);
+        body.appendChild(post);
+        body.appendChild(meta);
+
+        const actions = document.createElement("div");
+        actions.className = "lead-actions";
+        const badge = document.createElement("span");
+        badge.className = "lead-badge " + (lead.status || "");
+        badge.textContent = lead.status_label || lead.status || "Request";
+        actions.appendChild(badge);
+
+        const linkUrl = lead.post_permalink || lead.page_url || "";
+        if (linkUrl) {
+            const link = document.createElement("a");
+            link.className = "lead-link";
+            link.href = linkUrl;
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            link.textContent = lead.post_permalink ? "View Post" : "View Prompt Page";
+            actions.appendChild(link);
+        }
+
+        card.appendChild(image);
+        card.appendChild(body);
+        card.appendChild(actions);
+        list.appendChild(card);
+    });
+}
+
+async function loadLeads(force = false) {
+    if (leadsLoading) return;
+    if (cachedLeads && !force) {
+        renderLeads(cachedLeads);
+        return;
+    }
+    leadsLoading = true;
+    const status = document.getElementById("leadsStatus");
+    const list = document.getElementById("leadsList");
+    status.textContent = "Loading prompt requests...";
+    try {
+        const response = await fetch("/api/leads", { cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Could not load leads.");
+        cachedLeads = data;
+        renderLeads(data);
+    } catch (error) {
+        console.error("Leads error:", error);
+        status.textContent = error.message || "Could not load prompt requests.";
+        list.innerHTML = '<div class="lead-empty">Could not load requests.</div>';
+    } finally {
+        leadsLoading = false;
+    }
+}
+
 function formatOverviewDate(value) {
     if (!value) return "No scheduled post.";
     try {
@@ -1195,6 +1333,7 @@ function renderCurrentView() {
         drafts: ["Drafts", "Approved posts waiting for action", "Drafts"],
         scheduled: ["Scheduled", "Posts waiting for automatic publishing", "Scheduled Posts"],
         published: ["Published", "Posts successfully published to Instagram", "Published Posts"],
+        leads: ["Requests / Leads", "Instagram prompt requests and delivery status", ""],
         analytics: ["Analytics", "Live Instagram performance", ""]
     };
     const meta = names[currentView] || names.dashboard;
@@ -1206,7 +1345,8 @@ function renderCurrentView() {
     dashboardOverview.classList.toggle("hidden", currentView !== "dashboard");
     composerSection.classList.toggle("hidden", !showComposer);
     analyticsSection.classList.toggle("hidden", currentView !== "analytics");
-    listSection.classList.toggle("hidden", ["analytics", "dashboard"].includes(currentView));
+    leadsSection.classList.toggle("hidden", currentView !== "leads");
+    listSection.classList.toggle("hidden", ["analytics", "dashboard", "leads"].includes(currentView));
 
     navButtons.forEach(btn => btn.classList.toggle("active", btn.dataset.view === currentView));
 
@@ -1214,6 +1354,8 @@ function renderCurrentView() {
         renderDashboardOverview();
     } else if (currentView === "analytics") {
         renderAnalytics();
+    } else if (currentView === "leads") {
+        loadLeads(true);
     } else if (currentView === "published") {
         loadInstagramPublished();
     } else {

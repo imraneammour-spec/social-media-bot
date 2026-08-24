@@ -605,6 +605,103 @@ def log_prompt_request(
 
 
 # ==================================================
+# DASHBOARD - LEADS / PROMPT REQUESTS
+# ==================================================
+
+@app.route("/api/leads", methods=["GET"])
+def get_dashboard_leads():
+    """Return recent prompt requests enriched with Instagram post details.
+
+    A request is logged only after the private access request was sent. While
+    the user is still present in pending_access.json the status is waiting for
+    confirmation; once that pending record is cleared after the prompt button
+    is delivered, the request is shown as delivered.
+    """
+    requests_data = load_requests()
+    pending_data = load_json_file(PENDING_ACCESS_FILE, {})
+    if not isinstance(pending_data, dict):
+        pending_data = {}
+
+    # Read recent Instagram media once so every lead can show the post that
+    # generated it without making one API request per row.
+    media_map = {}
+    if INSTAGRAM_ACCESS_TOKEN:
+        try:
+            media_response = requests.get(
+                f"https://graph.instagram.com/{API_VERSION}/{INSTAGRAM_USER_ID}/media",
+                params={
+                    "fields": "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp",
+                    "limit": 50,
+                    "access_token": INSTAGRAM_ACCESS_TOKEN
+                },
+                timeout=30
+            )
+            media_data = media_response.json()
+            if media_response.ok and isinstance(media_data, dict):
+                for item in media_data.get("data", []):
+                    if not isinstance(item, dict):
+                        continue
+                    media_id = str(item.get("id", "") or "")
+                    if media_id:
+                        media_map[media_id] = item
+        except Exception as error:
+            print("LEADS MEDIA LOOKUP ERROR:", error)
+
+    leads = []
+    for item in reversed(requests_data[-200:]):
+        if not isinstance(item, dict):
+            continue
+
+        media_id = str(item.get("media_id", "") or "")
+        commenter_id = str(item.get("commenter_id", "") or "")
+        pending = pending_data.get(commenter_id) if commenter_id else None
+        media = media_map.get(media_id, {})
+
+        if pending:
+            status = "waiting_confirmation"
+            status_label = "Access request sent"
+        else:
+            status = "delivered"
+            status_label = "Prompt access delivered"
+
+        leads.append({
+            "request_key": str(item.get("request_key", "") or ""),
+            "media_id": media_id,
+            "comment_id": str(item.get("comment_id", "") or ""),
+            "commenter_id": commenter_id,
+            "username": str(item.get("username", "") or ""),
+            "page_url": str(item.get("page_url", "") or ""),
+            "created_at": str(item.get("created_at", "") or ""),
+            "status": status,
+            "status_label": status_label,
+            "post_caption": str(media.get("caption", "") or ""),
+            "post_media_type": str(media.get("media_type", "") or ""),
+            "post_media_url": str(media.get("media_url", "") or ""),
+            "post_thumbnail_url": str(media.get("thumbnail_url", "") or ""),
+            "post_permalink": str(media.get("permalink", "") or ""),
+            "post_timestamp": str(media.get("timestamp", "") or "")
+        })
+
+    waiting = sum(1 for item in leads if item["status"] == "waiting_confirmation")
+    delivered = sum(1 for item in leads if item["status"] == "delivered")
+    unique_people = len({
+        (item.get("commenter_id") or item.get("username") or "").lower()
+        for item in leads
+        if item.get("commenter_id") or item.get("username")
+    })
+
+    return {
+        "leads": leads,
+        "summary": {
+            "total": len(leads),
+            "waiting": waiting,
+            "delivered": delivered,
+            "unique_people": unique_people
+        }
+    }, 200
+
+
+# ==================================================
 # SMART COMMENT REPLIES
 # ==================================================
 
