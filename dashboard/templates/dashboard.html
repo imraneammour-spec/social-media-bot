@@ -127,6 +127,56 @@
         .lead-subtitle { margin-top:22px; margin-bottom:10px; font-size:13px; color:#c7c9d2; text-transform:uppercase; letter-spacing:.05em; }
         @media(max-width:1000px) { .lead-profiles { grid-template-columns:1fr; } }
         @media(max-width:850px) { .leads-stats { grid-template-columns:1fr 1fr; } .lead-card { grid-template-columns:56px minmax(0,1fr); } .lead-image { width:56px; height:56px; } .lead-actions { grid-column:1/-1; flex-direction:row; align-items:center; justify-content:flex-end; } .lead-profile { grid-template-columns:52px minmax(0,1fr) auto; } .lead-profile-image { width:52px; height:52px; } }
+
+        .system-summary {
+            display:grid;
+            grid-template-columns:repeat(4,minmax(0,1fr));
+            gap:12px;
+            margin-bottom:18px;
+        }
+        .system-summary-card {
+            background:var(--panel);
+            border:1px solid var(--line);
+            border-radius:16px;
+            padding:18px;
+        }
+        .system-summary-value { font-size:27px; font-weight:850; margin-bottom:7px; }
+        .system-summary-label { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+        .system-overall {
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:14px;
+            padding:14px 16px;
+            border:1px solid var(--line);
+            border-radius:14px;
+            margin-bottom:16px;
+            background:rgba(255,255,255,.02);
+        }
+        .system-overall strong { font-size:16px; }
+        .system-badge { border-radius:999px; padding:7px 11px; font-size:11px; font-weight:800; text-transform:uppercase; }
+        .system-badge.pass { color:#9bf7b0; background:#0d3219; border:1px solid #1c6d36; }
+        .system-badge.warn { color:#ffe184; background:#352b0d; border:1px solid #6a5718; }
+        .system-badge.fail { color:#ff9c9c; background:#371414; border:1px solid #742626; }
+        .system-checks { display:grid; gap:10px; }
+        .system-check {
+            display:grid;
+            grid-template-columns:1fr auto;
+            gap:14px;
+            align-items:center;
+            padding:14px 16px;
+            border:1px solid var(--line);
+            border-radius:14px;
+            background:rgba(255,255,255,.015);
+        }
+        .system-check-title { font-weight:750; margin-bottom:4px; }
+        .system-check-detail { color:var(--muted); font-size:12px; line-height:1.45; }
+        .system-rules { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-top:16px; }
+        .system-rule { border:1px solid var(--line); border-radius:13px; padding:13px; background:rgba(255,255,255,.015); }
+        .system-rule strong { display:block; margin-bottom:5px; }
+        .system-rule span { color:var(--muted); font-size:12px; }
+        .system-refresh { margin-top:16px; width:100%; }
+        @media(max-width:850px) { .system-summary { grid-template-columns:1fr 1fr; } .system-rules { grid-template-columns:1fr; } }
         @media(max-width:850px) { .analytics-posts { grid-template-columns:1fr; } }
         @media(max-width:850px) { .published-grid { grid-template-columns:1fr; } }
         @media(max-width: 850px) { .stats-grid { grid-template-columns:1fr 1fr; } }
@@ -145,6 +195,7 @@
             <button data-view="published">Published</button>
             <button data-view="leads">Requests / Leads</button>
             <button data-view="analytics">Analytics</button>
+            <button data-view="system">System Check</button>
         </div>
     </aside>
 
@@ -283,6 +334,32 @@
             </section>
         </div>
 
+
+
+        <div id="systemSection" class="hidden">
+            <div class="system-summary">
+                <div class="system-summary-card"><div id="systemRequests" class="system-summary-value">—</div><div class="system-summary-label">Requests logged</div></div>
+                <div class="system-summary-card"><div id="systemFollowPending" class="system-summary-value">—</div><div class="system-summary-label">Follow-ups pending</div></div>
+                <div class="system-summary-card"><div id="systemFollowSent" class="system-summary-value">—</div><div class="system-summary-label">Follow-ups sent</div></div>
+                <div class="system-summary-card"><div id="systemScheduled" class="system-summary-value">—</div><div class="system-summary-label">Scheduled posts</div></div>
+            </div>
+
+            <section class="card">
+                <h2>V0.1 readiness</h2>
+                <div class="view-note">Read-only checks. This page does not publish posts or send Instagram messages.</div>
+                <div id="systemOverall" class="system-overall">
+                    <div><strong>Checking system...</strong><div id="systemCheckedAt" class="system-check-detail"></div></div>
+                    <span class="system-badge warn">Checking</span>
+                </div>
+                <div id="systemChecks" class="system-checks"></div>
+
+                <div class="lead-subtitle">Anti-spam / duplicate rules</div>
+                <div id="systemRules" class="system-rules"></div>
+                <div id="systemNote" class="analytics-status"></div>
+                <button id="systemRefresh" class="btn btn-secondary system-refresh" type="button">Run Check Again</button>
+            </section>
+        </div>
+
         <div id="listSection">
         <div id="listTitle" class="section-title">Recent Drafts</div>
         <section class="card">
@@ -306,6 +383,7 @@ const composerSection = document.getElementById("composerSection");
 const dashboardOverview = document.getElementById("dashboardOverview");
 const analyticsSection = document.getElementById("analyticsSection");
 const leadsSection = document.getElementById("leadsSection");
+const systemSection = document.getElementById("systemSection");
 const listSection = document.getElementById("listSection");
 const listTitle = document.getElementById("listTitle");
 const pageTitle = document.getElementById("pageTitle");
@@ -319,6 +397,8 @@ let cachedInstagramAnalytics = null;
 let analyticsLoading = false;
 let cachedLeads = null;
 let leadsLoading = false;
+let systemLoading = false;
+let cachedSystemHealth = null;
 
 function setMessage(type, text) {
     generationMessage.className = "message" + (type ? " " + type : "");
@@ -1412,6 +1492,114 @@ document.getElementById("overviewOpenScheduled").addEventListener("click", () =>
 document.getElementById("overviewOpenAnalytics").addEventListener("click", () => switchView("analytics"));
 document.getElementById("overviewOpenPublished").addEventListener("click", () => switchView("published"));
 
+
+function systemBadgeClass(status) {
+    if (status === "pass" || status === "ready") return "pass";
+    if (status === "fail" || status === "not_ready") return "fail";
+    return "warn";
+}
+
+function formatSystemTime(value) {
+    if (!value) return "";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString();
+}
+
+function paintSystemCheck(data) {
+    cachedSystemHealth = data;
+    const overall = String(data.overall || "attention");
+    const overallBox = document.getElementById("systemOverall");
+    const badge = overallBox.querySelector(".system-badge");
+    const title = overallBox.querySelector("strong");
+
+    const labels = {
+        ready: "V0.1 core checks passed",
+        attention: "V0.1 needs attention",
+        not_ready: "V0.1 is not ready"
+    };
+    title.textContent = labels[overall] || "V0.1 system status";
+    badge.className = "system-badge " + systemBadgeClass(overall);
+    badge.textContent = overall.replaceAll("_", " ");
+    document.getElementById("systemCheckedAt").textContent = data.checked_at ? "Checked: " + formatSystemTime(data.checked_at) : "";
+
+    document.getElementById("systemRequests").textContent = formatMetric(data.requests_total || 0);
+    document.getElementById("systemFollowPending").textContent = formatMetric((data.followups || {}).pending || 0);
+    document.getElementById("systemFollowSent").textContent = formatMetric((data.followups || {}).sent || 0);
+    document.getElementById("systemScheduled").textContent = formatMetric((data.drafts || {}).scheduled || 0);
+
+    const checksBox = document.getElementById("systemChecks");
+    checksBox.innerHTML = "";
+    (Array.isArray(data.checks) ? data.checks : []).forEach(check => {
+        const row = document.createElement("div");
+        row.className = "system-check";
+        const copy = document.createElement("div");
+        const titleEl = document.createElement("div");
+        titleEl.className = "system-check-title";
+        titleEl.textContent = check.label || check.key || "Check";
+        const detail = document.createElement("div");
+        detail.className = "system-check-detail";
+        detail.textContent = check.detail || "";
+        copy.appendChild(titleEl);
+        copy.appendChild(detail);
+        const status = document.createElement("span");
+        status.className = "system-badge " + systemBadgeClass(check.status);
+        status.textContent = String(check.status || "warn").toUpperCase();
+        row.appendChild(copy);
+        row.appendChild(status);
+        checksBox.appendChild(row);
+    });
+
+    const rules = data.anti_spam || {};
+    const ruleItems = [
+        ["Duplicate guard", rules.duplicate_comment_guard ? "ON" : "OFF"],
+        ["Request cooldown", formatMetric(rules.request_cooldown_minutes) + " min"],
+        ["Smart reply interval", formatMetric(rules.smart_reply_min_interval_seconds) + " sec"],
+        ["Smart replies/hour", formatMetric(rules.smart_reply_max_per_hour)],
+        ["Follow-up delay", formatMetric(rules.followup_delay_hours) + " h"],
+        ["Follow-up cooldown", formatMetric(rules.followup_cooldown_days) + " days"]
+    ];
+    const rulesBox = document.getElementById("systemRules");
+    rulesBox.innerHTML = "";
+    ruleItems.forEach(([label, value]) => {
+        const card = document.createElement("div");
+        card.className = "system-rule";
+        const strong = document.createElement("strong");
+        strong.textContent = value;
+        const span = document.createElement("span");
+        span.textContent = label;
+        card.appendChild(strong);
+        card.appendChild(span);
+        rulesBox.appendChild(card);
+    });
+    document.getElementById("systemNote").textContent = data.note || "";
+}
+
+async function loadSystemCheck(force = false) {
+    if (systemLoading) return;
+    if (cachedSystemHealth && !force) {
+        paintSystemCheck(cachedSystemHealth);
+        return;
+    }
+
+    systemLoading = true;
+    const checksBox = document.getElementById("systemChecks");
+    checksBox.innerHTML = '<div class="view-note">Running read-only system checks...</div>';
+    try {
+        const response = await fetch("/api/v01-health", { cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "System check failed.");
+        paintSystemCheck(data);
+    } catch (error) {
+        console.error("System check error:", error);
+        checksBox.innerHTML = '<div class="analytics-error">' + (error.message || "System check failed.") + '</div>';
+    } finally {
+        systemLoading = false;
+    }
+}
+
+document.getElementById("systemRefresh").addEventListener("click", () => loadSystemCheck(true));
+
 function renderCurrentView() {
     const names = {
         dashboard: ["Content Dashboard", "Instagram automation • Online", "Recent Drafts"],
@@ -1420,7 +1608,8 @@ function renderCurrentView() {
         scheduled: ["Scheduled", "Posts waiting for automatic publishing", "Scheduled Posts"],
         published: ["Published", "Posts successfully published to Instagram", "Published Posts"],
         leads: ["Requests / Leads", "Instagram prompt requests and delivery status", ""],
-        analytics: ["Analytics", "Live Instagram performance", ""]
+        analytics: ["Analytics", "Live Instagram performance", ""],
+        system: ["System Check", "V0.1 readiness • read-only diagnostics", ""]
     };
     const meta = names[currentView] || names.dashboard;
     pageTitle.textContent = meta[0];
@@ -1432,7 +1621,8 @@ function renderCurrentView() {
     composerSection.classList.toggle("hidden", !showComposer);
     analyticsSection.classList.toggle("hidden", currentView !== "analytics");
     leadsSection.classList.toggle("hidden", currentView !== "leads");
-    listSection.classList.toggle("hidden", ["analytics", "dashboard", "leads"].includes(currentView));
+    systemSection.classList.toggle("hidden", currentView !== "system");
+    listSection.classList.toggle("hidden", ["analytics", "dashboard", "leads", "system"].includes(currentView));
 
     navButtons.forEach(btn => btn.classList.toggle("active", btn.dataset.view === currentView));
 
@@ -1442,6 +1632,8 @@ function renderCurrentView() {
         renderAnalytics();
     } else if (currentView === "leads") {
         loadLeads(true);
+    } else if (currentView === "system") {
+        loadSystemCheck(true);
     } else if (currentView === "published") {
         loadInstagramPublished();
     } else {

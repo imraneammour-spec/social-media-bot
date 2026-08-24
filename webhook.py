@@ -5023,6 +5023,250 @@ def start_dashboard_scheduler():
 start_dashboard_scheduler()
 
 
+
+# ============================================================
+# V0.1 SYSTEM / END-TO-END READINESS CHECK
+# ============================================================
+
+@app.route("/api/v01-health", methods=["GET"])
+def get_v01_health():
+    """Return a non-destructive V0.1 readiness snapshot.
+
+    This endpoint never sends Instagram messages, publishes content, or mutates
+    lead/follow-up state. It is intentionally read-only apart from a tiny
+    write/delete probe used to verify that the persistent data directory is
+    writable.
+    """
+
+    checks = []
+
+    def add_check(key, label, status, detail, critical=True):
+        checks.append({
+            "key": str(key),
+            "label": str(label),
+            "status": str(status),
+            "detail": str(detail or ""),
+            "critical": bool(critical),
+        })
+
+    # Persistent storage: V0.1 depends on Railway's mounted /app/data volume.
+    storage_ok = False
+    probe_path = DATA_DIR / ".v01_health_probe"
+    try:
+        probe_path.write_text("ok", encoding="utf-8")
+        storage_ok = probe_path.read_text(encoding="utf-8") == "ok"
+    except Exception as error:
+        add_check(
+            "storage",
+            "Persistent storage",
+            "fail",
+            f"Data directory is not writable: {error}",
+            True,
+        )
+    finally:
+        try:
+            probe_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    if storage_ok:
+        add_check(
+            "storage",
+            "Persistent storage",
+            "pass",
+            f"Writable data directory: {DATA_DIR}",
+            True,
+        )
+
+    # Scheduler thread: required for scheduled posts and delayed follow-ups.
+    scheduler_alive = any(
+        thread.name == "dashboard-scheduler" and thread.is_alive()
+        for thread in threading.enumerate()
+    )
+    add_check(
+        "scheduler",
+        "Background scheduler",
+        "pass" if scheduler_alive else "fail",
+        "Scheduled publishing and follow-up worker is running."
+        if scheduler_alive
+        else "dashboard-scheduler thread is not running.",
+        True,
+    )
+
+    # Duplicate protection / cooldown configuration.
+    processed = load_processed_comments()
+    processed_count = len(processed) if isinstance(processed, dict) else 0
+    add_check(
+        "duplicate_guard",
+        "Duplicate comment protection",
+        "pass",
+        f"Comment claim guard active • {processed_count} processed comment IDs stored.",
+        True,
+    )
+
+    # Core AI/content dependencies.
+    add_check(
+        "gemini",
+        "Gemini content engine",
+        "pass" if GEMINI_CLIENT is not None else "fail",
+        f"Configured model: {GEMINI_MODEL}"
+        if GEMINI_CLIENT is not None
+        else "Gemini API key/client is missing.",
+        True,
+    )
+
+    cloudinary_ready = bool(
+        CLOUDINARY_CLOUD_NAME and CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET
+    )
+    add_check(
+        "cloudinary",
+        "Cloudinary media hosting",
+        "pass" if cloudinary_ready else "fail",
+        "Cloudinary credentials are configured."
+        if cloudinary_ready
+        else "Cloudinary cloud name, API key or API secret is missing.",
+        True,
+    )
+
+    # Webhook configuration itself. Meta delivery is verified by the live flow;
+    # this check confirms the server has the values required to receive it.
+    webhook_configured = bool(VERIFY_TOKEN and INSTAGRAM_ACCESS_TOKEN)
+    add_check(
+        "webhook",
+        "Instagram webhook configuration",
+        "pass" if webhook_configured else "fail",
+        "Verify token and Instagram access token are configured."
+        if webhook_configured
+        else "Verify token or Instagram access token is missing.",
+        True,
+    )
+
+    # Read-only live Instagram account check. A transient Meta/network issue is
+    # reported as warning so it does not mutate or break the bot.
+    instagram_live = False
+    instagram_detail = "Instagram access token is missing."
+    instagram_account = {}
+    if INSTAGRAM_ACCESS_TOKEN and INSTAGRAM_USER_ID:
+        try:
+            response = requests.get(
+                f"https://graph.instagram.com/{API_VERSION}/{INSTAGRAM_USER_ID}",
+                params={
+                    "fields": "id,username",
+                    "access_token": INSTAGRAM_ACCESS_TOKEN,
+                },
+                timeout=10,
+            )
+            try:
+                payload = response.json()
+            except Exception:
+                payload = {}
+
+            if response.ok and isinstance(payload, dict):
+                instagram_live = True
+                instagram_account = {
+                    "id": str(payload.get("id", "") or ""),
+                    "username": str(payload.get("username", "") or ""),
+                }
+                username = instagram_account.get("username") or "connected account"
+                instagram_detail = f"Live Instagram API connection OK • @{username}."
+            else:
+                error_message = ""
+                if isinstance(payload, dict):
+                    error_message = str((payload.get("error") or {}).get("message", "") or "")
+                instagram_detail = error_message or f"Instagram API returned HTTP {response.status_code}."
+        except requests.RequestException as error:
+            instagram_detail = f"Instagram live check unavailable: {error}"
+
+    add_check(
+        "instagram_live",
+        "Live Instagram API",
+        "pass" if instagram_live else "warn",
+        instagram_detail,
+        False,
+    )
+
+    followups = load_followups()
+    followup_summary = {
+        "pending": 0,
+        "sending": 0,
+        "sent": 0,
+        "cancelled": 0,
+        "failed": 0,
+        "expired": 0,
+    }
+    for item in followups:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status", "") or "")
+        if status in followup_summary:
+            followup_summary[status] += 1
+
+    requests_data = load_requests()
+    latest_request = None
+    if requests_data:
+        raw = requests_data[-1]
+        if isinstance(raw, dict):
+            latest_request = {
+                "media_id": str(raw.get("media_id", "") or ""),
+                "comment_id": str(raw.get("comment_id", "") or ""),
+                "commenter_id": str(raw.get("commenter_id", "") or ""),
+                "username": str(raw.get("username", "") or ""),
+                "created_at": str(raw.get("created_at", "") or ""),
+            }
+
+    drafts = load_dashboard_drafts()
+    draft_summary = {
+        "approved": 0,
+        "scheduled": 0,
+        "published": 0,
+        "schedule_failed": 0,
+    }
+    for draft in drafts:
+        if not isinstance(draft, dict):
+            continue
+        status = str(draft.get("status", "") or "")
+        if status in draft_summary:
+            draft_summary[status] += 1
+
+    anti_spam = {
+        "request_cooldown_minutes": REQUEST_COOLDOWN_MINUTES,
+        "smart_reply_min_interval_seconds": SMART_REPLY_MIN_INTERVAL_SECONDS,
+        "smart_reply_max_per_hour": SMART_REPLY_MAX_PER_HOUR,
+        "followup_delay_hours": FOLLOWUP_DELAY_HOURS,
+        "followup_max_age_hours": FOLLOWUP_MAX_AGE_HOURS,
+        "followup_cooldown_days": FOLLOWUP_COOLDOWN_DAYS,
+        "duplicate_comment_guard": True,
+    }
+
+    critical_failures = [
+        item for item in checks
+        if item.get("critical") and item.get("status") == "fail"
+    ]
+    warnings = [item for item in checks if item.get("status") == "warn"]
+
+    if critical_failures:
+        overall = "not_ready"
+    elif warnings:
+        overall = "attention"
+    else:
+        overall = "ready"
+
+    return {
+        "overall": overall,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "checks": checks,
+        "anti_spam": anti_spam,
+        "followups": followup_summary,
+        "drafts": draft_summary,
+        "requests_total": len(requests_data),
+        "latest_request": latest_request,
+        "instagram_account": instagram_account,
+        "note": (
+            "This check is read-only and does not send DMs or publish content. "
+            "A final live end-to-end test is still required before freezing V0.1."
+        ),
+    }, 200
+
 # ============================================================
 # DASHBOARD
 # ============================================================
