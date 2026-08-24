@@ -3500,26 +3500,6 @@ def cloudinary_is_configured():
     )
 
 
-def cloudinary_sign_parameters(parameters):
-
-    items = []
-
-    for key in sorted(parameters.keys()):
-
-        value = parameters.get(key)
-
-        if value is None or value == "":
-            continue
-
-        items.append(f"{key}={value}")
-
-    signature_base = "&".join(items) + CLOUDINARY_API_SECRET
-
-    return hashlib.sha1(
-        signature_base.encode("utf-8")
-    ).hexdigest()
-
-
 def upload_draft_image_to_cloudinary(draft_id, image_number, file_path):
 
     if not cloudinary_is_configured():
@@ -3546,30 +3526,30 @@ def upload_draft_image_to_cloudinary(draft_id, image_number, file_path):
                 "Upload it again and approve a new draft."
             )
 
-        timestamp = int(datetime.now(timezone.utc).timestamp())
         public_id = f"{draft_id}-{int(image_number):02d}"
-
-        signed_parameters = {
-            "folder": "imran-prompts",
-            "format": "jpg",
-            "overwrite": "true",
-            "public_id": public_id,
-            "timestamp": timestamp
-        }
-
-        signature = cloudinary_sign_parameters(signed_parameters)
 
         upload_url = (
             "https://api.cloudinary.com/v1_1/"
             f"{CLOUDINARY_CLOUD_NAME}/image/upload"
         )
 
-        data = dict(signed_parameters)
-        data["api_key"] = CLOUDINARY_API_KEY
-        data["signature"] = signature
+        # Cloudinary supports HTTP Basic Authentication for server-side
+        # Upload API calls. This avoids manual signature generation entirely
+        # and prevents Invalid Signature errors caused by serialization
+        # differences between signed parameters.
+        data = {
+            "folder": "imran-prompts",
+            "format": "jpg",
+            "overwrite": "true",
+            "public_id": public_id
+        }
 
         response = requests.post(
             upload_url,
+            auth=(
+                CLOUDINARY_API_KEY,
+                CLOUDINARY_API_SECRET
+            ),
             data=data,
             files={
                 "file": (
@@ -3596,6 +3576,7 @@ def upload_draft_image_to_cloudinary(draft_id, image_number, file_path):
         if not secure_url.startswith("https://"):
             return None, "Cloudinary did not return a public HTTPS image URL."
 
+        print("Cloudinary hosted image:", secure_url)
         return secure_url, ""
 
     except requests.RequestException as error:
