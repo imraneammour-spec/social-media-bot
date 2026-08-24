@@ -43,6 +43,7 @@ PROCESSED_FILE = DATA_DIR / "processed_comments.json"
 PENDING_ACCESS_FILE = DATA_DIR / "pending_access.json"
 REQUESTS_FILE = DATA_DIR / "requests.json"
 SMART_REPLY_ACTIVITY_FILE = DATA_DIR / "smart_reply_activity.json"
+FOLLOWUPS_FILE = DATA_DIR / "followups.json"
 DRAFTS_FILE = DATA_DIR / "dashboard_drafts.json"
 DRAFT_IMAGES_DIR = DATA_DIR / "dashboard_drafts"
 
@@ -84,6 +85,9 @@ REQUEST_COOLDOWN_MINUTES = 10
 SMART_REPLY_MIN_INTERVAL_SECONDS = 15
 SMART_REPLY_MAX_PER_HOUR = 20
 SMART_REPLY_MAX_LENGTH = 180
+FOLLOWUP_DELAY_HOURS = 6
+FOLLOWUP_MAX_AGE_HOURS = 23
+FOLLOWUP_COOLDOWN_DAYS = 7
 
 PUBLIC_REPLY_MESSAGES = [
     "Sent! Check your DMs ✨",
@@ -605,6 +609,186 @@ def log_prompt_request(
 
 
 # ==================================================
+# AUTO FOLLOW-UP
+# ==================================================
+
+def load_followups():
+    data = load_json_file(FOLLOWUPS_FILE, [])
+    return data if isinstance(data, list) else []
+
+
+def _parse_iso_datetime(value):
+    try:
+        dt = datetime.fromisoformat(str(value or ""))
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def followup_due(item, now=None):
+    """Return True only inside the safe V1 follow-up window."""
+    if not isinstance(item, dict) or item.get("status") != "pending":
+        return False
+    created_at = _parse_iso_datetime(item.get("created_at"))
+    if not created_at:
+        return False
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    age_hours = (now.astimezone(timezone.utc) - created_at).total_seconds() / 3600
+    return FOLLOWUP_DELAY_HOURS <= age_hours < FOLLOWUP_MAX_AGE_HOURS
+
+
+def schedule_prompt_followup(recipient_id, page_url=""):
+    """Queue one follow-up after a user explicitly requested prompt access.
+
+    V1 anti-spam rules: at most one pending follow-up per person, and no new
+    follow-up if one was already sent in the last seven days.
+    """
+    recipient_id = str(recipient_id or "").strip()
+    if not recipient_id:
+        return False
+
+    now = datetime.now(timezone.utc)
+    with STATE_LOCK:
+        data = load_followups()
+
+        for item in data:
+            if str(item.get("recipient_id", "")) != recipient_id:
+                continue
+            if item.get("status") == "pending":
+                item["created_at"] = now.isoformat()
+                item["page_url"] = str(page_url or "")
+                save_json_file(FOLLOWUPS_FILE, data)
+                return True
+            if item.get("status") == "sent":
+                sent_at = _parse_iso_datetime(item.get("sent_at"))
+                if sent_at and (now - sent_at).total_seconds() < FOLLOWUP_COOLDOWN_DAYS * 86400:
+                    return False
+
+        data.append({
+            "id": uuid.uuid4().hex[:12],
+            "recipient_id": recipient_id,
+            "page_url": str(page_url or ""),
+            "status": "pending",
+            "created_at": now.isoformat(),
+            "sent_at": None,
+            "cancelled_at": None,
+            "error": ""
+        })
+        if len(data) > 2000:
+            data = data[-2000:]
+        return save_json_file(FOLLOWUPS_FILE, data)
+
+
+def cancel_pending_followups(recipient_id, reason="user_replied"):
+    recipient_id = str(recipient_id or "").strip()
+    if not recipient_id:
+        return
+    changed = False
+    with STATE_LOCK:
+        data = load_followups()
+        for item in data:
+            if str(item.get("recipient_id", "")) == recipient_id and item.get("status") == "pending":
+                item["status"] = "cancelled"
+                item["cancelled_at"] = datetime.now(timezone.utc).isoformat()
+                item["cancel_reason"] = str(reason or "")
+                changed = True
+        if changed:
+            save_json_file(FOLLOWUPS_FILE, data)
+
+
+def send_followup_message(recipient_id):
+    if not INSTAGRAM_ACCESS_TOKEN or not recipient_id:
+        return False, "Instagram access token or recipient is missing."
+
+    url = f"https://graph.instagram.com/{API_VERSION}/{INSTAGRAM_USER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {INSTAGRAM_ACCESS_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "recipient": {"id": str(recipient_id)},
+        "messaging_type": "RESPONSE",
+        "message": {
+            "text": (
+                "Hope the prompts helped ✨ If you want another set, "
+                "comment AI on any post and I’ll send it to you."
+            )
+        }
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        if response.ok:
+            return True, ""
+        return False, response.text[:500]
+    except requests.RequestException as error:
+        return False, str(error)[:500]
+
+
+def process_due_followups(now=None):
+    """Send due follow-ups once; expire anything outside the 23-hour window."""
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+
+    with STATE_LOCK:
+        data = load_followups()
+        due_ids = []
+        changed = False
+        for item in data:
+            if item.get("status") != "pending":
+                continue
+            created_at = _parse_iso_datetime(item.get("created_at"))
+            if not created_at:
+                item["status"] = "expired"
+                item["error"] = "Invalid created_at"
+                changed = True
+                continue
+            age_hours = (now - created_at).total_seconds() / 3600
+            if age_hours >= FOLLOWUP_MAX_AGE_HOURS:
+                item["status"] = "expired"
+                item["expired_at"] = now.isoformat()
+                changed = True
+            elif age_hours >= FOLLOWUP_DELAY_HOURS:
+                due_ids.append(str(item.get("id", "")))
+        if changed:
+            save_json_file(FOLLOWUPS_FILE, data)
+
+    for followup_id in due_ids:
+        with STATE_LOCK:
+            data = load_followups()
+            item = next((x for x in data if str(x.get("id", "")) == followup_id), None)
+            if not item or not followup_due(item, now=now):
+                continue
+            recipient_id = str(item.get("recipient_id", ""))
+            item["status"] = "sending"
+            save_json_file(FOLLOWUPS_FILE, data)
+
+        success, error_text = send_followup_message(recipient_id)
+
+        with STATE_LOCK:
+            data = load_followups()
+            item = next((x for x in data if str(x.get("id", "")) == followup_id), None)
+            if not item:
+                continue
+            if success:
+                item["status"] = "sent"
+                item["sent_at"] = datetime.now(timezone.utc).isoformat()
+                item["error"] = ""
+            else:
+                # Do not loop aggressively on API failures. Keep the item visible
+                # for diagnosis and require a new qualifying request later.
+                item["status"] = "failed"
+                item["failed_at"] = datetime.now(timezone.utc).isoformat()
+                item["error"] = str(error_text or "Follow-up failed")[:500]
+            save_json_file(FOLLOWUPS_FILE, data)
+
+
+# ==================================================
 # DASHBOARD - LEADS / PROMPT REQUESTS
 # ==================================================
 
@@ -774,6 +958,25 @@ def get_dashboard_leads():
     returning_people = sum(1 for item in profiles if item.get("request_count", 0) >= 2)
     hot_leads = sum(1 for item in profiles if item.get("temperature") == "hot")
 
+    followups = load_followups()
+    latest_followup_by_person = {}
+    for followup in followups:
+        if not isinstance(followup, dict):
+            continue
+        recipient_id = str(followup.get("recipient_id", "") or "")
+        if recipient_id:
+            latest_followup_by_person[recipient_id] = followup
+
+    for profile in profiles:
+        recipient_id = str(profile.get("commenter_id", "") or "")
+        followup = latest_followup_by_person.get(recipient_id, {})
+        profile["followup_status"] = str(followup.get("status", "") or "")
+        profile["followup_created_at"] = str(followup.get("created_at", "") or "")
+        profile["followup_sent_at"] = str(followup.get("sent_at", "") or "")
+
+    followup_pending = sum(1 for item in followups if item.get("status") == "pending")
+    followup_sent = sum(1 for item in followups if item.get("status") == "sent")
+
     return {
         "leads": leads,
         "profiles": profiles,
@@ -783,7 +986,9 @@ def get_dashboard_leads():
             "delivered": delivered,
             "unique_people": len(profiles),
             "returning_people": returning_people,
-            "hot_leads": hot_leads
+            "hot_leads": hot_leads,
+            "followup_pending": followup_pending,
+            "followup_sent": followup_sent
         }
     }, 200
 
@@ -3144,6 +3349,10 @@ def process_message_event(event):
     if not sender_id:
         return
 
+    # Any new inbound message means the person is already engaged, so a queued
+    # automatic follow-up is no longer necessary.
+    cancel_pending_followups(sender_id, "user_replied")
+
     text = str(
         message.get(
             "text",
@@ -3206,6 +3415,11 @@ def process_message_event(event):
 
         clear_pending_access(
             sender_id
+        )
+
+        schedule_prompt_followup(
+            sender_id,
+            page_url
         )
 
         print(
@@ -4774,6 +4988,7 @@ def dashboard_scheduler_loop():
     while True:
         try:
             process_due_scheduled_posts()
+            process_due_followups()
         except Exception as error:
             print("DASHBOARD SCHEDULER ERROR:", error)
         time.sleep(SCHEDULER_POLL_SECONDS)

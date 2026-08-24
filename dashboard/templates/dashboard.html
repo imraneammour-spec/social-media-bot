@@ -251,10 +251,12 @@
                 <div class="lead-stat"><div id="leadUnique" class="lead-stat-value">—</div><div class="lead-stat-label">People</div></div>
                 <div class="lead-stat"><div id="leadReturning" class="lead-stat-value">—</div><div class="lead-stat-label">Returning people</div></div>
                 <div class="lead-stat"><div id="leadHot" class="lead-stat-value">—</div><div class="lead-stat-label">Hot leads</div></div>
+                <div class="lead-stat"><div id="leadFollowPending" class="lead-stat-value">—</div><div class="lead-stat-label">Follow-ups pending</div></div>
+                <div class="lead-stat"><div id="leadFollowSent" class="lead-stat-value">—</div><div class="lead-stat-label">Follow-ups sent</div></div>
             </div>
             <section class="card">
                 <h2>Lead profiles</h2>
-                <div class="view-note">Repeat prompt requests are grouped by person. Hot = 3+ requests, Warm = 2, New = 1.</div>
+                <div class="view-note">Repeat prompt requests are grouped by person. Hot = 3+ requests, Warm = 2, New = 1. Auto follow-up is queued only after prompt access is delivered, waits 6 hours, sends at most once, and expires before 23 hours.</div>
                 <div id="leadsStatus" class="analytics-status"></div>
                 <div id="leadProfiles" class="lead-profiles"><div class="lead-empty">Loading lead profiles...</div></div>
                 <div class="lead-subtitle">Recent requests</div>
@@ -1147,6 +1149,8 @@ function renderLeads(data) {
     document.getElementById("leadUnique").textContent = formatMetric(summary.unique_people);
     document.getElementById("leadReturning").textContent = formatMetric(summary.returning_people);
     document.getElementById("leadHot").textContent = formatMetric(summary.hot_leads);
+    document.getElementById("leadFollowPending").textContent = formatMetric(summary.followup_pending);
+    document.getElementById("leadFollowSent").textContent = formatMetric(summary.followup_sent);
 
     const list = document.getElementById("leadsList");
     const profilesList = document.getElementById("leadProfiles");
@@ -1156,7 +1160,9 @@ function renderLeads(data) {
     status.textContent =
         (summary.delivered || 0) + " delivered • " +
         (summary.waiting || 0) + " waiting • " +
-        (summary.returning_people || 0) + " returning people.";
+        (summary.returning_people || 0) + " returning people • " +
+        (summary.followup_pending || 0) + " follow-up pending • " +
+        (summary.followup_sent || 0) + " sent.";
 
     if (!profiles.length) {
         const empty = document.createElement("div");
@@ -1182,11 +1188,15 @@ function renderLeads(data) {
 
             const meta = document.createElement("div");
             meta.className = "lead-profile-meta";
+            const followupLabel = profile.followup_status
+                ? profile.followup_status.replaceAll("_", " ")
+                : "not queued";
             meta.textContent =
                 formatMetric(profile.request_count) + " prompt request(s) • " +
                 formatMetric(profile.delivered_count) + " delivered • " +
                 formatMetric(profile.waiting_count) + " waiting\n" +
-                "Last activity: " + formatLeadDate(profile.last_activity);
+                "Last activity: " + formatLeadDate(profile.last_activity) + "\n" +
+                "Auto follow-up: " + followupLabel;
             meta.style.whiteSpace = "pre-line";
 
             body.appendChild(name);
