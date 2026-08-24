@@ -2,6 +2,7 @@ import os
 import re
 import json
 import html
+import hashlib
 import threading
 import uuid
 from pathlib import Path
@@ -57,6 +58,21 @@ GEMINI_API_KEY = os.getenv(
     "GEMINI_API_KEY"
 )
 
+CLOUDINARY_CLOUD_NAME = os.getenv(
+    "CLOUDINARY_CLOUD_NAME",
+    ""
+).strip()
+
+CLOUDINARY_API_KEY = os.getenv(
+    "CLOUDINARY_API_KEY",
+    ""
+).strip()
+
+CLOUDINARY_API_SECRET = os.getenv(
+    "CLOUDINARY_API_SECRET",
+    ""
+).strip()
+
 INSTAGRAM_USER_ID = "17841438617458289"
 
 API_VERSION = "v25.0"
@@ -98,6 +114,15 @@ if GEMINI_API_KEY:
     print("Gemini API key: OK")
 else:
     print("ERROR: GEMINI_API_KEY missing")
+
+if (
+    CLOUDINARY_CLOUD_NAME
+    and CLOUDINARY_API_KEY
+    and CLOUDINARY_API_SECRET
+):
+    print("Cloudinary media hosting: OK")
+else:
+    print("WARNING: Cloudinary media hosting is not configured")
 
 
 # ==================================================
@@ -3463,6 +3488,126 @@ def dashboard_draft_image(draft_id, filename):
 
 
 # ============================================================
+# DASHBOARD - CLOUDINARY MEDIA HOSTING
+# ============================================================
+
+def cloudinary_is_configured():
+
+    return bool(
+        CLOUDINARY_CLOUD_NAME
+        and CLOUDINARY_API_KEY
+        and CLOUDINARY_API_SECRET
+    )
+
+
+def cloudinary_sign_parameters(parameters):
+
+    items = []
+
+    for key in sorted(parameters.keys()):
+
+        value = parameters.get(key)
+
+        if value is None or value == "":
+            continue
+
+        items.append(f"{key}={value}")
+
+    signature_base = "&".join(items) + CLOUDINARY_API_SECRET
+
+    return hashlib.sha1(
+        signature_base.encode("utf-8")
+    ).hexdigest()
+
+
+def upload_draft_image_to_cloudinary(draft_id, image_number, file_path):
+
+    if not cloudinary_is_configured():
+        return None, (
+            "Cloudinary is not configured. "
+            "Add CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY "
+            "and CLOUDINARY_API_SECRET in Railway Variables."
+        )
+
+    try:
+        resolved_path = Path(file_path).resolve()
+
+        if not resolved_path.exists() or not resolved_path.is_file():
+            return None, "Draft image file was not found."
+
+        image_bytes = resolved_path.read_bytes()
+
+        if not image_bytes:
+            return None, "Draft image file is empty."
+
+        if not image_bytes.startswith(b"\xff\xd8\xff"):
+            return None, (
+                "The approved image is not a real JPEG file. "
+                "Upload it again and approve a new draft."
+            )
+
+        timestamp = int(datetime.now(timezone.utc).timestamp())
+        public_id = f"{draft_id}-{int(image_number):02d}"
+
+        signed_parameters = {
+            "folder": "imran-prompts",
+            "format": "jpg",
+            "overwrite": "true",
+            "public_id": public_id,
+            "timestamp": timestamp
+        }
+
+        signature = cloudinary_sign_parameters(signed_parameters)
+
+        upload_url = (
+            "https://api.cloudinary.com/v1_1/"
+            f"{CLOUDINARY_CLOUD_NAME}/image/upload"
+        )
+
+        data = dict(signed_parameters)
+        data["api_key"] = CLOUDINARY_API_KEY
+        data["signature"] = signature
+
+        response = requests.post(
+            upload_url,
+            data=data,
+            files={
+                "file": (
+                    f"{int(image_number):02d}.jpg",
+                    image_bytes,
+                    "image/jpeg"
+                )
+            },
+            timeout=60
+        )
+
+        print("Cloudinary upload:", response.status_code)
+
+        if not response.ok:
+            print(response.text)
+            return None, (
+                "Cloudinary could not host the image: "
+                + response.text[:500]
+            )
+
+        result = response.json()
+        secure_url = str(result.get("secure_url", "") or "").strip()
+
+        if not secure_url.startswith("https://"):
+            return None, "Cloudinary did not return a public HTTPS image URL."
+
+        return secure_url, ""
+
+    except requests.RequestException as error:
+        print("CLOUDINARY REQUEST ERROR:", error)
+        return None, "Cloudinary upload request failed: " + str(error)
+
+    except Exception as error:
+        print("CLOUDINARY UPLOAD ERROR:", error)
+        return None, "Could not prepare the image for Cloudinary: " + str(error)
+
+
+# ============================================================
 # DASHBOARD - INSTAGRAM PUBLISHING
 # ============================================================
 
@@ -3573,11 +3718,22 @@ def wait_for_instagram_container(creation_id, attempts=10, delay_seconds=2):
 
 def publish_instagram_draft(draft, public_base_url):
 
+    # Keep the old argument for compatibility, but do not use Railway
+    # as Instagram's media host. Meta's crawler can be blocked by the
+    # Railway edge even when the URL opens normally in a browser.
+    del public_base_url
+
     if not INSTAGRAM_ACCESS_TOKEN:
         return None, "Instagram access token is missing."
 
     if not INSTAGRAM_USER_ID:
         return None, "Instagram user ID is missing."
+
+    if not cloudinary_is_configured():
+        return None, (
+            "Cloudinary is not configured. Add CLOUDINARY_CLOUD_NAME, "
+            "CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET in Railway Variables."
+        )
 
     images = draft.get("images", [])
 
@@ -3587,28 +3743,54 @@ def publish_instagram_draft(draft, public_base_url):
     caption = build_instagram_caption(draft)
     draft_id = str(draft.get("id", "") or "").strip()
 
-    public_base_url = str(public_base_url or "").rstrip("/")
-
-    if not public_base_url:
-        return None, "Public application URL is missing."
+    if not draft_id:
+        return None, "Draft ID is missing."
 
     image_urls = []
 
-    for relative_path in images:
+    for image_number, relative_path in enumerate(images[:10], start=1):
 
-        filename = Path(str(relative_path)).name
+        relative_path = str(relative_path or "").strip()
 
-        if not filename:
+        if not relative_path:
             continue
 
-        image_urls.append(
-            f"{public_base_url}/draft-image/{draft_id}/{filename}"
+        local_path = DATA_DIR / relative_path
+
+        try:
+            resolved_path = local_path.resolve()
+            resolved_data_dir = DATA_DIR.resolve()
+
+            if resolved_data_dir not in resolved_path.parents:
+                return None, "Invalid draft image path."
+        except Exception:
+            return None, "Invalid draft image path."
+
+        media_url, upload_error = upload_draft_image_to_cloudinary(
+            draft_id,
+            image_number,
+            resolved_path
         )
+
+        if not media_url:
+            return None, upload_error or "Could not host the draft image."
+
+        # Unique URL per attempt prevents Meta from reusing a previous
+        # failed fetch result.
+        separator = "&" if "?" in media_url else "?"
+        media_url = (
+            media_url
+            + separator
+            + "ig_publish="
+            + uuid.uuid4().hex[:10]
+        )
+
+        print("Instagram hosted media URL:", media_url)
+        image_urls.append(media_url)
 
     if not image_urls:
         return None, "No publishable images were found."
 
-    # Single image post
     if len(image_urls) == 1:
 
         container, error_text = instagram_graph_post(
@@ -3624,13 +3806,12 @@ def publish_instagram_draft(draft, public_base_url):
 
         creation_id = str(container["id"])
 
-        wait_for_instagram_container(creation_id)
+        if not wait_for_instagram_container(creation_id):
+            return None, "Instagram could not prepare the image container."
 
         published, error_text = instagram_graph_post(
             f"{INSTAGRAM_USER_ID}/media_publish",
-            {
-                "creation_id": creation_id
-            }
+            {"creation_id": creation_id}
         )
 
         if not published or not published.get("id"):
@@ -3638,7 +3819,6 @@ def publish_instagram_draft(draft, public_base_url):
 
         return str(published["id"]), ""
 
-    # Carousel post
     child_ids = []
 
     for image_url in image_urls[:10]:
@@ -3655,8 +3835,14 @@ def publish_instagram_draft(draft, public_base_url):
             return None, error_text or "Could not create a carousel item."
 
         child_id = str(child["id"])
-        wait_for_instagram_container(child_id)
+
+        if not wait_for_instagram_container(child_id):
+            return None, "Instagram could not prepare a carousel image."
+
         child_ids.append(child_id)
+
+    if len(child_ids) < 2:
+        return None, "Instagram carousel requires at least 2 images."
 
     parent, error_text = instagram_graph_post(
         f"{INSTAGRAM_USER_ID}/media",
@@ -3671,13 +3857,13 @@ def publish_instagram_draft(draft, public_base_url):
         return None, error_text or "Could not create the carousel container."
 
     parent_id = str(parent["id"])
-    wait_for_instagram_container(parent_id)
+
+    if not wait_for_instagram_container(parent_id):
+        return None, "Instagram could not prepare the carousel container."
 
     published, error_text = instagram_graph_post(
         f"{INSTAGRAM_USER_ID}/media_publish",
-        {
-            "creation_id": parent_id
-        }
+        {"creation_id": parent_id}
     )
 
     if not published or not published.get("id"):
