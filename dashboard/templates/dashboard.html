@@ -48,6 +48,13 @@
         .message.success { display: block; background: #18251d; border: 1px solid #2a5034; }
         .message.error { display: block; background: #2b1818; border: 1px solid #633333; }
         .empty-drafts { color: #8d8d96; font-size: 13px; }
+        .hidden { display: none !important; }
+        .stats-grid { display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:14px; margin-bottom:22px; }
+        .stat-card { background:#151518; border:1px solid #29292f; border-radius:16px; padding:18px; }
+        .stat-value { font-size:28px; font-weight:800; margin-bottom:6px; }
+        .stat-label { font-size:12px; color:#9999a3; text-transform:uppercase; letter-spacing:.06em; }
+        .view-note { color:#8d8d96; font-size:13px; margin-top:6px; }
+        @media(max-width: 850px) { .stats-grid { grid-template-columns:1fr 1fr; } }
         @media(max-width: 850px) { .app { grid-template-columns: 1fr; } .sidebar { display: none; } .grid { grid-template-columns: 1fr; } .main { padding: 18px; } }
     </style>
 </head>
@@ -56,23 +63,24 @@
     <aside class="sidebar">
         <div class="logo">IMRAN <span>PROMPTS</span></div>
         <div class="nav">
-            <button class="active">Dashboard</button>
-            <button>New Post</button>
-            <button>Drafts</button>
-            <button>Scheduled</button>
-            <button>Published</button>
-            <button>Analytics</button>
+            <button class="active" data-view="dashboard">Dashboard</button>
+            <button data-view="new">New Post</button>
+            <button data-view="drafts">Drafts</button>
+            <button data-view="scheduled">Scheduled</button>
+            <button data-view="published">Published</button>
+            <button data-view="analytics">Analytics</button>
         </div>
     </aside>
 
     <main class="main">
         <div class="header">
             <div>
-                <h1>Content Dashboard</h1>
-                <div class="status">Instagram automation • Online</div>
+                <h1 id="pageTitle">Content Dashboard</h1>
+                <div id="pageSubtitle" class="status">Instagram automation • Online</div>
             </div>
         </div>
 
+        <div id="composerSection">
         <div class="grid">
             <section class="card">
                 <h2>1. Upload Post</h2>
@@ -115,10 +123,27 @@
             </div>
         </section>
 
-        <div class="section-title">Recent Drafts</div>
+        </div>
+
+        <div id="analyticsSection" class="hidden">
+            <div class="stats-grid">
+                <div class="stat-card"><div id="statTotal" class="stat-value">0</div><div class="stat-label">Total</div></div>
+                <div class="stat-card"><div id="statDrafts" class="stat-value">0</div><div class="stat-label">Drafts</div></div>
+                <div class="stat-card"><div id="statScheduled" class="stat-value">0</div><div class="stat-label">Scheduled</div></div>
+                <div class="stat-card"><div id="statPublished" class="stat-value">0</div><div class="stat-label">Published</div></div>
+            </div>
+            <section class="card">
+                <h2>Content overview</h2>
+                <div id="analyticsText" class="view-note">Loading analytics...</div>
+            </section>
+        </div>
+
+        <div id="listSection">
+        <div id="listTitle" class="section-title">Recent Drafts</div>
         <section class="card">
             <div id="draftsList" class="empty-drafts">Loading drafts...</div>
         </section>
+        </div>
     </main>
 </div>
 
@@ -132,7 +157,16 @@ const cta = document.getElementById("cta");
 const hashtags = document.getElementById("hashtags");
 const approveButton = document.getElementById("approveButton");
 const draftsList = document.getElementById("draftsList");
+const composerSection = document.getElementById("composerSection");
+const analyticsSection = document.getElementById("analyticsSection");
+const listSection = document.getElementById("listSection");
+const listTitle = document.getElementById("listTitle");
+const pageTitle = document.getElementById("pageTitle");
+const pageSubtitle = document.getElementById("pageSubtitle");
+const navButtons = Array.from(document.querySelectorAll(".nav button[data-view]"));
 let currentDraftId = "";
+let currentView = "dashboard";
+let cachedDrafts = [];
 
 function setMessage(type, text) {
     generationMessage.className = "message" + (type ? " " + type : "");
@@ -428,96 +462,160 @@ async function loadDrafts() {
     try {
         const response = await fetch("/api/drafts");
         const data = await response.json();
-        const drafts = Array.isArray(data.drafts) ? data.drafts : [];
-
-        if (!drafts.length) {
-            draftsList.className = "empty-drafts";
-            draftsList.textContent = "No drafts yet.";
-            return;
-        }
-
-        draftsList.className = "";
-        draftsList.innerHTML = "";
-
-        drafts.forEach(function (draft) {
-            const row = document.createElement("div");
-            row.className = "draft";
-
-            const content = document.createElement("div");
-            content.className = "draft-content";
-
-            const title = document.createElement("div");
-            title.className = "draft-title";
-            title.textContent = "Draft " + (draft.id || "");
-
-            const text = document.createElement("div");
-            text.className = "draft-caption";
-            text.textContent = draft.caption || "No caption";
-
-            const scheduleInfo = document.createElement("div");
-            scheduleInfo.style.marginTop = "6px";
-            scheduleInfo.style.fontSize = "12px";
-            scheduleInfo.style.opacity = "0.7";
-
-            if (draft.status === "scheduled" && draft.scheduled_local) {
-                try {
-                    const scheduledDate = new Date(draft.scheduled_local);
-                    scheduleInfo.textContent = "Scheduled: " + scheduledDate.toLocaleString();
-                } catch (error) {
-                    scheduleInfo.textContent = "Scheduled";
-                }
-            } else if (draft.status === "schedule_failed") {
-                scheduleInfo.textContent = "Schedule failed: " + (draft.schedule_error || "Publishing failed");
-                scheduleInfo.style.opacity = "1";
-            }
-
-            const actions = document.createElement("div");
-            actions.style.display = "flex";
-            actions.style.alignItems = "center";
-            actions.style.gap = "8px";
-
-            const badge = document.createElement("span");
-            badge.className = "badge";
-            badge.textContent = draft.status || "approved";
-
-            actions.appendChild(badge);
-
-            if (["approved", "schedule_failed"].includes(draft.status || "")) {
-                const selectButton = document.createElement("button");
-                selectButton.type = "button";
-                selectButton.textContent = "Select";
-                selectButton.style.border = "0";
-                selectButton.style.borderRadius = "10px";
-                selectButton.style.padding = "8px 10px";
-                selectButton.style.cursor = "pointer";
-                selectButton.style.fontWeight = "700";
-
-                selectButton.addEventListener("click", function () {
-                    currentDraftId = draft.id || "";
-                    setMessage(
-                        "success",
-                        "Draft selected. You can publish it now or schedule it."
-                    );
-                });
-
-                actions.appendChild(selectButton);
-            }
-
-            content.appendChild(title);
-            content.appendChild(text);
-            if (scheduleInfo.textContent) {
-                content.appendChild(scheduleInfo);
-            }
-            row.appendChild(content);
-            row.appendChild(actions);
-            draftsList.appendChild(row);
-        });
+        cachedDrafts = Array.isArray(data.drafts) ? data.drafts : [];
+        renderCurrentView();
     } catch (error) {
         console.error("Load drafts error:", error);
         draftsList.className = "empty-drafts";
         draftsList.textContent = "Could not load drafts.";
     }
 }
+
+function filteredDraftsForView() {
+    if (currentView === "drafts") {
+        return cachedDrafts.filter(d => ["approved", "schedule_failed"].includes(d.status || ""));
+    }
+    if (currentView === "scheduled") {
+        return cachedDrafts.filter(d => d.status === "scheduled");
+    }
+    if (currentView === "published") {
+        return cachedDrafts.filter(d => d.status === "published");
+    }
+    return cachedDrafts;
+}
+
+function renderDraftList(items) {
+    if (!items.length) {
+        draftsList.className = "empty-drafts";
+        draftsList.textContent = "No items here yet.";
+        return;
+    }
+
+    draftsList.className = "";
+    draftsList.innerHTML = "";
+
+    items.forEach(function (draft) {
+        const row = document.createElement("div");
+        row.className = "draft";
+
+        const content = document.createElement("div");
+        content.className = "draft-content";
+
+        const title = document.createElement("div");
+        title.className = "draft-title";
+        title.textContent = "Draft " + (draft.id || "");
+
+        const text = document.createElement("div");
+        text.className = "draft-caption";
+        text.textContent = draft.caption || "No caption";
+
+        const info = document.createElement("div");
+        info.style.marginTop = "6px";
+        info.style.fontSize = "12px";
+        info.style.opacity = "0.72";
+
+        if (draft.status === "scheduled" && draft.scheduled_local) {
+            try { info.textContent = "Scheduled: " + new Date(draft.scheduled_local).toLocaleString(); }
+            catch (e) { info.textContent = "Scheduled"; }
+        } else if (draft.status === "published" && draft.published_at) {
+            try { info.textContent = "Published: " + new Date(draft.published_at).toLocaleString(); }
+            catch (e) { info.textContent = "Published"; }
+        } else if (draft.status === "schedule_failed") {
+            info.textContent = "Schedule failed: " + (draft.schedule_error || "Publishing failed");
+            info.style.opacity = "1";
+        } else if (draft.created_at) {
+            try { info.textContent = "Created: " + new Date(draft.created_at).toLocaleString(); }
+            catch (e) {}
+        }
+
+        const actions = document.createElement("div");
+        actions.style.display = "flex";
+        actions.style.alignItems = "center";
+        actions.style.gap = "8px";
+
+        const badge = document.createElement("span");
+        badge.className = "badge";
+        badge.textContent = draft.status || "approved";
+        actions.appendChild(badge);
+
+        if (["approved", "schedule_failed"].includes(draft.status || "")) {
+            const selectButton = document.createElement("button");
+            selectButton.type = "button";
+            selectButton.textContent = "Select";
+            selectButton.style.border = "0";
+            selectButton.style.borderRadius = "10px";
+            selectButton.style.padding = "8px 10px";
+            selectButton.style.cursor = "pointer";
+            selectButton.style.fontWeight = "700";
+            selectButton.addEventListener("click", function () {
+                currentDraftId = draft.id || "";
+                switchView("new");
+                setMessage("success", "Draft selected. You can publish it now or schedule it.");
+                window.scrollTo({ top: 0, behavior: "smooth" });
+            });
+            actions.appendChild(selectButton);
+        }
+
+        content.appendChild(title);
+        content.appendChild(text);
+        if (info.textContent) content.appendChild(info);
+        row.appendChild(content);
+        row.appendChild(actions);
+        draftsList.appendChild(row);
+    });
+}
+
+function renderAnalytics() {
+    const total = cachedDrafts.length;
+    const drafts = cachedDrafts.filter(d => ["approved", "schedule_failed"].includes(d.status || "")).length;
+    const scheduled = cachedDrafts.filter(d => d.status === "scheduled").length;
+    const published = cachedDrafts.filter(d => d.status === "published").length;
+    document.getElementById("statTotal").textContent = total;
+    document.getElementById("statDrafts").textContent = drafts;
+    document.getElementById("statScheduled").textContent = scheduled;
+    document.getElementById("statPublished").textContent = published;
+    const rate = total ? Math.round((published / total) * 100) : 0;
+    document.getElementById("analyticsText").textContent =
+        published + " published post(s), " + scheduled + " scheduled, " + drafts +
+        " waiting/failed. Published share: " + rate + "% of recent dashboard items.";
+}
+
+function renderCurrentView() {
+    const names = {
+        dashboard: ["Content Dashboard", "Instagram automation • Online", "Recent Drafts"],
+        new: ["New Post", "Create, approve, publish or schedule", "Recent Drafts"],
+        drafts: ["Drafts", "Approved posts waiting for action", "Drafts"],
+        scheduled: ["Scheduled", "Posts waiting for automatic publishing", "Scheduled Posts"],
+        published: ["Published", "Posts successfully published to Instagram", "Published Posts"],
+        analytics: ["Analytics", "Dashboard publishing overview", ""]
+    };
+    const meta = names[currentView] || names.dashboard;
+    pageTitle.textContent = meta[0];
+    pageSubtitle.textContent = meta[1];
+    listTitle.textContent = meta[2] || "Recent Drafts";
+
+    const showComposer = ["dashboard", "new"].includes(currentView);
+    composerSection.classList.toggle("hidden", !showComposer);
+    analyticsSection.classList.toggle("hidden", currentView !== "analytics");
+    listSection.classList.toggle("hidden", currentView === "analytics");
+
+    navButtons.forEach(btn => btn.classList.toggle("active", btn.dataset.view === currentView));
+
+    if (currentView === "analytics") renderAnalytics();
+    else renderDraftList(filteredDraftsForView());
+}
+
+function switchView(view) {
+    currentView = view || "dashboard";
+    renderCurrentView();
+}
+
+navButtons.forEach(function (button) {
+    button.addEventListener("click", function () {
+        switchView(button.dataset.view);
+        window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+});
 
 function updateScheduleMinimum() {
     const input = document.getElementById("schedule");
