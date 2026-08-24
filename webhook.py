@@ -608,6 +608,92 @@ def log_prompt_request(
 # DASHBOARD - LEADS / PROMPT REQUESTS
 # ==================================================
 
+def aggregate_lead_profiles(leads):
+    """Group prompt requests into one lightweight profile per Instagram person.
+
+    Temperature is intentionally simple for V1: 1 request = new, 2 = warm,
+    3+ = hot. It is an engagement signal, not a claim that a person will buy.
+    """
+    grouped = {}
+
+    for lead in leads or []:
+        if not isinstance(lead, dict):
+            continue
+
+        commenter_id = str(lead.get("commenter_id", "") or "").strip()
+        username = str(lead.get("username", "") or "").strip()
+        identity = commenter_id or username.lower()
+        if not identity:
+            continue
+
+        created_at = str(lead.get("created_at", "") or "")
+        profile = grouped.get(identity)
+        if profile is None:
+            profile = {
+                "commenter_id": commenter_id,
+                "username": username,
+                "request_count": 0,
+                "delivered_count": 0,
+                "waiting_count": 0,
+                "first_activity": created_at,
+                "last_activity": created_at,
+                "latest_media_id": "",
+                "latest_post_caption": "",
+                "latest_post_thumbnail_url": "",
+                "latest_post_media_url": "",
+                "latest_post_permalink": "",
+                "latest_page_url": "",
+            }
+            grouped[identity] = profile
+
+        profile["request_count"] += 1
+        if lead.get("status") == "waiting_confirmation":
+            profile["waiting_count"] += 1
+        else:
+            profile["delivered_count"] += 1
+
+        if username:
+            profile["username"] = username
+        if commenter_id:
+            profile["commenter_id"] = commenter_id
+
+        if not profile["first_activity"] or (created_at and created_at < profile["first_activity"]):
+            profile["first_activity"] = created_at
+
+        is_latest = not profile["last_activity"] or (created_at and created_at >= profile["last_activity"] )
+        if is_latest:
+            profile["last_activity"] = created_at
+            profile["latest_media_id"] = str(lead.get("media_id", "") or "")
+            profile["latest_post_caption"] = str(lead.get("post_caption", "") or "")
+            profile["latest_post_thumbnail_url"] = str(lead.get("post_thumbnail_url", "") or "")
+            profile["latest_post_media_url"] = str(lead.get("post_media_url", "") or "")
+            profile["latest_post_permalink"] = str(lead.get("post_permalink", "") or "")
+            profile["latest_page_url"] = str(lead.get("page_url", "") or "")
+
+    profiles = []
+    for profile in grouped.values():
+        count = profile["request_count"]
+        if count >= 3:
+            temperature = "hot"
+        elif count == 2:
+            temperature = "warm"
+        else:
+            temperature = "new"
+        profile["temperature"] = temperature
+        profiles.append(profile)
+
+    rank = {"hot": 3, "warm": 2, "new": 1}
+    profiles.sort(
+        key=lambda item: (
+            rank.get(item.get("temperature"), 0),
+            item.get("request_count", 0),
+            item.get("last_activity", ""),
+        ),
+        reverse=True,
+    )
+    return profiles
+
+
 @app.route("/api/leads", methods=["GET"])
 def get_dashboard_leads():
     """Return recent prompt requests enriched with Instagram post details.
@@ -684,19 +770,20 @@ def get_dashboard_leads():
 
     waiting = sum(1 for item in leads if item["status"] == "waiting_confirmation")
     delivered = sum(1 for item in leads if item["status"] == "delivered")
-    unique_people = len({
-        (item.get("commenter_id") or item.get("username") or "").lower()
-        for item in leads
-        if item.get("commenter_id") or item.get("username")
-    })
+    profiles = aggregate_lead_profiles(leads)
+    returning_people = sum(1 for item in profiles if item.get("request_count", 0) >= 2)
+    hot_leads = sum(1 for item in profiles if item.get("temperature") == "hot")
 
     return {
         "leads": leads,
+        "profiles": profiles,
         "summary": {
             "total": len(leads),
             "waiting": waiting,
             "delivered": delivered,
-            "unique_people": unique_people
+            "unique_people": len(profiles),
+            "returning_people": returning_people,
+            "hot_leads": hot_leads
         }
     }, 200
 
