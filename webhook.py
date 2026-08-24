@@ -3443,6 +3443,219 @@ def get_instagram_published_posts():
         return {"error": "Could not load Instagram posts."}, 500
 
 
+
+@app.route("/api/instagram-analytics", methods=["GET"])
+def get_instagram_analytics():
+    """Return resilient Instagram analytics for the latest media.
+
+    Likes/comments come from media fields. Media insights are requested
+    one metric at a time so an unsupported metric for one media type does
+    not break the whole Analytics page.
+    """
+    if not INSTAGRAM_ACCESS_TOKEN:
+        return {"error": "Instagram access token is missing."}, 500
+
+    def as_int(value):
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            try:
+                return int(float(value or 0))
+            except (TypeError, ValueError):
+                return 0
+
+    def graph_get(path, params=None):
+        query = dict(params or {})
+        query["access_token"] = INSTAGRAM_ACCESS_TOKEN
+        response = requests.get(
+            f"https://graph.instagram.com/{API_VERSION}/{path.lstrip('/')}",
+            params=query,
+            timeout=30
+        )
+        try:
+            data = response.json()
+        except Exception:
+            data = {}
+        return response, data
+
+    try:
+        # Account-level summary. These fields are available for professional
+        # Instagram accounts; if one is unavailable we still return media data.
+        account = {
+            "id": str(INSTAGRAM_USER_ID),
+            "username": "",
+            "followers_count": 0,
+            "media_count": 0
+        }
+        account_response, account_data = graph_get(
+            str(INSTAGRAM_USER_ID),
+            {"fields": "id,username,followers_count,media_count"}
+        )
+        if account_response.ok and isinstance(account_data, dict):
+            account["id"] = str(account_data.get("id", INSTAGRAM_USER_ID) or INSTAGRAM_USER_ID)
+            account["username"] = str(account_data.get("username", "") or "")
+            account["followers_count"] = as_int(account_data.get("followers_count"))
+            account["media_count"] = as_int(account_data.get("media_count"))
+
+        # Get the latest posts and the reliable public engagement counters.
+        media_response, media_data = graph_get(
+            f"{INSTAGRAM_USER_ID}/media",
+            {
+                "fields": (
+                    "id,caption,media_type,media_url,thumbnail_url,permalink,"
+                    "timestamp,like_count,comments_count"
+                ),
+                "limit": 12
+            }
+        )
+
+        # Some account/API combinations can reject one of the counters.
+        # Retry with the basic fields instead of failing the whole page.
+        if not media_response.ok:
+            media_response, media_data = graph_get(
+                f"{INSTAGRAM_USER_ID}/media",
+                {
+                    "fields": (
+                        "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp"
+                    ),
+                    "limit": 12
+                }
+            )
+
+        if not media_response.ok:
+            error_message = (
+                (media_data.get("error") or {}).get("message")
+                if isinstance(media_data, dict)
+                else ""
+            ) or "Could not load Instagram analytics."
+            return {"error": error_message}, media_response.status_code
+
+        raw_posts = media_data.get("data", []) if isinstance(media_data, dict) else []
+        if not isinstance(raw_posts, list):
+            raw_posts = []
+
+        posts = []
+        totals = {
+            "posts": 0,
+            "likes": 0,
+            "comments": 0,
+            "reach": 0,
+            "saved": 0,
+            "shares": 0,
+            "views": 0,
+            "impressions": 0
+        }
+
+        # Query each insight separately. Instagram exposes different metrics
+        # depending on IMAGE / CAROUSEL_ALBUM / VIDEO / REELS, so unsupported
+        # metrics are simply omitted rather than turning the endpoint into an error.
+        insight_metrics = ("reach", "saved", "shares", "views", "impressions")
+
+        for raw in raw_posts:
+            if not isinstance(raw, dict):
+                continue
+
+            media_id = str(raw.get("id", "") or "")
+            if not media_id:
+                continue
+
+            post = {
+                "id": media_id,
+                "caption": str(raw.get("caption", "") or ""),
+                "media_type": str(raw.get("media_type", "") or ""),
+                "media_url": str(raw.get("media_url", "") or ""),
+                "thumbnail_url": str(raw.get("thumbnail_url", "") or ""),
+                "permalink": str(raw.get("permalink", "") or ""),
+                "timestamp": str(raw.get("timestamp", "") or ""),
+                "like_count": as_int(raw.get("like_count")),
+                "comments_count": as_int(raw.get("comments_count")),
+                "reach": 0,
+                "saved": 0,
+                "shares": 0,
+                "views": 0,
+                "impressions": 0,
+                "available_insights": []
+            }
+
+            # If counters were absent from the media list response, try the
+            # individual media node. Failure here is harmless.
+            if "like_count" not in raw or "comments_count" not in raw:
+                count_response, count_data = graph_get(
+                    media_id,
+                    {"fields": "like_count,comments_count"}
+                )
+                if count_response.ok and isinstance(count_data, dict):
+                    post["like_count"] = as_int(count_data.get("like_count"))
+                    post["comments_count"] = as_int(count_data.get("comments_count"))
+
+            for metric in insight_metrics:
+                insight_response, insight_data = graph_get(
+                    f"{media_id}/insights",
+                    {"metric": metric}
+                )
+                if not insight_response.ok or not isinstance(insight_data, dict):
+                    continue
+
+                rows = insight_data.get("data", [])
+                if not isinstance(rows, list) or not rows:
+                    continue
+
+                value = 0
+                first = rows[0] if isinstance(rows[0], dict) else {}
+                # Current API responses can expose a direct value or a values array.
+                if "value" in first:
+                    value = as_int(first.get("value"))
+                else:
+                    values = first.get("values", [])
+                    if isinstance(values, list) and values:
+                        last_value = values[-1] if isinstance(values[-1], dict) else {}
+                        value = as_int(last_value.get("value"))
+
+                post[metric] = value
+                post["available_insights"].append(metric)
+
+            totals["posts"] += 1
+            totals["likes"] += post["like_count"]
+            totals["comments"] += post["comments_count"]
+            totals["reach"] += post["reach"]
+            totals["saved"] += post["saved"]
+            totals["shares"] += post["shares"]
+            totals["views"] += post["views"]
+            totals["impressions"] += post["impressions"]
+
+            posts.append(post)
+
+        # Highest-engagement first for the "Top posts" area.
+        ranked = sorted(
+            posts,
+            key=lambda item: (
+                item.get("like_count", 0)
+                + item.get("comments_count", 0)
+                + item.get("saved", 0)
+                + item.get("shares", 0)
+            ),
+            reverse=True
+        )
+
+        return {
+            "account": account,
+            "totals": totals,
+            "posts": posts,
+            "top_posts": ranked[:6],
+            "note": (
+                "Reach, saves, shares, views and impressions depend on the "
+                "Instagram media type and the permissions available to this account."
+            )
+        }, 200
+
+    except requests.RequestException as error:
+        print("INSTAGRAM ANALYTICS CONNECTION ERROR:", error)
+        return {"error": "Could not connect to Instagram analytics."}, 502
+    except Exception as error:
+        print("INSTAGRAM ANALYTICS ERROR:", error)
+        return {"error": "Could not load Instagram analytics."}, 500
+
+
 @app.route("/api/published-permalink/<draft_id>", methods=["GET"])
 def get_published_permalink(draft_id):
     """Return and cache the official Instagram permalink for a published draft."""

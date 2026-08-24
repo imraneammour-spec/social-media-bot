@@ -64,6 +64,17 @@
         .published-actions button { border:0; border-radius:10px; padding:9px 12px; cursor:pointer; font-weight:700; }
         .published-open { background:#fff; color:#111; }
         .published-open:disabled { opacity:.55; cursor:not-allowed; }
+
+        .analytics-status { color:#8d8d96; font-size:12px; margin-top:8px; }
+        .analytics-error { color:#ffb4b4; }
+        .analytics-posts { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; margin-top:16px; }
+        .analytics-post { display:grid; grid-template-columns:92px 1fr; gap:12px; background:#111114; border:1px solid #29292f; border-radius:14px; overflow:hidden; }
+        .analytics-post img { width:92px; height:92px; object-fit:cover; background:#0f0f12; }
+        .analytics-post-body { padding:11px 12px 11px 0; min-width:0; }
+        .analytics-post-caption { font-size:12px; line-height:1.35; color:#d5d5dc; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:8px; }
+        .analytics-metrics { display:flex; gap:10px; flex-wrap:wrap; color:#9999a3; font-size:11px; }
+        .analytics-metrics strong { color:#fff; }
+        @media(max-width:850px) { .analytics-posts { grid-template-columns:1fr; } }
         @media(max-width:850px) { .published-grid { grid-template-columns:1fr; } }
         @media(max-width: 850px) { .stats-grid { grid-template-columns:1fr 1fr; } }
         @media(max-width: 850px) { .app { grid-template-columns: 1fr; } .sidebar { display: none; } .grid { grid-template-columns: 1fr; } .main { padding: 18px; } }
@@ -138,14 +149,20 @@
 
         <div id="analyticsSection" class="hidden">
             <div class="stats-grid">
-                <div class="stat-card"><div id="statTotal" class="stat-value">0</div><div class="stat-label">Total</div></div>
-                <div class="stat-card"><div id="statDrafts" class="stat-value">0</div><div class="stat-label">Drafts</div></div>
-                <div class="stat-card"><div id="statScheduled" class="stat-value">0</div><div class="stat-label">Scheduled</div></div>
-                <div class="stat-card"><div id="statPublished" class="stat-value">0</div><div class="stat-label">Published</div></div>
+                <div class="stat-card"><div id="statFollowers" class="stat-value">—</div><div class="stat-label">Followers</div></div>
+                <div class="stat-card"><div id="statLikes" class="stat-value">—</div><div class="stat-label">Likes</div></div>
+                <div class="stat-card"><div id="statComments" class="stat-value">—</div><div class="stat-label">Comments</div></div>
+                <div class="stat-card"><div id="statReach" class="stat-value">—</div><div class="stat-label">Reach</div></div>
+                <div class="stat-card"><div id="statSaves" class="stat-value">—</div><div class="stat-label">Saves</div></div>
+                <div class="stat-card"><div id="statViews" class="stat-value">—</div><div class="stat-label">Views</div></div>
+                <div class="stat-card"><div id="statShares" class="stat-value">—</div><div class="stat-label">Shares</div></div>
+                <div class="stat-card"><div id="statPostsAnalyzed" class="stat-value">—</div><div class="stat-label">Posts analyzed</div></div>
             </div>
             <section class="card">
-                <h2>Content overview</h2>
-                <div id="analyticsText" class="view-note">Loading analytics...</div>
+                <h2>Instagram performance</h2>
+                <div id="analyticsText" class="view-note">Open Analytics to load live Instagram data.</div>
+                <div id="analyticsStatus" class="analytics-status"></div>
+                <div id="analyticsPosts" class="analytics-posts"></div>
             </section>
         </div>
 
@@ -179,6 +196,8 @@ let currentDraftId = "";
 let currentView = "dashboard";
 let cachedDrafts = [];
 let cachedInstagramPublished = [];
+let cachedInstagramAnalytics = null;
+let analyticsLoading = false;
 
 function setMessage(type, text) {
     generationMessage.className = "message" + (type ? " " + type : "");
@@ -862,19 +881,136 @@ function renderDraftList(items) {
     });
 }
 
-function renderAnalytics() {
-    const total = cachedDrafts.length;
-    const drafts = cachedDrafts.filter(d => ["approved", "schedule_failed"].includes(d.status || "")).length;
-    const scheduled = cachedDrafts.filter(d => d.status === "scheduled").length;
-    const published = cachedDrafts.filter(d => d.status === "published").length;
-    document.getElementById("statTotal").textContent = total;
-    document.getElementById("statDrafts").textContent = drafts;
-    document.getElementById("statScheduled").textContent = scheduled;
-    document.getElementById("statPublished").textContent = published;
-    const rate = total ? Math.round((published / total) * 100) : 0;
-    document.getElementById("analyticsText").textContent =
-        published + " published post(s), " + scheduled + " scheduled, " + drafts +
-        " waiting/failed. Published share: " + rate + "% of recent dashboard items.";
+function formatMetric(value) {
+    const number = Number(value || 0);
+    if (!Number.isFinite(number)) return "0";
+    return new Intl.NumberFormat().format(number);
+}
+
+function renderAnalyticsPost(post) {
+    const card = document.createElement("div");
+    card.className = "analytics-post";
+
+    const image = document.createElement("img");
+    image.loading = "lazy";
+    image.alt = "Instagram post";
+    image.src = post.thumbnail_url || post.media_url || "";
+    image.onerror = function () {
+        this.style.display = "none";
+    };
+
+    const body = document.createElement("div");
+    body.className = "analytics-post-body";
+
+    const captionText = document.createElement("div");
+    captionText.className = "analytics-post-caption";
+    captionText.textContent = post.caption || "Instagram post";
+
+    const metrics = document.createElement("div");
+    metrics.className = "analytics-metrics";
+    const items = [
+        ["Likes", post.like_count],
+        ["Comments", post.comments_count],
+        ["Reach", post.reach],
+        ["Saves", post.saved],
+        ["Shares", post.shares],
+        ["Views", post.views]
+    ];
+    items.forEach(([label, value]) => {
+        const span = document.createElement("span");
+        span.innerHTML = "<strong>" + formatMetric(value) + "</strong> " + label;
+        metrics.appendChild(span);
+    });
+
+    body.appendChild(captionText);
+    body.appendChild(metrics);
+    card.appendChild(image);
+    card.appendChild(body);
+
+    if (post.permalink) {
+        card.style.cursor = "pointer";
+        card.title = "Open on Instagram";
+        card.addEventListener("click", function () {
+            window.open(post.permalink, "_blank", "noopener,noreferrer");
+        });
+    }
+    return card;
+}
+
+async function renderAnalytics(force = false) {
+    const analyticsText = document.getElementById("analyticsText");
+    const analyticsStatus = document.getElementById("analyticsStatus");
+    const analyticsPosts = document.getElementById("analyticsPosts");
+
+    if (analyticsLoading) return;
+
+    if (cachedInstagramAnalytics && !force) {
+        paintAnalytics(cachedInstagramAnalytics);
+        return;
+    }
+
+    analyticsLoading = true;
+    analyticsText.textContent = "Loading live Instagram analytics...";
+    analyticsStatus.textContent = "";
+    analyticsStatus.classList.remove("analytics-error");
+    analyticsPosts.innerHTML = "";
+
+    try {
+        const response = await fetch("/api/instagram-analytics", { cache: "no-store" });
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.error || "Could not load Instagram analytics.");
+        }
+
+        cachedInstagramAnalytics = data;
+        paintAnalytics(data);
+
+    } catch (error) {
+        console.error("Instagram analytics error:", error);
+        analyticsText.textContent = "Instagram analytics could not be loaded.";
+        analyticsStatus.textContent = error.message || "Unknown Instagram analytics error.";
+        analyticsStatus.classList.add("analytics-error");
+    } finally {
+        analyticsLoading = false;
+    }
+}
+
+function paintAnalytics(data) {
+    const account = data.account || {};
+    const totals = data.totals || {};
+    const topPosts = Array.isArray(data.top_posts) ? data.top_posts : [];
+    const analyticsText = document.getElementById("analyticsText");
+    const analyticsStatus = document.getElementById("analyticsStatus");
+    const analyticsPosts = document.getElementById("analyticsPosts");
+
+    document.getElementById("statFollowers").textContent = formatMetric(account.followers_count);
+    document.getElementById("statLikes").textContent = formatMetric(totals.likes);
+    document.getElementById("statComments").textContent = formatMetric(totals.comments);
+    document.getElementById("statReach").textContent = formatMetric(totals.reach);
+    document.getElementById("statSaves").textContent = formatMetric(totals.saved);
+    document.getElementById("statViews").textContent = formatMetric(totals.views || totals.impressions);
+    document.getElementById("statShares").textContent = formatMetric(totals.shares);
+    document.getElementById("statPostsAnalyzed").textContent = formatMetric(totals.posts);
+
+    const username = account.username ? "@" + account.username : "Instagram";
+    analyticsText.textContent =
+        username + " • Live totals from the latest " +
+        formatMetric(totals.posts) + " posts.";
+
+    analyticsStatus.textContent = data.note || "";
+    analyticsStatus.classList.remove("analytics-error");
+    analyticsPosts.innerHTML = "";
+
+    if (!topPosts.length) {
+        const empty = document.createElement("div");
+        empty.className = "view-note";
+        empty.textContent = "No Instagram posts available for analytics yet.";
+        analyticsPosts.appendChild(empty);
+        return;
+    }
+
+    topPosts.forEach(post => analyticsPosts.appendChild(renderAnalyticsPost(post)));
 }
 
 function renderCurrentView() {
@@ -884,7 +1020,7 @@ function renderCurrentView() {
         drafts: ["Drafts", "Approved posts waiting for action", "Drafts"],
         scheduled: ["Scheduled", "Posts waiting for automatic publishing", "Scheduled Posts"],
         published: ["Published", "Posts successfully published to Instagram", "Published Posts"],
-        analytics: ["Analytics", "Dashboard publishing overview", ""]
+        analytics: ["Analytics", "Live Instagram performance", ""]
     };
     const meta = names[currentView] || names.dashboard;
     pageTitle.textContent = meta[0];
