@@ -54,6 +54,17 @@
         .stat-value { font-size:28px; font-weight:800; margin-bottom:6px; }
         .stat-label { font-size:12px; color:#9999a3; text-transform:uppercase; letter-spacing:.06em; }
         .view-note { color:#8d8d96; font-size:13px; margin-top:6px; }
+        .published-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+        .published-card { background:#111114; border:1px solid #2b2b31; border-radius:16px; overflow:hidden; }
+        .published-image { width:100%; aspect-ratio:1/1; object-fit:cover; display:block; background:#0f0f12; }
+        .published-body { padding:16px; }
+        .published-caption { color:#d8d8de; font-size:13px; line-height:1.45; margin-bottom:12px; }
+        .published-meta { display:grid; gap:6px; color:#92929c; font-size:11px; margin-bottom:14px; word-break:break-all; }
+        .published-actions { display:flex; gap:8px; align-items:center; }
+        .published-actions button { border:0; border-radius:10px; padding:9px 12px; cursor:pointer; font-weight:700; }
+        .published-open { background:#fff; color:#111; }
+        .published-open:disabled { opacity:.55; cursor:not-allowed; }
+        @media(max-width:850px) { .published-grid { grid-template-columns:1fr; } }
         @media(max-width: 850px) { .stats-grid { grid-template-columns:1fr 1fr; } }
         @media(max-width: 850px) { .app { grid-template-columns: 1fr; } .sidebar { display: none; } .grid { grid-template-columns: 1fr; } .main { padding: 18px; } }
     </style>
@@ -538,10 +549,104 @@ function filteredDraftsForView() {
     return cachedDrafts;
 }
 
+function renderPublishedList(items) {
+    draftsList.className = "published-grid";
+    draftsList.innerHTML = "";
+
+    items.forEach(function (draft) {
+        const card = document.createElement("article");
+        card.className = "published-card";
+
+        const image = document.createElement("img");
+        image.className = "published-image";
+        image.alt = "Published Instagram post";
+        image.loading = "lazy";
+        image.src = (Array.isArray(draft.image_urls) && draft.image_urls[0])
+            ? draft.image_urls[0]
+            : "";
+        if (!image.src) image.style.display = "none";
+
+        const body = document.createElement("div");
+        body.className = "published-body";
+
+        const captionText = document.createElement("div");
+        captionText.className = "published-caption";
+        captionText.textContent = draft.caption || "No caption";
+
+        const meta = document.createElement("div");
+        meta.className = "published-meta";
+
+        const publishedLine = document.createElement("div");
+        if (draft.published_at) {
+            try { publishedLine.textContent = "Published: " + new Date(draft.published_at).toLocaleString(); }
+            catch (e) { publishedLine.textContent = "Published"; }
+        } else {
+            publishedLine.textContent = "Published";
+        }
+
+        const idLine = document.createElement("div");
+        idLine.textContent = "Instagram Media ID: " + (draft.instagram_media_id || "Unavailable");
+        meta.appendChild(publishedLine);
+        meta.appendChild(idLine);
+
+        const actions = document.createElement("div");
+        actions.className = "published-actions";
+
+        const badge = document.createElement("span");
+        badge.className = "badge";
+        badge.textContent = "Published";
+        actions.appendChild(badge);
+
+        const openButton = document.createElement("button");
+        openButton.type = "button";
+        openButton.className = "published-open";
+        openButton.textContent = "View on Instagram";
+        openButton.disabled = !draft.instagram_media_id;
+        openButton.addEventListener("click", async function () {
+            const originalText = openButton.textContent;
+            openButton.disabled = true;
+            openButton.textContent = "Opening...";
+            try {
+                let permalink = draft.instagram_permalink || "";
+                if (!permalink) {
+                    const response = await fetch(
+                        "/api/published-permalink/" + encodeURIComponent(draft.id || "")
+                    );
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.error || "Could not open Instagram post.");
+                    permalink = data.permalink || "";
+                    draft.instagram_permalink = permalink;
+                }
+                if (!permalink) throw new Error("Instagram permalink is unavailable.");
+                window.open(permalink, "_blank", "noopener,noreferrer");
+            } catch (error) {
+                console.error("Open Instagram post error:", error);
+                setMessage("error", error.message);
+            } finally {
+                openButton.disabled = !draft.instagram_media_id;
+                openButton.textContent = originalText;
+            }
+        });
+        actions.appendChild(openButton);
+
+        body.appendChild(captionText);
+        body.appendChild(meta);
+        body.appendChild(actions);
+        card.appendChild(image);
+        card.appendChild(body);
+        draftsList.appendChild(card);
+    });
+}
+
 function renderDraftList(items) {
     if (!items.length) {
         draftsList.className = "empty-drafts";
         draftsList.textContent = "No items here yet.";
+        return;
+    }
+
+    if (currentView === "published") {
+        renderPublishedList(items);
         return;
     }
 

@@ -3355,22 +3355,96 @@ def get_dashboard_drafts():
         if not isinstance(images, list):
             images = []
 
+        image_urls = []
+        draft_id = str(draft.get("id", "") or "")
+        for image_path in images:
+            filename = Path(str(image_path or "")).name
+            if draft_id and filename:
+                image_urls.append(
+                    url_for(
+                        "dashboard_draft_image",
+                        draft_id=draft_id,
+                        filename=filename
+                    )
+                )
+
         result.append({
-            "id": draft.get("id", ""),
+            "id": draft_id,
             "status": draft.get("status", ""),
             "caption": draft.get("caption", ""),
             "cta": draft.get("cta", ""),
             "hashtags": draft.get("hashtags", ""),
             "image_count": len(images),
+            "image_urls": image_urls,
             "created_at": draft.get("created_at", ""),
             "scheduled_for": draft.get("scheduled_for"),
             "scheduled_local": draft.get("scheduled_local"),
             "scheduled_timezone": draft.get("scheduled_timezone"),
             "schedule_error": draft.get("schedule_error"),
-            "published_at": draft.get("published_at")
+            "published_at": draft.get("published_at"),
+            "instagram_media_id": draft.get("instagram_media_id"),
+            "instagram_permalink": draft.get("instagram_permalink")
         })
 
     return {"drafts": result}, 200
+
+
+@app.route("/api/published-permalink/<draft_id>", methods=["GET"])
+def get_published_permalink(draft_id):
+    """Return and cache the official Instagram permalink for a published draft."""
+    safe_draft_id = str(draft_id or "").strip()
+    if not safe_draft_id:
+        return {"error": "Draft ID is required."}, 400
+
+    with STATE_LOCK:
+        drafts = load_dashboard_drafts()
+        draft = next(
+            (item for item in drafts if str(item.get("id", "")) == safe_draft_id),
+            None
+        )
+        if not draft:
+            return {"error": "Draft not found."}, 404
+        if draft.get("status") != "published":
+            return {"error": "This draft is not published."}, 409
+        cached_permalink = str(draft.get("instagram_permalink", "") or "").strip()
+        media_id = str(draft.get("instagram_media_id", "") or "").strip()
+
+    if cached_permalink:
+        return {"success": True, "permalink": cached_permalink}, 200
+    if not media_id:
+        return {"error": "Instagram Media ID is missing for this published post."}, 404
+
+    try:
+        response = requests.get(
+            f"https://graph.facebook.com/{API_VERSION}/{media_id}",
+            params={
+                "fields": "permalink",
+                "access_token": INSTAGRAM_ACCESS_TOKEN
+            },
+            timeout=30
+        )
+        data = response.json()
+        if not response.ok:
+            error_message = (data.get("error") or {}).get("message") or "Could not get Instagram permalink."
+            return {"error": error_message}, 502
+
+        permalink = str(data.get("permalink", "") or "").strip()
+        if not permalink:
+            return {"error": "Instagram did not return a permalink."}, 502
+
+        with STATE_LOCK:
+            drafts = load_dashboard_drafts()
+            for item in drafts:
+                if str(item.get("id", "")) == safe_draft_id:
+                    item["instagram_permalink"] = permalink
+                    break
+            save_json_file(DRAFTS_FILE, drafts)
+
+        return {"success": True, "permalink": permalink}, 200
+
+    except Exception as error:
+        print("INSTAGRAM PERMALINK ERROR:", error)
+        return {"error": "Could not get Instagram permalink."}, 500
 
 
 # ============================================================
