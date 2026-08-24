@@ -3344,6 +3344,337 @@ def get_dashboard_drafts():
 
 
 # ============================================================
+# DASHBOARD - DRAFT IMAGE SERVING
+# ============================================================
+
+@app.route("/draft-image/<draft_id>/<filename>", methods=["GET"])
+def dashboard_draft_image(draft_id, filename):
+
+    safe_draft_id = secure_filename(str(draft_id or ""))
+    safe_filename = secure_filename(str(filename or ""))
+
+    if not safe_draft_id or not safe_filename:
+        return Response(status=404)
+
+    file_path = DRAFT_IMAGES_DIR / safe_draft_id / safe_filename
+
+    try:
+        resolved_path = file_path.resolve()
+        resolved_root = DRAFT_IMAGES_DIR.resolve()
+
+        if resolved_root not in resolved_path.parents:
+            return Response(status=404)
+
+        if not resolved_path.exists() or not resolved_path.is_file():
+            return Response(status=404)
+
+        response = send_file(resolved_path)
+        response.headers["Cache-Control"] = "public, max-age=3600"
+        return response
+
+    except Exception as error:
+        print("DRAFT IMAGE ERROR:", error)
+        return Response(status=404)
+
+
+# ============================================================
+# DASHBOARD - INSTAGRAM PUBLISHING
+# ============================================================
+
+def build_instagram_caption(draft):
+
+    parts = []
+
+    caption = str(draft.get("caption", "") or "").strip()
+    cta = str(draft.get("cta", "") or "").strip()
+    hashtags = str(draft.get("hashtags", "") or "").strip()
+
+    if caption:
+        parts.append(caption)
+
+    if cta:
+        parts.append(cta)
+
+    if hashtags:
+        parts.append(hashtags)
+
+    return "\n\n".join(parts).strip()
+
+
+def instagram_graph_post(path, payload):
+
+    url = (
+        f"https://graph.instagram.com/"
+        f"{API_VERSION}/"
+        f"{path.lstrip('/')}"
+    )
+
+    data = dict(payload or {})
+    data["access_token"] = INSTAGRAM_ACCESS_TOKEN
+
+    response = requests.post(
+        url,
+        data=data,
+        timeout=60
+    )
+
+    print(
+        "Instagram Graph POST:",
+        path,
+        response.status_code
+    )
+
+    if not response.ok:
+        print(response.text)
+        return None, response.text
+
+    try:
+        return response.json(), ""
+    except Exception:
+        return None, "Invalid JSON response from Instagram."
+
+
+def instagram_container_status(creation_id):
+
+    url = (
+        f"https://graph.instagram.com/"
+        f"{API_VERSION}/"
+        f"{creation_id}"
+    )
+
+    params = {
+        "fields": "status_code,status",
+        "access_token": INSTAGRAM_ACCESS_TOKEN
+    }
+
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            timeout=30
+        )
+
+        if not response.ok:
+            print("Container status error:", response.text)
+            return ""
+
+        data = response.json()
+        return str(data.get("status_code", "") or "").upper()
+
+    except Exception as error:
+        print("CONTAINER STATUS ERROR:", error)
+        return ""
+
+
+def wait_for_instagram_container(creation_id, attempts=10, delay_seconds=2):
+
+    import time
+
+    for _ in range(attempts):
+
+        status = instagram_container_status(creation_id)
+
+        if status in {"FINISHED", "PUBLISHED"}:
+            return True
+
+        if status in {"ERROR", "EXPIRED"}:
+            return False
+
+        time.sleep(delay_seconds)
+
+    # Image containers are often publishable before status is returned.
+    return True
+
+
+def publish_instagram_draft(draft, public_base_url):
+
+    if not INSTAGRAM_ACCESS_TOKEN:
+        return None, "Instagram access token is missing."
+
+    if not INSTAGRAM_USER_ID:
+        return None, "Instagram user ID is missing."
+
+    images = draft.get("images", [])
+
+    if not isinstance(images, list) or not images:
+        return None, "This draft has no images."
+
+    caption = build_instagram_caption(draft)
+    draft_id = str(draft.get("id", "") or "").strip()
+
+    public_base_url = str(public_base_url or "").rstrip("/")
+
+    if not public_base_url:
+        return None, "Public application URL is missing."
+
+    image_urls = []
+
+    for relative_path in images:
+
+        filename = Path(str(relative_path)).name
+
+        if not filename:
+            continue
+
+        image_urls.append(
+            f"{public_base_url}/draft-image/{draft_id}/{filename}"
+        )
+
+    if not image_urls:
+        return None, "No publishable images were found."
+
+    # Single image post
+    if len(image_urls) == 1:
+
+        container, error_text = instagram_graph_post(
+            f"{INSTAGRAM_USER_ID}/media",
+            {
+                "image_url": image_urls[0],
+                "caption": caption
+            }
+        )
+
+        if not container or not container.get("id"):
+            return None, error_text or "Could not create Instagram media container."
+
+        creation_id = str(container["id"])
+
+        wait_for_instagram_container(creation_id)
+
+        published, error_text = instagram_graph_post(
+            f"{INSTAGRAM_USER_ID}/media_publish",
+            {
+                "creation_id": creation_id
+            }
+        )
+
+        if not published or not published.get("id"):
+            return None, error_text or "Could not publish the Instagram post."
+
+        return str(published["id"]), ""
+
+    # Carousel post
+    child_ids = []
+
+    for image_url in image_urls[:10]:
+
+        child, error_text = instagram_graph_post(
+            f"{INSTAGRAM_USER_ID}/media",
+            {
+                "image_url": image_url,
+                "is_carousel_item": "true"
+            }
+        )
+
+        if not child or not child.get("id"):
+            return None, error_text or "Could not create a carousel item."
+
+        child_id = str(child["id"])
+        wait_for_instagram_container(child_id)
+        child_ids.append(child_id)
+
+    parent, error_text = instagram_graph_post(
+        f"{INSTAGRAM_USER_ID}/media",
+        {
+            "media_type": "CAROUSEL",
+            "children": ",".join(child_ids),
+            "caption": caption
+        }
+    )
+
+    if not parent or not parent.get("id"):
+        return None, error_text or "Could not create the carousel container."
+
+    parent_id = str(parent["id"])
+    wait_for_instagram_container(parent_id)
+
+    published, error_text = instagram_graph_post(
+        f"{INSTAGRAM_USER_ID}/media_publish",
+        {
+            "creation_id": parent_id
+        }
+    )
+
+    if not published or not published.get("id"):
+        return None, error_text or "Could not publish the Instagram carousel."
+
+    return str(published["id"]), ""
+
+
+@app.route("/api/publish-draft", methods=["POST"])
+def publish_dashboard_draft():
+
+    payload = request.get_json(silent=True) or {}
+    draft_id = str(payload.get("draft_id", "") or "").strip()
+
+    if not draft_id:
+        return {"error": "Draft ID is required."}, 400
+
+    with STATE_LOCK:
+        drafts = load_dashboard_drafts()
+
+        draft = next(
+            (
+                item
+                for item in drafts
+                if str(item.get("id", "")) == draft_id
+            ),
+            None
+        )
+
+        if not draft:
+            return {"error": "Draft not found."}, 404
+
+        if draft.get("status") == "published":
+            return {
+                "error": "This draft has already been published.",
+                "instagram_media_id": draft.get("instagram_media_id")
+            }, 409
+
+        # Work with a copy outside the lock while the network request runs.
+        draft_copy = dict(draft)
+
+    public_base_url = request.url_root.rstrip("/")
+
+    instagram_media_id, error_text = publish_instagram_draft(
+        draft_copy,
+        public_base_url
+    )
+
+    if not instagram_media_id:
+        return {
+            "error": error_text or "Instagram publishing failed."
+        }, 500
+
+    published_at = datetime.now(timezone.utc).isoformat()
+
+    with STATE_LOCK:
+        drafts = load_dashboard_drafts()
+
+        for item in drafts:
+            if str(item.get("id", "")) == draft_id:
+                item["status"] = "published"
+                item["published_at"] = published_at
+                item["instagram_media_id"] = instagram_media_id
+                break
+
+        save_json_file(DRAFTS_FILE, drafts)
+
+    print(
+        "Dashboard draft published:",
+        draft_id,
+        instagram_media_id
+    )
+
+    return {
+        "success": True,
+        "draft_id": draft_id,
+        "status": "published",
+        "instagram_media_id": instagram_media_id
+    }, 200
+
+
+# ============================================================
 # DASHBOARD
 # ============================================================
 

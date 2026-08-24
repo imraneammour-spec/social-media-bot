@@ -132,6 +132,7 @@ const cta = document.getElementById("cta");
 const hashtags = document.getElementById("hashtags");
 const approveButton = document.getElementById("approveButton");
 const draftsList = document.getElementById("draftsList");
+let currentDraftId = "";
 
 function setMessage(type, text) {
     generationMessage.className = "message" + (type ? " " + type : "");
@@ -220,6 +221,7 @@ approveButton.addEventListener("click", async function () {
             throw new Error(data.error || "Approval failed.");
         }
         setMessage("success", "Draft approved and saved ✓");
+        currentDraftId = data.draft_id || "";
         approveButton.textContent = "Approved ✓";
         await loadDrafts();
     } catch (error) {
@@ -243,8 +245,60 @@ document.getElementById("scheduleButton").addEventListener("click", function () 
     alert("Scheduling will be connected after approval.");
 });
 
-document.getElementById("publishButton").addEventListener("click", function () {
-    alert("Publishing will be connected after approval.");
+document.getElementById("publishButton").addEventListener("click", async function () {
+    const button = this;
+
+    if (!currentDraftId) {
+        setMessage("error", "Approve or select a draft first.");
+        return;
+    }
+
+    const confirmed = window.confirm(
+        "Publish this approved draft to Instagram now?"
+    );
+
+    if (!confirmed) {
+        return;
+    }
+
+    button.disabled = true;
+    button.textContent = "Publishing to Instagram...";
+    setMessage("", "");
+
+    try {
+        const response = await fetch("/api/publish-draft", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                draft_id: currentDraftId
+            })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.error || "Instagram publishing failed.");
+        }
+
+        setMessage(
+            "success",
+            "Published successfully on Instagram ✓"
+        );
+
+        currentDraftId = "";
+        approveButton.disabled = false;
+        approveButton.textContent = "Approve ✓";
+        await loadDrafts();
+
+    } catch (error) {
+        console.error("Publish draft error:", error);
+        setMessage("error", error.message);
+    } finally {
+        button.disabled = false;
+        button.textContent = "Publish Now";
+    }
 });
 
 async function loadDrafts() {
@@ -277,14 +331,42 @@ async function loadDrafts() {
             text.className = "draft-caption";
             text.textContent = draft.caption || "No caption";
 
+            const actions = document.createElement("div");
+            actions.style.display = "flex";
+            actions.style.alignItems = "center";
+            actions.style.gap = "8px";
+
             const badge = document.createElement("span");
             badge.className = "badge";
             badge.textContent = draft.status || "approved";
 
+            actions.appendChild(badge);
+
+            if ((draft.status || "") === "approved") {
+                const selectButton = document.createElement("button");
+                selectButton.type = "button";
+                selectButton.textContent = "Select";
+                selectButton.style.border = "0";
+                selectButton.style.borderRadius = "10px";
+                selectButton.style.padding = "8px 10px";
+                selectButton.style.cursor = "pointer";
+                selectButton.style.fontWeight = "700";
+
+                selectButton.addEventListener("click", function () {
+                    currentDraftId = draft.id || "";
+                    setMessage(
+                        "success",
+                        "Draft selected. You can publish it now."
+                    );
+                });
+
+                actions.appendChild(selectButton);
+            }
+
             content.appendChild(title);
             content.appendChild(text);
             row.appendChild(content);
-            row.appendChild(badge);
+            row.appendChild(actions);
             draftsList.appendChild(row);
         });
     } catch (error) {
