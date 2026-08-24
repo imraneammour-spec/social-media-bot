@@ -3634,7 +3634,31 @@ def publish_dashboard_draft():
         # Work with a copy outside the lock while the network request runs.
         draft_copy = dict(draft)
 
-    public_base_url = request.url_root.rstrip("/")
+    # Railway sits behind a reverse proxy. Flask can see the internal
+    # request as HTTP even though the public site is HTTPS. Instagram
+    # requires a publicly reachable HTTPS media URL, so build the public
+    # base URL explicitly from Railway/proxy information.
+    railway_domain = str(
+        os.getenv("RAILWAY_PUBLIC_DOMAIN", "") or ""
+    ).strip()
+
+    if railway_domain:
+        public_base_url = f"https://{railway_domain}".rstrip("/")
+    else:
+        forwarded_host = str(
+            request.headers.get("X-Forwarded-Host")
+            or request.host
+            or ""
+        ).split(",")[0].strip()
+
+        if not forwarded_host:
+            return {
+                "error": "Could not determine the public Railway domain."
+            }, 500
+
+        public_base_url = f"https://{forwarded_host}".rstrip("/")
+
+    print("Instagram public media base URL:", public_base_url)
 
     instagram_media_id, error_text = publish_instagram_draft(
         draft_copy,
