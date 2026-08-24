@@ -402,60 +402,114 @@ document.getElementById("scheduleButton").addEventListener("click", async functi
     }
 });
 
-document.getElementById("publishButton").addEventListener("click", async function () {
-    const button = this;
-
-    if (!currentDraftId) {
-        setMessage("error", "Approve or select a draft first.");
-        return;
+async function publishDraftNow(draftId, button = null) {
+    if (!draftId) {
+        setMessage("error", "Select a draft first.");
+        return false;
     }
 
     const confirmed = window.confirm(
-        "Publish this approved draft to Instagram now?"
+        "Publish this draft to Instagram now?"
     );
 
-    if (!confirmed) {
-        return;
+    if (!confirmed) return false;
+
+    const originalText = button ? button.textContent : "";
+    if (button) {
+        button.disabled = true;
+        button.textContent = "Publishing...";
     }
 
-    button.disabled = true;
-    button.textContent = "Publishing to Instagram...";
     setMessage("", "");
 
     try {
         const response = await fetch("/api/publish-draft", {
             method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                draft_id: currentDraftId
-            })
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ draft_id: draftId })
         });
 
         const data = await response.json();
-
         if (!response.ok) {
             throw new Error(data.error || "Instagram publishing failed.");
         }
 
-        setMessage(
-            "success",
-            "Published successfully on Instagram ✓"
-        );
+        setMessage("success", "Published successfully on Instagram ✓");
 
-        currentDraftId = "";
+        if (currentDraftId === draftId) currentDraftId = "";
         approveButton.disabled = false;
         approveButton.textContent = "Approve ✓";
         await loadDrafts();
+        return true;
 
     } catch (error) {
         console.error("Publish draft error:", error);
         setMessage("error", error.message);
+        return false;
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.textContent = originalText || "Publish Now";
+        }
+    }
+}
+
+async function cancelScheduledDraft(draftId, button) {
+    if (!draftId) return;
+
+    const confirmed = window.confirm(
+        "Cancel this scheduled post and return it to Drafts?"
+    );
+    if (!confirmed) return;
+
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.textContent = "Cancelling...";
+
+    try {
+        const response = await fetch("/api/cancel-schedule", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ draft_id: draftId })
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || "Could not cancel the schedule.");
+        }
+
+        setMessage("success", "Schedule cancelled. Draft returned to Drafts ✓");
+        await loadDrafts();
+
+    } catch (error) {
+        console.error("Cancel schedule error:", error);
+        setMessage("error", error.message);
     } finally {
         button.disabled = false;
-        button.textContent = "Publish Now";
+        button.textContent = originalText;
     }
+}
+
+function openReschedule(draft) {
+    currentDraftId = draft.id || "";
+    const scheduleInput = document.getElementById("schedule");
+
+    if (draft.scheduled_local) {
+        scheduleInput.value = String(draft.scheduled_local).slice(0, 16);
+    }
+
+    switchView("new");
+    setMessage("success", "Scheduled post selected. Choose a new date/time and press Schedule Post.");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+document.getElementById("publishButton").addEventListener("click", async function () {
+    if (!currentDraftId) {
+        setMessage("error", "Approve or select a draft first.");
+        return;
+    }
+
+    await publishDraftNow(currentDraftId, this);
 });
 
 async function loadDrafts() {
@@ -537,6 +591,49 @@ function renderDraftList(items) {
         badge.className = "badge";
         badge.textContent = draft.status || "approved";
         actions.appendChild(badge);
+
+        if ((draft.status || "") === "scheduled") {
+            const rescheduleButton = document.createElement("button");
+            rescheduleButton.type = "button";
+            rescheduleButton.textContent = "Reschedule";
+            rescheduleButton.style.border = "0";
+            rescheduleButton.style.borderRadius = "10px";
+            rescheduleButton.style.padding = "8px 10px";
+            rescheduleButton.style.cursor = "pointer";
+            rescheduleButton.style.fontWeight = "700";
+            rescheduleButton.addEventListener("click", function () {
+                openReschedule(draft);
+            });
+            actions.appendChild(rescheduleButton);
+
+            const publishNowButton = document.createElement("button");
+            publishNowButton.type = "button";
+            publishNowButton.textContent = "Publish Now";
+            publishNowButton.style.border = "0";
+            publishNowButton.style.borderRadius = "10px";
+            publishNowButton.style.padding = "8px 10px";
+            publishNowButton.style.cursor = "pointer";
+            publishNowButton.style.fontWeight = "700";
+            publishNowButton.addEventListener("click", async function () {
+                await publishDraftNow(draft.id || "", publishNowButton);
+            });
+            actions.appendChild(publishNowButton);
+
+            const cancelButton = document.createElement("button");
+            cancelButton.type = "button";
+            cancelButton.textContent = "Cancel";
+            cancelButton.style.border = "1px solid #3a3a42";
+            cancelButton.style.background = "transparent";
+            cancelButton.style.color = "#ddd";
+            cancelButton.style.borderRadius = "10px";
+            cancelButton.style.padding = "8px 10px";
+            cancelButton.style.cursor = "pointer";
+            cancelButton.style.fontWeight = "700";
+            cancelButton.addEventListener("click", async function () {
+                await cancelScheduledDraft(draft.id || "", cancelButton);
+            });
+            actions.appendChild(cancelButton);
+        }
 
         if (["approved", "schedule_failed"].includes(draft.status || "")) {
             const selectButton = document.createElement("button");

@@ -3867,6 +3867,8 @@ def publish_dashboard_draft():
     if not draft_id:
         return {"error": "Draft ID is required."}, 400
 
+    publish_lock_path = None
+
     with STATE_LOCK:
         drafts = load_dashboard_drafts()
 
@@ -3888,8 +3890,17 @@ def publish_dashboard_draft():
                 "instagram_media_id": draft.get("instagram_media_id")
             }, 409
 
+        was_scheduled = draft.get("status") == "scheduled"
+
         # Work with a copy outside the lock while the network request runs.
         draft_copy = dict(draft)
+
+    if was_scheduled:
+        publish_lock_path = acquire_schedule_lock(draft_id)
+        if not publish_lock_path:
+            return {
+                "error": "This scheduled post is currently being processed. Try again in a moment."
+            }, 409
 
     # Railway sits behind a reverse proxy. Flask can see the internal
     # request as HTTP even though the public site is HTTPS. Instagram
@@ -3923,6 +3934,8 @@ def publish_dashboard_draft():
     )
 
     if not instagram_media_id:
+        if publish_lock_path:
+            release_schedule_lock(publish_lock_path)
         return {
             "error": error_text or "Instagram publishing failed."
         }, 500
@@ -3946,6 +3959,9 @@ def publish_dashboard_draft():
         draft_id,
         instagram_media_id
     )
+
+    if publish_lock_path:
+        release_schedule_lock(publish_lock_path)
 
     return {
         "success": True,
@@ -4069,6 +4085,60 @@ def schedule_dashboard_draft():
         "scheduled_local": scheduled_local.isoformat(),
         "timezone": "Africa/Casablanca"
     }, 200
+
+
+@app.route("/api/cancel-schedule", methods=["POST"])
+def cancel_dashboard_schedule():
+    payload = request.get_json(silent=True) or {}
+    draft_id = str(payload.get("draft_id", "") or "").strip()
+
+    if not draft_id:
+        return {"error": "Draft ID is required."}, 400
+
+    lock_path = acquire_schedule_lock(draft_id)
+    if not lock_path:
+        return {
+            "error": "This scheduled post is currently being processed. Try again in a moment."
+        }, 409
+
+    try:
+        with STATE_LOCK:
+            drafts = load_dashboard_drafts()
+            draft = next(
+                (item for item in drafts if str(item.get("id", "")) == draft_id),
+                None
+            )
+
+            if not draft:
+                return {"error": "Draft not found."}, 404
+
+            if draft.get("status") == "published":
+                return {
+                    "error": "This draft has already been published.",
+                    "instagram_media_id": draft.get("instagram_media_id")
+                }, 409
+
+            if draft.get("status") != "scheduled":
+                return {"error": "This draft is not currently scheduled."}, 409
+
+            draft["status"] = "approved"
+            draft["scheduled_for"] = None
+            draft["scheduled_local"] = None
+            draft["scheduled_timezone"] = None
+            draft["schedule_error"] = None
+            draft["schedule_cancelled_at"] = datetime.now(timezone.utc).isoformat()
+
+            save_json_file(DRAFTS_FILE, drafts)
+
+        print("Dashboard schedule cancelled:", draft_id)
+        return {
+            "success": True,
+            "draft_id": draft_id,
+            "status": "approved"
+        }, 200
+
+    finally:
+        release_schedule_lock(lock_path)
 
 
 def publish_scheduled_draft(draft_id):
