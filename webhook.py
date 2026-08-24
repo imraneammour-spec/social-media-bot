@@ -3347,34 +3347,189 @@ def get_dashboard_drafts():
 # DASHBOARD - DRAFT IMAGE SERVING
 # ============================================================
 
-@app.route("/draft-image/<draft_id>/<filename>", methods=["GET"])
+def detect_image_mimetype(image_bytes):
+
+    if not image_bytes:
+        return ""
+
+    # JPEG
+    if image_bytes.startswith(b"\\xff\\xd8\\xff"):
+        return "image/jpeg"
+
+    # PNG
+    if image_bytes.startswith(b"\\x89PNG\\r\\n\\x1a\\n"):
+        return "image/png"
+
+    # WEBP
+    if (
+        len(image_bytes) >= 12
+        and image_bytes[:4] == b"RIFF"
+        and image_bytes[8:12] == b"WEBP"
+    ):
+        return "image/webp"
+
+    return ""
+
+
+@app.route(
+    "/draft-image/<draft_id>/<filename>",
+    methods=["GET", "HEAD"]
+)
 def dashboard_draft_image(draft_id, filename):
 
-    safe_draft_id = secure_filename(str(draft_id or ""))
-    safe_filename = secure_filename(str(filename or ""))
+    safe_draft_id = secure_filename(
+        str(draft_id or "")
+    )
+
+    safe_filename = secure_filename(
+        str(filename or "")
+    )
 
     if not safe_draft_id or not safe_filename:
         return Response(status=404)
 
-    file_path = DRAFT_IMAGES_DIR / safe_draft_id / safe_filename
+    file_path = (
+        DRAFT_IMAGES_DIR
+        / safe_draft_id
+        / safe_filename
+    )
 
     try:
+
         resolved_path = file_path.resolve()
         resolved_root = DRAFT_IMAGES_DIR.resolve()
 
         if resolved_root not in resolved_path.parents:
             return Response(status=404)
 
-        if not resolved_path.exists() or not resolved_path.is_file():
+        if (
+            not resolved_path.exists()
+            or not resolved_path.is_file()
+        ):
             return Response(status=404)
 
-        response = send_file(resolved_path)
-        response.headers["Cache-Control"] = "public, max-age=3600"
-        return response
+        image_bytes = resolved_path.read_bytes()
+
+        if not image_bytes:
+            return Response(status=404)
+
+        mime_type = detect_image_mimetype(
+            image_bytes
+        )
+
+        if not mime_type:
+            print(
+                "DRAFT IMAGE INVALID FORMAT:",
+                resolved_path
+            )
+
+            return Response(
+                "Invalid image format",
+                status=415,
+                mimetype="text/plain"
+            )
+
+        # Meta fetches image_url directly. Return a plain public image
+        # response without Flask's download/content-disposition behavior.
+        headers = {
+            "Cache-Control": "public, max-age=86400",
+            "Content-Length": str(len(image_bytes)),
+            "Access-Control-Allow-Origin": "*",
+            "X-Content-Type-Options": "nosniff"
+        }
+
+        if request.method == "HEAD":
+            return Response(
+                status=200,
+                headers=headers,
+                mimetype=mime_type
+            )
+
+        return Response(
+            image_bytes,
+            status=200,
+            headers=headers,
+            mimetype=mime_type
+        )
 
     except Exception as error:
-        print("DRAFT IMAGE ERROR:", error)
+
+        print(
+            "DRAFT IMAGE ERROR:",
+            error
+        )
+
         return Response(status=404)
+
+
+def verify_public_media_url(media_url):
+
+    try:
+
+        response = requests.get(
+            media_url,
+            headers={
+                "User-Agent":
+                    "Mozilla/5.0 InstagramMediaFetcher/1.0",
+                "Accept":
+                    "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
+            },
+            allow_redirects=True,
+            timeout=30
+        )
+
+        content_type = str(
+            response.headers.get(
+                "Content-Type",
+                ""
+            )
+        ).split(";")[0].strip().lower()
+
+        print(
+            "Public media preflight:",
+            response.status_code,
+            content_type,
+            len(response.content)
+        )
+
+        if response.status_code != 200:
+            return False, (
+                "Public media URL returned "
+                f"HTTP {response.status_code}."
+            )
+
+        if not content_type.startswith("image/"):
+            return False, (
+                "Public media URL did not return an image "
+                f"(Content-Type: {content_type or 'missing'})."
+            )
+
+        if not response.content:
+            return False, "Public media URL returned an empty file."
+
+        detected_type = detect_image_mimetype(
+            response.content
+        )
+
+        if not detected_type:
+            return False, (
+                "Public media URL returned bytes that are "
+                "not a supported image."
+            )
+
+        return True, ""
+
+    except Exception as error:
+
+        print(
+            "PUBLIC MEDIA PREFLIGHT ERROR:",
+            error
+        )
+
+        return False, (
+            "The public media URL could not be reached "
+            f"from Railway: {error}"
+        )
 
 
 # ============================================================
@@ -3522,6 +3677,20 @@ def publish_instagram_draft(draft, public_base_url):
 
     if not image_urls:
         return None, "No publishable images were found."
+
+    # Verify every public URL before asking Meta to fetch it.
+    # This gives a clear error if Railway is not serving the image
+    # as a normal public image response.
+    for media_url in image_urls:
+
+        media_ok, media_error = (
+            verify_public_media_url(
+                media_url
+            )
+        )
+
+        if not media_ok:
+            return None, media_error
 
     # Single image post
     if len(image_urls) == 1:
