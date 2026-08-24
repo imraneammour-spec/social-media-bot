@@ -3349,10 +3349,6 @@ def process_message_event(event):
     if not sender_id:
         return
 
-    # Any new inbound message means the person is already engaged, so a queued
-    # automatic follow-up is no longer necessary.
-    cancel_pending_followups(sender_id, "user_replied")
-
     text = str(
         message.get(
             "text",
@@ -3383,7 +3379,16 @@ def process_message_event(event):
         or quick_payload == "VIEW_AI_PROMPTS"
     )
 
+    # IMPORTANT:
+    # The access-confirmation message itself is part of the prompt delivery
+    # flow, so it must NOT cancel the follow-up we are about to schedule.
+    # Only a normal inbound message after the delivery flow cancels a queued
+    # follow-up because the person has already re-engaged naturally.
     if not wants_access:
+        cancel_pending_followups(
+            sender_id,
+            "user_replied"
+        )
         return
 
     pending = get_pending_access(
