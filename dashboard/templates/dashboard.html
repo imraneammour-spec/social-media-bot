@@ -293,8 +293,79 @@ document.getElementById("rejectButton").addEventListener("click", function () {
     setMessage("", "");
 });
 
-document.getElementById("scheduleButton").addEventListener("click", function () {
-    alert("Scheduling will be connected after approval.");
+document.getElementById("scheduleButton").addEventListener("click", async function () {
+    const button = this;
+    const scheduleInput = document.getElementById("schedule");
+
+    if (!currentDraftId) {
+        setMessage("error", "Approve or select a draft first.");
+        return;
+    }
+
+    if (!scheduleInput.value) {
+        setMessage("error", "Choose the publish date and time first.");
+        return;
+    }
+
+    const selectedDate = new Date(scheduleInput.value);
+    if (Number.isNaN(selectedDate.getTime())) {
+        setMessage("error", "Invalid publish date and time.");
+        return;
+    }
+
+    if (selectedDate.getTime() <= Date.now()) {
+        setMessage("error", "The scheduled time must be in the future.");
+        return;
+    }
+
+    const confirmed = window.confirm(
+        "Schedule this approved draft for " + scheduleInput.value.replace("T", " ") + " (Morocco time)?"
+    );
+
+    if (!confirmed) {
+        return;
+    }
+
+    button.disabled = true;
+    button.textContent = "Scheduling...";
+    setMessage("", "");
+
+    try {
+        const response = await fetch("/api/schedule-draft", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                draft_id: currentDraftId,
+                scheduled_for: scheduleInput.value
+            })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.error || "Scheduling failed.");
+        }
+
+        setMessage(
+            "success",
+            "Post scheduled successfully for " + scheduleInput.value.replace("T", " ") + " ✓"
+        );
+
+        currentDraftId = "";
+        scheduleInput.value = "";
+        approveButton.disabled = false;
+        approveButton.textContent = "Approve ✓";
+        await loadDrafts();
+
+    } catch (error) {
+        console.error("Schedule draft error:", error);
+        setMessage("error", error.message);
+    } finally {
+        button.disabled = false;
+        button.textContent = "Schedule Post";
+    }
 });
 
 document.getElementById("publishButton").addEventListener("click", async function () {
@@ -383,6 +454,23 @@ async function loadDrafts() {
             text.className = "draft-caption";
             text.textContent = draft.caption || "No caption";
 
+            const scheduleInfo = document.createElement("div");
+            scheduleInfo.style.marginTop = "6px";
+            scheduleInfo.style.fontSize = "12px";
+            scheduleInfo.style.opacity = "0.7";
+
+            if (draft.status === "scheduled" && draft.scheduled_local) {
+                try {
+                    const scheduledDate = new Date(draft.scheduled_local);
+                    scheduleInfo.textContent = "Scheduled: " + scheduledDate.toLocaleString();
+                } catch (error) {
+                    scheduleInfo.textContent = "Scheduled";
+                }
+            } else if (draft.status === "schedule_failed") {
+                scheduleInfo.textContent = "Schedule failed: " + (draft.schedule_error || "Publishing failed");
+                scheduleInfo.style.opacity = "1";
+            }
+
             const actions = document.createElement("div");
             actions.style.display = "flex";
             actions.style.alignItems = "center";
@@ -394,7 +482,7 @@ async function loadDrafts() {
 
             actions.appendChild(badge);
 
-            if ((draft.status || "") === "approved") {
+            if (["approved", "schedule_failed"].includes(draft.status || "")) {
                 const selectButton = document.createElement("button");
                 selectButton.type = "button";
                 selectButton.textContent = "Select";
@@ -408,7 +496,7 @@ async function loadDrafts() {
                     currentDraftId = draft.id || "";
                     setMessage(
                         "success",
-                        "Draft selected. You can publish it now."
+                        "Draft selected. You can publish it now or schedule it."
                     );
                 });
 
@@ -417,6 +505,9 @@ async function loadDrafts() {
 
             content.appendChild(title);
             content.appendChild(text);
+            if (scheduleInfo.textContent) {
+                content.appendChild(scheduleInfo);
+            }
             row.appendChild(content);
             row.appendChild(actions);
             draftsList.appendChild(row);
@@ -428,6 +519,24 @@ async function loadDrafts() {
     }
 }
 
+function updateScheduleMinimum() {
+    const input = document.getElementById("schedule");
+    if (!input) return;
+
+    const now = new Date(Date.now() + 60000);
+    const pad = value => String(value).padStart(2, "0");
+    const localValue =
+        now.getFullYear() + "-" +
+        pad(now.getMonth() + 1) + "-" +
+        pad(now.getDate()) + "T" +
+        pad(now.getHours()) + ":" +
+        pad(now.getMinutes());
+
+    input.min = localValue;
+}
+
+updateScheduleMinimum();
+setInterval(updateScheduleMinimum, 60000);
 loadDrafts();
 </script>
 </body>

@@ -5,8 +5,10 @@ import html
 import hashlib
 import threading
 import uuid
+import time
 from pathlib import Path
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -3362,6 +3364,9 @@ def get_dashboard_drafts():
             "image_count": len(images),
             "created_at": draft.get("created_at", ""),
             "scheduled_for": draft.get("scheduled_for"),
+            "scheduled_local": draft.get("scheduled_local"),
+            "scheduled_timezone": draft.get("scheduled_timezone"),
+            "schedule_error": draft.get("schedule_error"),
             "published_at": draft.get("published_at")
         })
 
@@ -3948,6 +3953,247 @@ def publish_dashboard_draft():
         "status": "published",
         "instagram_media_id": instagram_media_id
     }, 200
+
+
+# ============================================================
+# DASHBOARD - SCHEDULED PUBLISHING
+# ============================================================
+
+SCHEDULER_TIMEZONE = ZoneInfo("Africa/Casablanca")
+SCHEDULER_POLL_SECONDS = 15
+SCHEDULER_LOCKS_DIR = DATA_DIR / "scheduler_locks"
+SCHEDULER_LOCKS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def parse_dashboard_schedule(value):
+    """Convert the dashboard datetime-local value from Morocco time to UTC."""
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return None, "Choose a publish date and time."
+
+    try:
+        scheduled_local = datetime.fromisoformat(raw_value)
+    except ValueError:
+        return None, "Invalid publish date and time."
+
+    if scheduled_local.tzinfo is None:
+        scheduled_local = scheduled_local.replace(tzinfo=SCHEDULER_TIMEZONE)
+    else:
+        scheduled_local = scheduled_local.astimezone(SCHEDULER_TIMEZONE)
+
+    scheduled_utc = scheduled_local.astimezone(timezone.utc)
+    if scheduled_utc <= datetime.now(timezone.utc):
+        return None, "The scheduled time must be in the future."
+
+    return scheduled_utc, ""
+
+
+def acquire_schedule_lock(draft_id):
+    """Cross-process lock so multiple Railway workers cannot publish twice."""
+    safe_id = secure_filename(str(draft_id or ""))
+    if not safe_id:
+        return None
+
+    lock_path = SCHEDULER_LOCKS_DIR / f"{safe_id}.lock"
+
+    try:
+        if lock_path.exists():
+            age_seconds = time.time() - lock_path.stat().st_mtime
+            if age_seconds > 900:
+                lock_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    try:
+        descriptor = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(descriptor, datetime.now(timezone.utc).isoformat().encode("utf-8"))
+        os.close(descriptor)
+        return lock_path
+    except FileExistsError:
+        return None
+    except Exception as error:
+        print("SCHEDULE LOCK ERROR:", error)
+        return None
+
+
+def release_schedule_lock(lock_path):
+    if not lock_path:
+        return
+    try:
+        Path(lock_path).unlink(missing_ok=True)
+    except Exception as error:
+        print("SCHEDULE LOCK RELEASE ERROR:", error)
+
+
+@app.route("/api/schedule-draft", methods=["POST"])
+def schedule_dashboard_draft():
+    payload = request.get_json(silent=True) or {}
+    draft_id = str(payload.get("draft_id", "") or "").strip()
+    scheduled_value = str(payload.get("scheduled_for", "") or "").strip()
+
+    if not draft_id:
+        return {"error": "Draft ID is required."}, 400
+
+    scheduled_utc, schedule_error = parse_dashboard_schedule(scheduled_value)
+    if not scheduled_utc:
+        return {"error": schedule_error}, 400
+
+    scheduled_local = scheduled_utc.astimezone(SCHEDULER_TIMEZONE)
+
+    with STATE_LOCK:
+        drafts = load_dashboard_drafts()
+        draft = next((item for item in drafts if str(item.get("id", "")) == draft_id), None)
+
+        if not draft:
+            return {"error": "Draft not found."}, 404
+
+        if draft.get("status") == "published":
+            return {
+                "error": "This draft has already been published.",
+                "instagram_media_id": draft.get("instagram_media_id")
+            }, 409
+
+        draft["status"] = "scheduled"
+        draft["scheduled_for"] = scheduled_utc.isoformat()
+        draft["scheduled_local"] = scheduled_local.isoformat()
+        draft["scheduled_timezone"] = "Africa/Casablanca"
+        draft["schedule_error"] = None
+        save_json_file(DRAFTS_FILE, drafts)
+
+    print("Dashboard draft scheduled:", draft_id, scheduled_local.isoformat())
+    return {
+        "success": True,
+        "draft_id": draft_id,
+        "status": "scheduled",
+        "scheduled_for": scheduled_utc.isoformat(),
+        "scheduled_local": scheduled_local.isoformat(),
+        "timezone": "Africa/Casablanca"
+    }, 200
+
+
+def publish_scheduled_draft(draft_id):
+    """Publish one due draft using the same proven Cloudinary/Instagram flow."""
+    lock_path = acquire_schedule_lock(draft_id)
+    if not lock_path:
+        return
+
+    try:
+        with STATE_LOCK:
+            drafts = load_dashboard_drafts()
+            draft = next(
+                (item for item in drafts if str(item.get("id", "")) == str(draft_id)),
+                None
+            )
+
+            if not draft or draft.get("status") != "scheduled":
+                return
+
+            scheduled_for = str(draft.get("scheduled_for", "") or "").strip()
+            try:
+                due_at = datetime.fromisoformat(scheduled_for)
+            except ValueError:
+                draft["status"] = "schedule_failed"
+                draft["schedule_error"] = "Invalid stored schedule time."
+                save_json_file(DRAFTS_FILE, drafts)
+                return
+
+            if due_at.tzinfo is None:
+                due_at = due_at.replace(tzinfo=timezone.utc)
+            if due_at > datetime.now(timezone.utc):
+                return
+
+            draft["status"] = "publishing"
+            draft["publish_started_at"] = datetime.now(timezone.utc).isoformat()
+            draft["schedule_error"] = None
+            save_json_file(DRAFTS_FILE, drafts)
+            draft_copy = dict(draft)
+
+        instagram_media_id, error_text = publish_instagram_draft(draft_copy, "")
+        finished_at = datetime.now(timezone.utc).isoformat()
+
+        with STATE_LOCK:
+            drafts = load_dashboard_drafts()
+            for item in drafts:
+                if str(item.get("id", "")) != str(draft_id):
+                    continue
+
+                if instagram_media_id:
+                    item["status"] = "published"
+                    item["published_at"] = finished_at
+                    item["instagram_media_id"] = instagram_media_id
+                    item["schedule_error"] = None
+                    print("Scheduled Instagram post published:", draft_id, instagram_media_id)
+                else:
+                    item["status"] = "schedule_failed"
+                    item["schedule_error"] = (
+                        error_text or "Scheduled Instagram publishing failed."
+                    )[:1000]
+                    item["schedule_failed_at"] = finished_at
+                    print("Scheduled Instagram post failed:", draft_id, item["schedule_error"])
+                break
+
+            save_json_file(DRAFTS_FILE, drafts)
+
+    except Exception as error:
+        print("SCHEDULED PUBLISH ERROR:", error)
+        with STATE_LOCK:
+            drafts = load_dashboard_drafts()
+            for item in drafts:
+                if str(item.get("id", "")) == str(draft_id):
+                    item["status"] = "schedule_failed"
+                    item["schedule_error"] = str(error)[:1000]
+                    item["schedule_failed_at"] = datetime.now(timezone.utc).isoformat()
+                    break
+            save_json_file(DRAFTS_FILE, drafts)
+    finally:
+        release_schedule_lock(lock_path)
+
+
+def process_due_scheduled_posts():
+    now = datetime.now(timezone.utc)
+    with STATE_LOCK:
+        drafts = load_dashboard_drafts()
+        due_ids = []
+        for draft in drafts:
+            if draft.get("status") != "scheduled":
+                continue
+            scheduled_for = str(draft.get("scheduled_for", "") or "").strip()
+            if not scheduled_for:
+                continue
+            try:
+                due_at = datetime.fromisoformat(scheduled_for)
+            except ValueError:
+                continue
+            if due_at.tzinfo is None:
+                due_at = due_at.replace(tzinfo=timezone.utc)
+            if due_at <= now:
+                due_ids.append(str(draft.get("id", "")))
+
+    for draft_id in due_ids:
+        if draft_id:
+            publish_scheduled_draft(draft_id)
+
+
+def dashboard_scheduler_loop():
+    print("Dashboard scheduler: ON", f"({SCHEDULER_POLL_SECONDS}s, Africa/Casablanca)")
+    while True:
+        try:
+            process_due_scheduled_posts()
+        except Exception as error:
+            print("DASHBOARD SCHEDULER ERROR:", error)
+        time.sleep(SCHEDULER_POLL_SECONDS)
+
+
+def start_dashboard_scheduler():
+    thread = threading.Thread(
+        target=dashboard_scheduler_loop,
+        name="dashboard-scheduler",
+        daemon=True
+    )
+    thread.start()
+
+
+start_dashboard_scheduler()
 
 
 # ============================================================
