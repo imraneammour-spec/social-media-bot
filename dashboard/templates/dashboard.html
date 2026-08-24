@@ -74,6 +74,30 @@
         .analytics-post-caption { font-size:12px; line-height:1.35; color:#d5d5dc; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:8px; }
         .analytics-metrics { display:flex; gap:10px; flex-wrap:wrap; color:#9999a3; font-size:11px; }
         .analytics-metrics strong { color:#fff; }
+        .overview-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; margin-bottom:22px; }
+        .overview-card { background:#151518; border:1px solid #29292f; border-radius:18px; padding:18px; }
+        .overview-value { font-size:30px; font-weight:800; margin-bottom:6px; }
+        .overview-label { font-size:12px; color:#9999a3; text-transform:uppercase; letter-spacing:.06em; }
+        .overview-layout { display:grid; grid-template-columns:1.15fr .85fr; gap:18px; margin-bottom:22px; }
+        .overview-row { display:flex; align-items:center; justify-content:space-between; gap:14px; padding:13px 0; border-bottom:1px solid #29292f; }
+        .overview-row:last-child { border-bottom:0; }
+        .overview-row-title { font-size:13px; font-weight:700; }
+        .overview-row-sub { color:#8d8d96; font-size:12px; margin-top:4px; }
+        .overview-pill { background:#29292f; color:#d7d7dd; border-radius:999px; padding:7px 10px; font-size:11px; white-space:nowrap; }
+        .overview-actions { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:14px; }
+        .overview-action { border:0; border-radius:12px; padding:12px 14px; cursor:pointer; font-weight:700; }
+        .overview-action.primary { background:#fff; color:#111; }
+        .overview-action.secondary { background:#27272d; color:#fff; }
+        .overview-performance { display:grid; gap:10px; margin-top:8px; }
+        .overview-performance-line { display:flex; justify-content:space-between; gap:12px; color:#aaaab3; font-size:12px; }
+        .overview-performance-line strong { color:#fff; }
+        .overview-best-post { display:grid; grid-template-columns:74px 1fr; gap:12px; align-items:center; margin-top:16px; background:#111114; border:1px solid #29292f; border-radius:14px; overflow:hidden; }
+        .overview-best-post img { width:74px; height:74px; object-fit:cover; background:#0f0f12; }
+        .overview-best-body { min-width:0; padding:10px 12px 10px 0; }
+        .overview-best-caption { font-size:12px; color:#d5d5dc; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:7px; }
+        .overview-best-meta { font-size:11px; color:#9999a3; }
+        @media(max-width:850px) { .overview-grid { grid-template-columns:1fr 1fr; } .overview-layout { grid-template-columns:1fr; } }
+
         @media(max-width:850px) { .analytics-posts { grid-template-columns:1fr; } }
         @media(max-width:850px) { .published-grid { grid-template-columns:1fr; } }
         @media(max-width: 850px) { .stats-grid { grid-template-columns:1fr 1fr; } }
@@ -99,6 +123,50 @@
             <div>
                 <h1 id="pageTitle">Content Dashboard</h1>
                 <div id="pageSubtitle" class="status">Instagram automation • Online</div>
+            </div>
+        </div>
+
+
+        <div id="dashboardOverview">
+            <div class="overview-grid">
+                <div class="overview-card"><div id="overviewDrafts" class="overview-value">—</div><div class="overview-label">Drafts</div></div>
+                <div class="overview-card"><div id="overviewScheduled" class="overview-value">—</div><div class="overview-label">Scheduled</div></div>
+                <div class="overview-card"><div id="overviewPublished" class="overview-value">—</div><div class="overview-label">Published / analyzed</div></div>
+                <div class="overview-card"><div id="overviewReach" class="overview-value">—</div><div class="overview-label">Recent reach</div></div>
+            </div>
+
+            <div class="overview-layout">
+                <section class="card">
+                    <h2>Workflow overview</h2>
+                    <div class="overview-row">
+                        <div><div class="overview-row-title">Drafts waiting for action</div><div class="overview-row-sub">Approved posts ready to publish or schedule.</div></div>
+                        <span id="overviewDraftBadge" class="overview-pill">—</span>
+                    </div>
+                    <div class="overview-row">
+                        <div><div class="overview-row-title">Next scheduled post</div><div id="overviewNextScheduled" class="overview-row-sub">No scheduled post.</div></div>
+                        <span id="overviewScheduledBadge" class="overview-pill">—</span>
+                    </div>
+                    <div class="overview-actions">
+                        <button id="overviewNewPost" class="overview-action primary" type="button">Create New Post</button>
+                        <button id="overviewOpenScheduled" class="overview-action secondary" type="button">Open Scheduled</button>
+                    </div>
+                </section>
+
+                <section class="card">
+                    <h2>Instagram snapshot</h2>
+                    <div id="overviewAnalyticsStatus" class="view-note">Loading live performance...</div>
+                    <div class="overview-performance">
+                        <div class="overview-performance-line"><span>Followers</span><strong id="overviewFollowers">—</strong></div>
+                        <div class="overview-performance-line"><span>Likes</span><strong id="overviewLikes">—</strong></div>
+                        <div class="overview-performance-line"><span>Views</span><strong id="overviewViews">—</strong></div>
+                        <div class="overview-performance-line"><span>Shares</span><strong id="overviewShares">—</strong></div>
+                    </div>
+                    <div id="overviewBestPost"></div>
+                    <div class="overview-actions">
+                        <button id="overviewOpenAnalytics" class="overview-action secondary" type="button">Open Analytics</button>
+                        <button id="overviewOpenPublished" class="overview-action secondary" type="button">Open Published</button>
+                    </div>
+                </section>
             </div>
         </div>
 
@@ -186,6 +254,7 @@ const hashtags = document.getElementById("hashtags");
 const approveButton = document.getElementById("approveButton");
 const draftsList = document.getElementById("draftsList");
 const composerSection = document.getElementById("composerSection");
+const dashboardOverview = document.getElementById("dashboardOverview");
 const analyticsSection = document.getElementById("analyticsSection");
 const listSection = document.getElementById("listSection");
 const listTitle = document.getElementById("listTitle");
@@ -1013,6 +1082,112 @@ function paintAnalytics(data) {
     topPosts.forEach(post => analyticsPosts.appendChild(renderAnalyticsPost(post)));
 }
 
+
+function formatOverviewDate(value) {
+    if (!value) return "No scheduled post.";
+    try {
+        return new Date(value).toLocaleString();
+    } catch (error) {
+        return String(value);
+    }
+}
+
+function renderDashboardOverview() {
+    const actionable = cachedDrafts.filter(d => ["approved", "schedule_failed"].includes(d.status || ""));
+    const scheduled = cachedDrafts.filter(d => d.status === "scheduled");
+    const nextScheduled = scheduled
+        .filter(d => d.scheduled_for || d.scheduled_local)
+        .slice()
+        .sort((a, b) => new Date(a.scheduled_for || a.scheduled_local) - new Date(b.scheduled_for || b.scheduled_local))[0];
+
+    document.getElementById("overviewDrafts").textContent = formatMetric(actionable.length);
+    document.getElementById("overviewScheduled").textContent = formatMetric(scheduled.length);
+    document.getElementById("overviewDraftBadge").textContent = actionable.length + " waiting";
+    document.getElementById("overviewScheduledBadge").textContent = scheduled.length + " scheduled";
+    document.getElementById("overviewNextScheduled").textContent = nextScheduled
+        ? formatOverviewDate(nextScheduled.scheduled_local || nextScheduled.scheduled_for)
+        : "No scheduled post.";
+
+    if (cachedInstagramAnalytics) {
+        paintDashboardAnalytics(cachedInstagramAnalytics);
+    } else {
+        loadDashboardAnalytics();
+    }
+}
+
+function paintDashboardAnalytics(data) {
+    const account = data.account || {};
+    const totals = data.totals || {};
+    const topPosts = Array.isArray(data.top_posts) ? data.top_posts : [];
+
+    document.getElementById("overviewPublished").textContent = formatMetric(totals.posts);
+    document.getElementById("overviewReach").textContent = formatMetric(totals.reach);
+    document.getElementById("overviewFollowers").textContent = formatMetric(account.followers_count);
+    document.getElementById("overviewLikes").textContent = formatMetric(totals.likes);
+    document.getElementById("overviewViews").textContent = formatMetric(totals.views || totals.impressions);
+    document.getElementById("overviewShares").textContent = formatMetric(totals.shares);
+    document.getElementById("overviewAnalyticsStatus").textContent =
+        (account.username ? "@" + account.username : "Instagram") +
+        " • latest " + formatMetric(totals.posts) + " posts";
+
+    const bestContainer = document.getElementById("overviewBestPost");
+    bestContainer.innerHTML = "";
+    const best = topPosts[0];
+    if (!best) return;
+
+    const card = document.createElement("div");
+    card.className = "overview-best-post";
+    const image = document.createElement("img");
+    image.alt = "Top Instagram post";
+    image.src = best.thumbnail_url || best.media_url || "";
+    image.onerror = function () { this.style.display = "none"; };
+
+    const body = document.createElement("div");
+    body.className = "overview-best-body";
+    const captionEl = document.createElement("div");
+    captionEl.className = "overview-best-caption";
+    captionEl.textContent = best.caption || "Top Instagram post";
+    const meta = document.createElement("div");
+    meta.className = "overview-best-meta";
+    meta.textContent =
+        formatMetric(best.like_count) + " likes • " +
+        formatMetric(best.comments_count) + " comments • " +
+        formatMetric(best.reach) + " reach";
+
+    body.appendChild(captionEl);
+    body.appendChild(meta);
+    card.appendChild(image);
+    card.appendChild(body);
+    if (best.permalink) {
+        card.style.cursor = "pointer";
+        card.title = "Open on Instagram";
+        card.addEventListener("click", () => window.open(best.permalink, "_blank", "noopener,noreferrer"));
+    }
+    bestContainer.appendChild(card);
+}
+
+async function loadDashboardAnalytics() {
+    const status = document.getElementById("overviewAnalyticsStatus");
+    status.textContent = "Loading live performance...";
+    try {
+        const response = await fetch("/api/instagram-analytics", { cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Could not load Instagram analytics.");
+        cachedInstagramAnalytics = data;
+        paintDashboardAnalytics(data);
+    } catch (error) {
+        console.error("Dashboard overview analytics error:", error);
+        status.textContent = error.message || "Could not load live performance.";
+        document.getElementById("overviewPublished").textContent = "—";
+        document.getElementById("overviewReach").textContent = "—";
+    }
+}
+
+document.getElementById("overviewNewPost").addEventListener("click", () => switchView("new"));
+document.getElementById("overviewOpenScheduled").addEventListener("click", () => switchView("scheduled"));
+document.getElementById("overviewOpenAnalytics").addEventListener("click", () => switchView("analytics"));
+document.getElementById("overviewOpenPublished").addEventListener("click", () => switchView("published"));
+
 function renderCurrentView() {
     const names = {
         dashboard: ["Content Dashboard", "Instagram automation • Online", "Recent Drafts"],
@@ -1027,14 +1202,17 @@ function renderCurrentView() {
     pageSubtitle.textContent = meta[1];
     listTitle.textContent = meta[2] || "Recent Drafts";
 
-    const showComposer = ["dashboard", "new"].includes(currentView);
+    const showComposer = currentView === "new";
+    dashboardOverview.classList.toggle("hidden", currentView !== "dashboard");
     composerSection.classList.toggle("hidden", !showComposer);
     analyticsSection.classList.toggle("hidden", currentView !== "analytics");
-    listSection.classList.toggle("hidden", currentView === "analytics");
+    listSection.classList.toggle("hidden", ["analytics", "dashboard"].includes(currentView));
 
     navButtons.forEach(btn => btn.classList.toggle("active", btn.dataset.view === currentView));
 
-    if (currentView === "analytics") {
+    if (currentView === "dashboard") {
+        renderDashboardOverview();
+    } else if (currentView === "analytics") {
         renderAnalytics();
     } else if (currentView === "published") {
         loadInstagramPublished();
