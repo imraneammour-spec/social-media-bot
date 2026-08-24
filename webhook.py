@@ -3,6 +3,7 @@ import re
 import json
 import html
 import threading
+import uuid
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -10,6 +11,7 @@ import requests
 
 from dotenv import load_dotenv
 from flask import Flask, request, send_file, Response
+from werkzeug.utils import secure_filename
 
 from google import genai
 from google.genai import types
@@ -38,6 +40,8 @@ PROCESSED_FILE = DATA_DIR / "processed_comments.json"
 PENDING_ACCESS_FILE = DATA_DIR / "pending_access.json"
 REQUESTS_FILE = DATA_DIR / "requests.json"
 SMART_REPLY_ACTIVITY_FILE = DATA_DIR / "smart_reply_activity.json"
+DRAFTS_FILE = DATA_DIR / "dashboard_drafts.json"
+DRAFT_IMAGES_DIR = DATA_DIR / "dashboard_drafts"
 
 load_dotenv(ENV_FILE)
 
@@ -3218,6 +3222,127 @@ HASHTAGS:
         return {
             "error": "Gemini could not generate the content."
         }, 500
+# ============================================================
+# DASHBOARD - DRAFT STORAGE / APPROVAL
+# ============================================================
+
+def load_dashboard_drafts():
+
+    data = load_json_file(
+        DRAFTS_FILE,
+        []
+    )
+
+    if not isinstance(data, list):
+        return []
+
+    return data
+
+
+@app.route("/api/approve-draft", methods=["POST"])
+def approve_dashboard_draft():
+
+    images = request.files.getlist("images")
+    caption = str(request.form.get("caption", "")).strip()
+    cta = str(request.form.get("cta", "")).strip()
+    hashtags = str(request.form.get("hashtags", "")).strip()
+
+    if not images:
+        return {"error": "Please upload at least one image."}, 400
+
+    if not caption:
+        return {"error": "Caption is required."}, 400
+
+    draft_id = uuid.uuid4().hex[:12]
+    draft_folder = DRAFT_IMAGES_DIR / draft_id
+    draft_folder.mkdir(parents=True, exist_ok=True)
+    saved_images = []
+
+    try:
+        for index, image in enumerate(images[:10], start=1):
+            if not image.filename:
+                continue
+
+            mime_type = (image.mimetype or "").lower()
+            if mime_type not in {"image/jpeg", "image/png", "image/webp"}:
+                continue
+
+            original_name = secure_filename(image.filename)
+            suffix = Path(original_name).suffix.lower()
+            if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
+                suffix = ".jpg"
+
+            filename = f"{index:02d}{suffix}"
+            file_path = draft_folder / filename
+            image.save(str(file_path))
+
+            saved_images.append(
+                str(file_path.relative_to(DATA_DIR)).replace("\\", "/")
+            )
+
+        if not saved_images:
+            return {"error": "No valid images were saved."}, 400
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        draft = {
+            "id": draft_id,
+            "status": "approved",
+            "caption": caption,
+            "cta": cta,
+            "hashtags": hashtags,
+            "images": saved_images,
+            "created_at": now_iso,
+            "approved_at": now_iso,
+            "scheduled_for": None,
+            "published_at": None,
+            "instagram_media_id": None
+        }
+
+        with STATE_LOCK:
+            drafts = load_dashboard_drafts()
+            drafts.insert(0, draft)
+            if len(drafts) > 500:
+                drafts = drafts[:500]
+            save_json_file(DRAFTS_FILE, drafts)
+
+        print("Dashboard draft approved:", draft_id)
+        return {
+            "success": True,
+            "draft_id": draft_id,
+            "status": "approved"
+        }, 200
+
+    except Exception as error:
+        print("APPROVE DRAFT ERROR:", error)
+        return {"error": "Could not save the draft."}, 500
+
+
+@app.route("/api/drafts", methods=["GET"])
+def get_dashboard_drafts():
+
+    drafts = load_dashboard_drafts()
+    result = []
+
+    for draft in drafts[:20]:
+        images = draft.get("images", [])
+        if not isinstance(images, list):
+            images = []
+
+        result.append({
+            "id": draft.get("id", ""),
+            "status": draft.get("status", ""),
+            "caption": draft.get("caption", ""),
+            "cta": draft.get("cta", ""),
+            "hashtags": draft.get("hashtags", ""),
+            "image_count": len(images),
+            "created_at": draft.get("created_at", ""),
+            "scheduled_for": draft.get("scheduled_for"),
+            "published_at": draft.get("published_at")
+        })
+
+    return {"drafts": result}, 200
+
+
 # ============================================================
 # DASHBOARD
 # ============================================================

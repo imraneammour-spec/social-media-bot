@@ -3,283 +3,58 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
     <title>IMRAN PROMPTS — Dashboard</title>
 
     <style>
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-
-        body {
-            background: #0b0b0d;
-            color: #f5f5f7;
-            font-family: Arial, sans-serif;
-            min-height: 100vh;
-        }
-
-        .app {
-            display: grid;
-            grid-template-columns: 240px 1fr;
-            min-height: 100vh;
-        }
-
-        .sidebar {
-            border-right: 1px solid #24242a;
-            background: #111114;
-            padding: 28px 18px;
-        }
-
-        .logo {
-            font-size: 18px;
-            font-weight: 800;
-            margin-bottom: 40px;
-        }
-
-        .logo span {
-            color: #888892;
-        }
-
-        .nav {
-            display: grid;
-            gap: 8px;
-        }
-
-        .nav button {
-            border: 0;
-            background: transparent;
-            color: #aaaab4;
-            text-align: left;
-            padding: 13px 14px;
-            border-radius: 12px;
-            cursor: pointer;
-            font-size: 14px;
-        }
-
-        .nav button.active {
-            background: #202025;
-            color: white;
-        }
-
-        .main {
-            padding: 32px;
-            max-width: 1250px;
-            width: 100%;
-            margin: auto;
-        }
-
-        .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 30px;
-        }
-
-        h1 {
-            font-size: 30px;
-        }
-
-        .status {
-            color: #8d8d96;
-            font-size: 13px;
-        }
-
-        .grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 22px;
-        }
-
-        .card {
-            background: #151518;
-            border: 1px solid #29292f;
-            border-radius: 20px;
-            padding: 22px;
-        }
-
-        .card h2 {
-            font-size: 17px;
-            margin-bottom: 18px;
-        }
-
-        .upload {
-            border: 1px dashed #3b3b44;
-            border-radius: 16px;
-            min-height: 250px;
-            display: grid;
-            place-items: center;
-            text-align: center;
-            cursor: pointer;
-            color: #9999a3;
-            padding: 25px;
-        }
-
-        .upload:hover {
-            border-color: #656570;
-        }
-
-        input[type="file"] {
-            display: none;
-        }
-
-        textarea,
-        input[type="text"],
-        input[type="datetime-local"] {
-            width: 100%;
-            background: #0f0f12;
-            color: white;
-            border: 1px solid #303038;
-            border-radius: 12px;
-            padding: 13px;
-            margin-bottom: 14px;
-            outline: none;
-            font-family: inherit;
-        }
-
-        textarea {
-            min-height: 125px;
-            resize: vertical;
-        }
-
-        label {
-            display: block;
-            color: #aaaab3;
-            font-size: 12px;
-            margin-bottom: 7px;
-        }
-
-        .btn {
-            width: 100%;
-            padding: 13px 16px;
-            border-radius: 12px;
-            border: 0;
-            cursor: pointer;
-            font-weight: 700;
-            margin-top: 8px;
-        }
-
-        .btn:disabled {
-            opacity: .55;
-            cursor: not-allowed;
-        }
-
-        .btn-primary {
-            background: white;
-            color: #111;
-        }
-
-        .btn-secondary {
-            background: #27272d;
-            color: white;
-        }
-
-        .approval {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-            margin-top: 15px;
-        }
-
-        .approve {
-            background: #ffffff;
-            color: #111;
-        }
-
-        .reject {
-            background: #2a2a30;
-            color: #ddd;
-        }
-
-        .preview-images {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-            margin-top: 15px;
-        }
-
-        .preview-images img {
-            width: 80px;
-            height: 80px;
-            object-fit: cover;
-            border-radius: 10px;
-            border: 1px solid #333;
-        }
-
-        .section-title {
-            margin: 28px 0 15px;
-            color: #aaaab4;
-            font-size: 13px;
-            text-transform: uppercase;
-            letter-spacing: .08em;
-        }
-
-        .draft {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            gap: 15px;
-        }
-
-        .badge {
-            background: #29292f;
-            padding: 7px 10px;
-            border-radius: 999px;
-            font-size: 11px;
-            color: #aaaab3;
-        }
-
-        .message {
-            display: none;
-            margin-top: 12px;
-            padding: 12px;
-            border-radius: 10px;
-            font-size: 13px;
-        }
-
-        .message.success {
-            display: block;
-            background: #18251d;
-            border: 1px solid #2a5034;
-        }
-
-        .message.error {
-            display: block;
-            background: #2b1818;
-            border: 1px solid #633333;
-        }
-
-        @media(max-width: 850px) {
-            .app {
-                grid-template-columns: 1fr;
-            }
-
-            .sidebar {
-                display: none;
-            }
-
-            .grid {
-                grid-template-columns: 1fr;
-            }
-
-            .main {
-                padding: 18px;
-            }
-        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: #0b0b0d; color: #f5f5f7; font-family: Arial, sans-serif; min-height: 100vh; }
+        .app { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; }
+        .sidebar { border-right: 1px solid #24242a; background: #111114; padding: 28px 18px; }
+        .logo { font-size: 18px; font-weight: 800; margin-bottom: 40px; }
+        .logo span { color: #888892; }
+        .nav { display: grid; gap: 8px; }
+        .nav button { border: 0; background: transparent; color: #aaaab4; text-align: left; padding: 13px 14px; border-radius: 12px; cursor: pointer; font-size: 14px; }
+        .nav button.active { background: #202025; color: white; }
+        .main { padding: 32px; max-width: 1250px; width: 100%; margin: auto; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; }
+        h1 { font-size: 30px; }
+        .status { color: #8d8d96; font-size: 13px; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+        .card { background: #151518; border: 1px solid #29292f; border-radius: 20px; padding: 22px; }
+        .card h2 { font-size: 17px; margin-bottom: 18px; }
+        .upload { border: 1px dashed #3b3b44; border-radius: 16px; min-height: 250px; display: grid; place-items: center; text-align: center; cursor: pointer; color: #9999a3; padding: 25px; }
+        .upload:hover { border-color: #656570; }
+        input[type="file"] { display: none; }
+        textarea, input[type="text"], input[type="datetime-local"] { width: 100%; background: #0f0f12; color: white; border: 1px solid #303038; border-radius: 12px; padding: 13px; margin-bottom: 14px; outline: none; font-family: inherit; }
+        textarea { min-height: 125px; resize: vertical; }
+        label { display: block; color: #aaaab3; font-size: 12px; margin-bottom: 7px; }
+        .btn { width: 100%; padding: 13px 16px; border-radius: 12px; border: 0; cursor: pointer; font-weight: 700; margin-top: 8px; }
+        .btn:disabled { opacity: .55; cursor: not-allowed; }
+        .btn-primary { background: white; color: #111; }
+        .btn-secondary { background: #27272d; color: white; }
+        .approval { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 15px; }
+        .approve { background: #ffffff; color: #111; }
+        .reject { background: #2a2a30; color: #ddd; }
+        .preview-images { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 15px; }
+        .preview-images img { width: 80px; height: 80px; object-fit: cover; border-radius: 10px; border: 1px solid #333; }
+        .section-title { margin: 28px 0 15px; color: #aaaab4; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; }
+        .draft { display: flex; justify-content: space-between; align-items: center; gap: 15px; padding: 14px 0; border-bottom: 1px solid #26262c; }
+        .draft:last-child { border-bottom: 0; }
+        .draft-content { min-width: 0; }
+        .draft-title { font-weight: 700; margin-bottom: 6px; }
+        .draft-caption { color: #a3a3ad; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 720px; }
+        .badge { background: #29292f; padding: 7px 10px; border-radius: 999px; font-size: 11px; color: #aaaab3; text-transform: capitalize; white-space: nowrap; }
+        .message { display: none; margin-top: 12px; padding: 12px; border-radius: 10px; font-size: 13px; }
+        .message.success { display: block; background: #18251d; border: 1px solid #2a5034; }
+        .message.error { display: block; background: #2b1818; border: 1px solid #633333; }
+        .empty-drafts { color: #8d8d96; font-size: 13px; }
+        @media(max-width: 850px) { .app { grid-template-columns: 1fr; } .sidebar { display: none; } .grid { grid-template-columns: 1fr; } .main { padding: 18px; } }
     </style>
 </head>
-
 <body>
-
 <div class="app">
-
     <aside class="sidebar">
-
-        <div class="logo">
-            IMRAN <span>PROMPTS</span>
-        </div>
-
+        <div class="logo">IMRAN <span>PROMPTS</span></div>
         <div class="nav">
             <button class="active">Dashboard</button>
             <button>New Post</button>
@@ -288,488 +63,238 @@
             <button>Published</button>
             <button>Analytics</button>
         </div>
-
     </aside>
 
     <main class="main">
-
         <div class="header">
-
             <div>
                 <h1>Content Dashboard</h1>
-
-                <div class="status">
-                    Instagram automation • Online
-                </div>
+                <div class="status">Instagram automation • Online</div>
             </div>
-
         </div>
 
         <div class="grid">
-
-            <!-- UPLOAD -->
-
             <section class="card">
-
                 <h2>1. Upload Post</h2>
-
-                <label
-                    class="upload"
-                    for="images"
-                >
-
-                    <div>
-                        <strong>Upload images</strong>
-
-                        <br><br>
-
-                        Click here to select your Instagram post images.
-                    </div>
-
+                <label class="upload" for="images">
+                    <div><strong>Upload images</strong><br><br>Click here to select your Instagram post images.</div>
                 </label>
-
-                <input
-                    id="images"
-                    type="file"
-                    accept="image/jpeg,image/png,image/webp"
-                    multiple
-                >
-
-                <div
-                    id="preview"
-                    class="preview-images"
-                ></div>
-
-                <button
-                    id="generateButton"
-                    class="btn btn-primary"
-                    type="button"
-                >
-                    Generate with Gemini ✨
-                </button>
-
-                <div
-                    id="generationMessage"
-                    class="message"
-                ></div>
-
+                <input id="images" type="file" accept="image/jpeg,image/png,image/webp" multiple>
+                <div id="preview" class="preview-images"></div>
+                <button id="generateButton" class="btn btn-primary" type="button">Generate with Gemini ✨</button>
+                <div id="generationMessage" class="message"></div>
             </section>
-
-            <!-- AI CONTENT -->
 
             <section class="card">
-
                 <h2>2. AI Content</h2>
-
                 <label>Caption</label>
-
-                <textarea
-                    id="caption"
-                    placeholder="Gemini will generate the Instagram caption here..."
-                ></textarea>
-
+                <textarea id="caption" placeholder="Gemini will generate the Instagram caption here..."></textarea>
                 <label>Call to Action</label>
-
-                <input
-                    id="cta"
-                    type="text"
-                    placeholder="Example: Comment AI and I’ll send you the prompt."
-                >
-
+                <input id="cta" type="text" placeholder="Example: Comment AI and I’ll send you the prompt.">
                 <label>Hashtags</label>
-
-                <textarea
-                    id="hashtags"
-                    placeholder="#ai #aiprompts #aiphotography"
-                    style="min-height:80px;"
-                ></textarea>
-
+                <textarea id="hashtags" placeholder="#ai #aiprompts #aiphotography" style="min-height:80px;"></textarea>
                 <div class="approval">
-
-                    <button
-                        id="approveButton"
-                        class="btn approve"
-                        type="button"
-                    >
-                        Approve ✓
-                    </button>
-
-                    <button
-                        id="rejectButton"
-                        class="btn reject"
-                        type="button"
-                    >
-                        Reject
-                    </button>
-
+                    <button id="approveButton" class="btn approve" type="button">Approve ✓</button>
+                    <button id="rejectButton" class="btn reject" type="button">Reject</button>
                 </div>
-
             </section>
-
         </div>
 
-        <!-- PUBLISHING -->
-
-        <div class="section-title">
-            Publishing
-        </div>
-
+        <div class="section-title">Publishing</div>
         <section class="card">
-
             <div class="grid">
-
                 <div>
-
-                    <label>
-                        Publish date & time
-                    </label>
-
-                    <input
-                        id="schedule"
-                        type="datetime-local"
-                    >
-
+                    <label>Publish date & time</label>
+                    <input id="schedule" type="datetime-local">
                 </div>
-
                 <div>
-
-                    <label>
-                        Publishing action
-                    </label>
-
-                    <button
-                        id="scheduleButton"
-                        class="btn btn-secondary"
-                        type="button"
-                    >
-                        Schedule Post
-                    </button>
-
-                    <button
-                        id="publishButton"
-                        class="btn btn-primary"
-                        type="button"
-                    >
-                        Publish Now
-                    </button>
-
+                    <label>Publishing action</label>
+                    <button id="scheduleButton" class="btn btn-secondary" type="button">Schedule Post</button>
+                    <button id="publishButton" class="btn btn-primary" type="button">Publish Now</button>
                 </div>
-
             </div>
-
         </section>
 
-        <!-- DRAFTS -->
-
-        <div class="section-title">
-            Recent Drafts
-        </div>
-
+        <div class="section-title">Recent Drafts</div>
         <section class="card">
-
-            <div class="draft">
-
-                <div>
-                    <strong>No drafts yet</strong>
-
-                    <div class="status">
-                        Your AI generated posts will appear here.
-                    </div>
-                </div>
-
-                <span class="badge">
-                    Waiting
-                </span>
-
-            </div>
-
+            <div id="draftsList" class="empty-drafts">Loading drafts...</div>
         </section>
-
     </main>
-
 </div>
 
-
 <script>
+const imageInput = document.getElementById("images");
+const preview = document.getElementById("preview");
+const generateButton = document.getElementById("generateButton");
+const generationMessage = document.getElementById("generationMessage");
+const caption = document.getElementById("caption");
+const cta = document.getElementById("cta");
+const hashtags = document.getElementById("hashtags");
+const approveButton = document.getElementById("approveButton");
+const draftsList = document.getElementById("draftsList");
 
-const imageInput =
-    document.getElementById("images");
+function setMessage(type, text) {
+    generationMessage.className = "message" + (type ? " " + type : "");
+    generationMessage.textContent = text || "";
+}
 
-const preview =
-    document.getElementById("preview");
+imageInput.addEventListener("change", function () {
+    preview.innerHTML = "";
+    setMessage("", "");
+    Array.from(this.files).forEach(function (file) {
+        const reader = new FileReader();
+        reader.onload = function (event) {
+            const img = document.createElement("img");
+            img.src = event.target.result;
+            preview.appendChild(img);
+        };
+        reader.readAsDataURL(file);
+    });
+});
 
-const generateButton =
-    document.getElementById("generateButton");
-
-const generationMessage =
-    document.getElementById("generationMessage");
-
-const caption =
-    document.getElementById("caption");
-
-const cta =
-    document.getElementById("cta");
-
-const hashtags =
-    document.getElementById("hashtags");
-
-
-/* =========================================================
-   IMAGE PREVIEW
-========================================================= */
-
-imageInput.addEventListener(
-    "change",
-    function () {
-
-        preview.innerHTML = "";
-
-        generationMessage.className =
-            "message";
-
-        generationMessage.textContent =
-            "";
-
-        Array.from(this.files).forEach(
-            function (file) {
-
-                const reader =
-                    new FileReader();
-
-                reader.onload =
-                    function (event) {
-
-                        const img =
-                            document.createElement("img");
-
-                        img.src =
-                            event.target.result;
-
-                        preview.appendChild(img);
-
-                    };
-
-                reader.readAsDataURL(file);
-
-            }
-        );
-
+generateButton.addEventListener("click", async function () {
+    if (!imageInput.files.length) {
+        setMessage("error", "Please select at least one image.");
+        return;
     }
-);
 
+    const formData = new FormData();
+    Array.from(imageInput.files).forEach(function (file) {
+        formData.append("images", file, file.name);
+    });
 
-/* =========================================================
-   GENERATE WITH GEMINI
-========================================================= */
+    generateButton.disabled = true;
+    generateButton.textContent = "Generating with Gemini... ✨";
+    setMessage("", "");
 
-generateButton.addEventListener(
-    "click",
-    async function () {
+    try {
+        const response = await fetch("/api/generate-content", {
+            method: "POST",
+            body: formData
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || "Gemini generation failed.");
+        }
+        caption.value = data.caption || "";
+        cta.value = data.cta || "";
+        hashtags.value = data.hashtags || "";
+        setMessage("success", "AI content generated successfully.");
+    } catch (error) {
+        console.error("Dashboard Gemini error:", error);
+        setMessage("error", error.message);
+    } finally {
+        generateButton.disabled = false;
+        generateButton.textContent = "Generate with Gemini ✨";
+    }
+});
 
-        if (!imageInput.files.length) {
+approveButton.addEventListener("click", async function () {
+    if (!imageInput.files.length) {
+        setMessage("error", "Please select at least one image.");
+        return;
+    }
+    if (!caption.value.trim()) {
+        setMessage("error", "Generate or write a caption first.");
+        return;
+    }
 
-            generationMessage.className =
-                "message error";
+    const formData = new FormData();
+    Array.from(imageInput.files).forEach(function (file) {
+        formData.append("images", file, file.name);
+    });
+    formData.append("caption", caption.value);
+    formData.append("cta", cta.value);
+    formData.append("hashtags", hashtags.value);
 
-            generationMessage.textContent =
-                "Please select at least one image.";
+    approveButton.disabled = true;
+    approveButton.textContent = "Saving...";
 
+    try {
+        const response = await fetch("/api/approve-draft", {
+            method: "POST",
+            body: formData
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || "Approval failed.");
+        }
+        setMessage("success", "Draft approved and saved ✓");
+        approveButton.textContent = "Approved ✓";
+        await loadDrafts();
+    } catch (error) {
+        console.error("Approve draft error:", error);
+        setMessage("error", error.message);
+        approveButton.disabled = false;
+        approveButton.textContent = "Approve ✓";
+    }
+});
+
+document.getElementById("rejectButton").addEventListener("click", function () {
+    caption.value = "";
+    cta.value = "";
+    hashtags.value = "";
+    approveButton.disabled = false;
+    approveButton.textContent = "Approve ✓";
+    setMessage("", "");
+});
+
+document.getElementById("scheduleButton").addEventListener("click", function () {
+    alert("Scheduling will be connected after approval.");
+});
+
+document.getElementById("publishButton").addEventListener("click", function () {
+    alert("Publishing will be connected after approval.");
+});
+
+async function loadDrafts() {
+    try {
+        const response = await fetch("/api/drafts");
+        const data = await response.json();
+        const drafts = Array.isArray(data.drafts) ? data.drafts : [];
+
+        if (!drafts.length) {
+            draftsList.className = "empty-drafts";
+            draftsList.textContent = "No drafts yet.";
             return;
         }
 
+        draftsList.className = "";
+        draftsList.innerHTML = "";
 
-        const formData =
-            new FormData();
+        drafts.forEach(function (draft) {
+            const row = document.createElement("div");
+            row.className = "draft";
 
+            const content = document.createElement("div");
+            content.className = "draft-content";
 
-        Array.from(
-            imageInput.files
-        ).forEach(
-            function (file) {
+            const title = document.createElement("div");
+            title.className = "draft-title";
+            title.textContent = "Draft " + (draft.id || "");
 
-                formData.append(
-                    "images",
-                    file,
-                    file.name
-                );
+            const text = document.createElement("div");
+            text.className = "draft-caption";
+            text.textContent = draft.caption || "No caption";
 
-            }
-        );
+            const badge = document.createElement("span");
+            badge.className = "badge";
+            badge.textContent = draft.status || "approved";
 
-
-        generateButton.disabled =
-            true;
-
-        generateButton.textContent =
-            "Generating with Gemini... ✨";
-
-
-        generationMessage.className =
-            "message";
-
-        generationMessage.textContent =
-            "";
-
-
-        try {
-
-            const response =
-                await fetch(
-                    "/api/generate-content",
-                    {
-                        method: "POST",
-                        body: formData
-                    }
-                );
-
-
-            let data;
-
-
-            try {
-
-                data =
-                    await response.json();
-
-            } catch {
-
-                throw new Error(
-                    "The server returned an invalid response."
-                );
-
-            }
-
-
-            if (!response.ok) {
-
-                throw new Error(
-                    data.error ||
-                    "Gemini generation failed."
-                );
-
-            }
-
-
-            caption.value =
-                data.caption || "";
-
-            cta.value =
-                data.cta || "";
-
-            hashtags.value =
-                data.hashtags || "";
-
-
-            generationMessage.className =
-                "message success";
-
-            generationMessage.textContent =
-                "AI content generated successfully.";
-
-        }
-
-        catch (error) {
-
-            console.error(
-                "Dashboard Gemini error:",
-                error
-            );
-
-
-            generationMessage.className =
-                "message error";
-
-            generationMessage.textContent =
-                error.message;
-
-        }
-
-        finally {
-
-            generateButton.disabled =
-                false;
-
-            generateButton.textContent =
-                "Generate with Gemini ✨";
-
-        }
-
+            content.appendChild(title);
+            content.appendChild(text);
+            row.appendChild(content);
+            row.appendChild(badge);
+            draftsList.appendChild(row);
+        });
+    } catch (error) {
+        console.error("Load drafts error:", error);
+        draftsList.className = "empty-drafts";
+        draftsList.textContent = "Could not load drafts.";
     }
-);
+}
 
-
-/* =========================================================
-   APPROVE / REJECT
-   We will connect these to the backend next.
-========================================================= */
-
-document
-    .getElementById("approveButton")
-    .addEventListener(
-        "click",
-        function () {
-
-            alert(
-                "Approval system will be connected next."
-            );
-
-        }
-    );
-
-
-document
-    .getElementById("rejectButton")
-    .addEventListener(
-        "click",
-        function () {
-
-            caption.value = "";
-            cta.value = "";
-            hashtags.value = "";
-
-            generationMessage.className =
-                "message";
-
-            generationMessage.textContent =
-                "";
-
-        }
-    );
-
-
-/* =========================================================
-   PUBLISHING
-   We will connect these after approval works.
-========================================================= */
-
-document
-    .getElementById("scheduleButton")
-    .addEventListener(
-        "click",
-        function () {
-
-            alert(
-                "Scheduling will be connected after approval."
-            );
-
-        }
-    );
-
-
-document
-    .getElementById("publishButton")
-    .addEventListener(
-        "click",
-        function () {
-
-            alert(
-                "Publishing will be connected after approval."
-            );
-
-        }
-    );
-
+loadDrafts();
 </script>
-
 </body>
 </html>
