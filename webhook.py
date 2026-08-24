@@ -3353,11 +3353,11 @@ def detect_image_mimetype(image_bytes):
         return ""
 
     # JPEG
-    if image_bytes.startswith(b"\\xff\\xd8\\xff"):
+    if image_bytes.startswith(b"\xff\xd8\xff"):
         return "image/jpeg"
 
     # PNG
-    if image_bytes.startswith(b"\\x89PNG\\r\\n\\x1a\\n"):
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png"
 
     # WEBP
