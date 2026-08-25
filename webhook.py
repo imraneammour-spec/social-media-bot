@@ -44,6 +44,7 @@ PENDING_ACCESS_FILE = DATA_DIR / "pending_access.json"
 REQUESTS_FILE = DATA_DIR / "requests.json"
 SMART_REPLY_ACTIVITY_FILE = DATA_DIR / "smart_reply_activity.json"
 FOLLOWUPS_FILE = DATA_DIR / "followups.json"
+STORIES_FILE = DATA_DIR / "stories.json"
 DRAFTS_FILE = DATA_DIR / "dashboard_drafts.json"
 DRAFT_IMAGES_DIR = DATA_DIR / "dashboard_drafts"
 
@@ -4349,6 +4350,381 @@ def upload_draft_image_to_cloudinary(draft_id, image_number, file_path):
         return None, "Could not prepare the image for Cloudinary: " + str(error)
 
 
+
+# ============================================================
+# DASHBOARD - INSTAGRAM STORIES
+# ============================================================
+
+def load_stories():
+    data = load_json_file(STORIES_FILE, [])
+    return data if isinstance(data, list) else []
+
+
+def save_stories(items):
+    return save_json_file(STORIES_FILE, items if isinstance(items, list) else [])
+
+
+def build_story_container_payload(media_url, media_kind):
+    """Build the Instagram container payload for one Story media item."""
+    media_url = str(media_url or "").strip()
+    media_kind = str(media_kind or "").strip().lower()
+    if media_kind == "image":
+        return {"media_type": "STORIES", "image_url": media_url}
+    if media_kind == "video":
+        return {"media_type": "STORIES", "video_url": media_url}
+    return {}
+
+
+def story_is_due(item, now=None):
+    if not isinstance(item, dict) or item.get("status") != "scheduled":
+        return False
+    scheduled_for = _parse_iso_datetime(item.get("scheduled_for"))
+    if not scheduled_for:
+        return False
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return scheduled_for <= now.astimezone(timezone.utc)
+
+
+def upload_story_media_to_cloudinary(story_id, media_file):
+    if not cloudinary_is_configured():
+        return None, None, (
+            "Cloudinary is not configured. Add CLOUDINARY_CLOUD_NAME, "
+            "CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET in Railway Variables."
+        )
+
+    filename = secure_filename(str(getattr(media_file, "filename", "") or ""))
+    content_type = str(getattr(media_file, "mimetype", "") or "").lower()
+    suffix = Path(filename).suffix.lower()
+
+    is_video = content_type.startswith("video/") or suffix in {".mp4", ".mov", ".m4v"}
+    media_kind = "video" if is_video else "image"
+
+    try:
+        media_bytes = media_file.read()
+    except Exception as error:
+        return None, None, "Could not read Story media: " + str(error)
+
+    if not media_bytes:
+        return None, None, "Story media is empty."
+
+    if media_kind == "image":
+        # Browser converts Story images to a normal JPEG before upload.
+        if not media_bytes.startswith(b"\xff\xd8\xff"):
+            return None, None, "Story images must be JPEG. Select the image again from the dashboard."
+        resource_type = "image"
+        upload_name = "story.jpg"
+        upload_mime = "image/jpeg"
+        data = {
+            "folder": "imran-prompts/stories",
+            "format": "jpg",
+            "overwrite": "true",
+            "public_id": f"story-{story_id}"
+        }
+    else:
+        if not (content_type in {"video/mp4", "video/quicktime", "video/x-m4v", "application/octet-stream"} or suffix in {".mp4", ".mov", ".m4v"}):
+            return None, None, "Story video must be MP4 or MOV."
+        resource_type = "video"
+        upload_name = filename or "story.mp4"
+        upload_mime = content_type if content_type.startswith("video/") else "video/mp4"
+        data = {
+            "folder": "imran-prompts/stories",
+            "overwrite": "true",
+            "public_id": f"story-{story_id}"
+        }
+
+    upload_url = (
+        "https://api.cloudinary.com/v1_1/"
+        f"{CLOUDINARY_CLOUD_NAME}/{resource_type}/upload"
+    )
+
+    try:
+        response = requests.post(
+            upload_url,
+            auth=(CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET),
+            data=data,
+            files={"file": (upload_name, media_bytes, upload_mime)},
+            timeout=120
+        )
+        print("Cloudinary Story upload:", response.status_code)
+        if not response.ok:
+            print(response.text)
+            return None, None, "Cloudinary could not host the Story media: " + response.text[:500]
+        result = response.json()
+        secure_url = str(result.get("secure_url", "") or "").strip()
+        if not secure_url.startswith("https://"):
+            return None, None, "Cloudinary did not return a public HTTPS Story URL."
+        return secure_url, media_kind, ""
+    except requests.RequestException as error:
+        return None, None, "Cloudinary Story upload request failed: " + str(error)
+    except Exception as error:
+        return None, None, "Could not prepare Story media for Cloudinary: " + str(error)
+
+
+def publish_instagram_story_url(media_url, media_kind):
+    if not INSTAGRAM_ACCESS_TOKEN:
+        return None, "Instagram access token is missing."
+    if not INSTAGRAM_USER_ID:
+        return None, "Instagram user ID is missing."
+
+    payload = build_story_container_payload(media_url, media_kind)
+    if not payload:
+        return None, "Unsupported Story media type."
+
+    # Unique query avoids a stale fetch result being reused by Meta.
+    media_key = "image_url" if media_kind == "image" else "video_url"
+    separator = "&" if "?" in payload[media_key] else "?"
+    payload[media_key] = payload[media_key] + separator + "ig_story=" + uuid.uuid4().hex[:10]
+
+    container, error_text = instagram_graph_post(
+        f"{INSTAGRAM_USER_ID}/media",
+        payload
+    )
+    if not container or not container.get("id"):
+        return None, error_text or "Could not create Instagram Story container."
+
+    creation_id = str(container["id"])
+    attempts = 30 if media_kind == "video" else 12
+    if not wait_for_instagram_container(creation_id, attempts=attempts, delay_seconds=2):
+        return None, "Instagram could not prepare the Story container."
+
+    published, error_text = instagram_graph_post(
+        f"{INSTAGRAM_USER_ID}/media_publish",
+        {"creation_id": creation_id}
+    )
+    if not published or not published.get("id"):
+        return None, error_text or "Could not publish the Instagram Story."
+
+    return str(published["id"]), ""
+
+
+def _find_story(items, story_id):
+    return next((item for item in items if str(item.get("id", "")) == str(story_id)), None)
+
+
+@app.route("/api/stories", methods=["GET"])
+def get_dashboard_stories():
+    with STATE_LOCK:
+        stories = load_stories()
+        result = [dict(item) for item in reversed(stories[-200:])]
+    return {"stories": result}, 200
+
+
+@app.route("/api/story-create", methods=["POST"])
+def create_dashboard_story():
+    media_file = request.files.get("media")
+    action = str(request.form.get("action", "publish") or "publish").strip().lower()
+    scheduled_value = str(request.form.get("scheduled_for", "") or "").strip()
+
+    if media_file is None or not getattr(media_file, "filename", ""):
+        return {"error": "Choose one image or video for the Story."}, 400
+    if action not in {"publish", "schedule"}:
+        return {"error": "Invalid Story action."}, 400
+
+    scheduled_utc = None
+    scheduled_local = None
+    if action == "schedule":
+        scheduled_utc, schedule_error = parse_dashboard_schedule(scheduled_value)
+        if not scheduled_utc:
+            return {"error": schedule_error}, 400
+        scheduled_local = scheduled_utc.astimezone(SCHEDULER_TIMEZONE)
+
+    story_id = uuid.uuid4().hex[:12]
+    media_url, media_kind, upload_error = upload_story_media_to_cloudinary(story_id, media_file)
+    if not media_url:
+        return {"error": upload_error or "Could not host Story media."}, 500
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    story = {
+        "id": story_id,
+        "media_kind": media_kind,
+        "media_url": media_url,
+        "status": "scheduled" if action == "schedule" else "publishing",
+        "created_at": now_iso,
+        "scheduled_for": scheduled_utc.isoformat() if scheduled_utc else None,
+        "scheduled_local": scheduled_local.isoformat() if scheduled_local else None,
+        "scheduled_timezone": "Africa/Casablanca" if scheduled_local else None,
+        "published_at": None,
+        "instagram_media_id": None,
+        "error": ""
+    }
+
+    with STATE_LOCK:
+        stories = load_stories()
+        stories.append(story)
+        if len(stories) > 1000:
+            stories = stories[-1000:]
+        save_stories(stories)
+
+    if action == "schedule":
+        return {"success": True, "story": story}, 200
+
+    instagram_media_id, error_text = publish_instagram_story_url(media_url, media_kind)
+    finished_at = datetime.now(timezone.utc).isoformat()
+
+    with STATE_LOCK:
+        stories = load_stories()
+        current = _find_story(stories, story_id)
+        if current:
+            if instagram_media_id:
+                current["status"] = "published"
+                current["published_at"] = finished_at
+                current["instagram_media_id"] = instagram_media_id
+                current["error"] = ""
+            else:
+                current["status"] = "failed"
+                current["failed_at"] = finished_at
+                current["error"] = str(error_text or "Story publishing failed.")[:1000]
+            story = dict(current)
+            save_stories(stories)
+
+    if not instagram_media_id:
+        return {"error": story.get("error") or "Story publishing failed.", "story": story}, 500
+
+    return {"success": True, "story": story}, 200
+
+
+@app.route("/api/story-cancel", methods=["POST"])
+def cancel_dashboard_story():
+    payload = request.get_json(silent=True) or {}
+    story_id = str(payload.get("story_id", "") or "").strip()
+    if not story_id:
+        return {"error": "Story ID is required."}, 400
+
+    lock_path = acquire_schedule_lock("story-" + story_id)
+    if not lock_path:
+        return {"error": "This Story is currently being processed. Try again in a moment."}, 409
+    try:
+        with STATE_LOCK:
+            stories = load_stories()
+            story = _find_story(stories, story_id)
+            if not story:
+                return {"error": "Story not found."}, 404
+            if story.get("status") != "scheduled":
+                return {"error": "This Story is not currently scheduled."}, 409
+            story["status"] = "cancelled"
+            story["cancelled_at"] = datetime.now(timezone.utc).isoformat()
+            story["scheduled_for"] = None
+            story["scheduled_local"] = None
+            story["scheduled_timezone"] = None
+            save_stories(stories)
+            return {"success": True, "story": dict(story)}, 200
+    finally:
+        release_schedule_lock(lock_path)
+
+
+@app.route("/api/story-retry", methods=["POST"])
+def retry_dashboard_story():
+    payload = request.get_json(silent=True) or {}
+    story_id = str(payload.get("story_id", "") or "").strip()
+    if not story_id:
+        return {"error": "Story ID is required."}, 400
+
+    lock_path = acquire_schedule_lock("story-" + story_id)
+    if not lock_path:
+        return {"error": "This Story is currently being processed. Try again in a moment."}, 409
+    try:
+        with STATE_LOCK:
+            stories = load_stories()
+            story = _find_story(stories, story_id)
+            if not story:
+                return {"error": "Story not found."}, 404
+            if story.get("status") not in {"failed", "cancelled"}:
+                return {"error": "Only failed or cancelled Stories can be retried."}, 409
+            media_url = str(story.get("media_url", "") or "")
+            media_kind = str(story.get("media_kind", "") or "")
+            story["status"] = "publishing"
+            story["error"] = ""
+            story["retry_started_at"] = datetime.now(timezone.utc).isoformat()
+            save_stories(stories)
+
+        instagram_media_id, error_text = publish_instagram_story_url(media_url, media_kind)
+        finished_at = datetime.now(timezone.utc).isoformat()
+        with STATE_LOCK:
+            stories = load_stories()
+            story = _find_story(stories, story_id)
+            if story:
+                if instagram_media_id:
+                    story["status"] = "published"
+                    story["published_at"] = finished_at
+                    story["instagram_media_id"] = instagram_media_id
+                    story["error"] = ""
+                else:
+                    story["status"] = "failed"
+                    story["failed_at"] = finished_at
+                    story["error"] = str(error_text or "Story publishing failed.")[:1000]
+                result = dict(story)
+                save_stories(stories)
+            else:
+                result = {}
+        if not instagram_media_id:
+            return {"error": result.get("error") or "Story publishing failed.", "story": result}, 500
+        return {"success": True, "story": result}, 200
+    finally:
+        release_schedule_lock(lock_path)
+
+
+def publish_scheduled_story(story_id):
+    lock_path = acquire_schedule_lock("story-" + str(story_id))
+    if not lock_path:
+        return
+    try:
+        with STATE_LOCK:
+            stories = load_stories()
+            story = _find_story(stories, story_id)
+            if not story or not story_is_due(story):
+                return
+            story["status"] = "publishing"
+            story["publish_started_at"] = datetime.now(timezone.utc).isoformat()
+            story["error"] = ""
+            media_url = str(story.get("media_url", "") or "")
+            media_kind = str(story.get("media_kind", "") or "")
+            save_stories(stories)
+
+        instagram_media_id, error_text = publish_instagram_story_url(media_url, media_kind)
+        finished_at = datetime.now(timezone.utc).isoformat()
+        with STATE_LOCK:
+            stories = load_stories()
+            story = _find_story(stories, story_id)
+            if not story:
+                return
+            if instagram_media_id:
+                story["status"] = "published"
+                story["published_at"] = finished_at
+                story["instagram_media_id"] = instagram_media_id
+                story["error"] = ""
+                print("Scheduled Instagram Story published:", story_id, instagram_media_id)
+            else:
+                story["status"] = "failed"
+                story["failed_at"] = finished_at
+                story["error"] = str(error_text or "Scheduled Story publishing failed.")[:1000]
+                print("Scheduled Instagram Story failed:", story_id, story["error"])
+            save_stories(stories)
+    except Exception as error:
+        print("SCHEDULED STORY ERROR:", error)
+        with STATE_LOCK:
+            stories = load_stories()
+            story = _find_story(stories, story_id)
+            if story:
+                story["status"] = "failed"
+                story["failed_at"] = datetime.now(timezone.utc).isoformat()
+                story["error"] = str(error)[:1000]
+                save_stories(stories)
+    finally:
+        release_schedule_lock(lock_path)
+
+
+def process_due_scheduled_stories():
+    now = datetime.now(timezone.utc)
+    with STATE_LOCK:
+        stories = load_stories()
+        due_ids = [str(item.get("id", "")) for item in stories if story_is_due(item, now=now)]
+    for story_id in due_ids:
+        if story_id:
+            publish_scheduled_story(story_id)
+
+
 # ============================================================
 # DASHBOARD - INSTAGRAM PUBLISHING
 # ============================================================
@@ -5005,6 +5381,7 @@ def dashboard_scheduler_loop():
     while True:
         try:
             process_due_scheduled_posts()
+            process_due_scheduled_stories()
             process_due_followups()
         except Exception as error:
             print("DASHBOARD SCHEDULER ERROR:", error)
