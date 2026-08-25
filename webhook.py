@@ -3874,6 +3874,235 @@ def get_instagram_published_posts():
 
 
 
+
+# ============================================================
+# V0.2 - ADVANCED INSTAGRAM ANALYTICS
+# ============================================================
+
+def build_advanced_analytics(posts, followers_count=0):
+    """Derive read-only advanced metrics from recent Instagram media records."""
+    rows = [item for item in (posts or []) if isinstance(item, dict)]
+    count = len(rows)
+
+    def number(item, key):
+        try:
+            return max(0, int(item.get(key, 0) or 0))
+        except (TypeError, ValueError):
+            try:
+                return max(0, int(float(item.get(key, 0) or 0)))
+            except (TypeError, ValueError):
+                return 0
+
+    def media_label(value):
+        value = str(value or "").upper()
+        if value in {"REELS", "REEL", "VIDEO"}:
+            return "Reel / Video"
+        if value == "CAROUSEL_ALBUM":
+            return "Carousel"
+        if value == "IMAGE":
+            return "Image"
+        return value.title() if value else "Other"
+
+    def engagement(item):
+        return (
+            number(item, "like_count")
+            + number(item, "comments_count")
+            + number(item, "saved")
+            + number(item, "shares")
+        )
+
+    def performance_score(item):
+        # A transparent comparative score, not an Instagram-defined metric.
+        # It balances intent-heavy interactions with distribution metrics.
+        return (
+            engagement(item)
+            + (number(item, "reach") * 0.10)
+            + (number(item, "views") * 0.05)
+        )
+
+    totals = {
+        "likes": sum(number(item, "like_count") for item in rows),
+        "comments": sum(number(item, "comments_count") for item in rows),
+        "reach": sum(number(item, "reach") for item in rows),
+        "saved": sum(number(item, "saved") for item in rows),
+        "shares": sum(number(item, "shares") for item in rows),
+        "views": sum(number(item, "views") for item in rows),
+    }
+    total_engagement = totals["likes"] + totals["comments"] + totals["saved"] + totals["shares"]
+
+    if totals["reach"] > 0:
+        engagement_rate = round((total_engagement / totals["reach"]) * 100, 2)
+        engagement_basis = "reach"
+    elif count > 0 and int(followers_count or 0) > 0:
+        average_engagement = total_engagement / count
+        engagement_rate = round((average_engagement / int(followers_count)) * 100, 2)
+        engagement_basis = "followers"
+    else:
+        engagement_rate = 0.0
+        engagement_basis = "reach"
+
+    average = {
+        key: round(value / count, 1) if count else 0
+        for key, value in totals.items()
+    }
+    for key in ("likes", "comments", "reach", "saved", "shares", "views"):
+        value = average[key]
+        if float(value).is_integer():
+            average[key] = int(value)
+
+    ranked = sorted(rows, key=performance_score, reverse=True)
+    top_posts = []
+    for item in ranked[:5]:
+        enriched = dict(item)
+        enriched["performance_score"] = round(performance_score(item), 2)
+        enriched["engagement_actions"] = engagement(item)
+        top_posts.append(enriched)
+
+    by_type = {}
+    for item in rows:
+        label = media_label(item.get("media_type"))
+        group = by_type.setdefault(label, {"count": 0, "score": 0.0, "engagement": 0})
+        group["count"] += 1
+        group["score"] += performance_score(item)
+        group["engagement"] += engagement(item)
+
+    type_rows = []
+    for label, values in by_type.items():
+        type_rows.append({
+            "type": label,
+            "posts": values["count"],
+            "average_score": round(values["score"] / values["count"], 2),
+            "average_engagement": round(values["engagement"] / values["count"], 1),
+        })
+    type_rows.sort(key=lambda item: (item["average_score"], item["average_engagement"]), reverse=True)
+    best_content_type = type_rows[0] if type_rows else {
+        "type": "Not enough data", "posts": 0, "average_score": 0, "average_engagement": 0
+    }
+
+    timezone_local = ZoneInfo("Africa/Casablanca")
+    hour_groups = {}
+    for item in rows:
+        raw_timestamp = str(item.get("timestamp", "") or "").strip()
+        if not raw_timestamp:
+            continue
+        try:
+            parsed = datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            local = parsed.astimezone(timezone_local)
+        except Exception:
+            continue
+        hour = int(local.hour)
+        group = hour_groups.setdefault(hour, {"count": 0, "score": 0.0})
+        group["count"] += 1
+        group["score"] += performance_score(item)
+
+    best_hours = [
+        {
+            "hour": f"{hour:02d}:00",
+            "posts": values["count"],
+            "average_score": round(values["score"] / values["count"], 2),
+        }
+        for hour, values in hour_groups.items()
+    ]
+    best_hours.sort(key=lambda item: item["average_score"], reverse=True)
+    best_hours = best_hours[:3]
+
+    chronological = []
+    for item in rows:
+        raw_timestamp = str(item.get("timestamp", "") or "").strip()
+        try:
+            parsed = datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+        except Exception:
+            parsed = datetime.min.replace(tzinfo=timezone.utc)
+        chronological.append((parsed, item))
+    chronological.sort(key=lambda pair: pair[0])
+
+    if len(chronological) >= 4:
+        split = len(chronological) // 2
+        older = [item for _, item in chronological[:split]]
+        newer = [item for _, item in chronological[split:]]
+        older_avg = sum(performance_score(item) for item in older) / len(older)
+        newer_avg = sum(performance_score(item) for item in newer) / len(newer)
+        if older_avg > 0:
+            change = ((newer_avg - older_avg) / older_avg) * 100
+        else:
+            change = 100.0 if newer_avg > 0 else 0.0
+        direction = "up" if change > 5 else "down" if change < -5 else "flat"
+        growth_trend = {
+            "direction": direction,
+            "change_percent": round(change, 1),
+            "recent_average_score": round(newer_avg, 2),
+            "previous_average_score": round(older_avg, 2),
+        }
+    else:
+        growth_trend = {
+            "direction": "flat",
+            "change_percent": 0.0,
+            "recent_average_score": 0,
+            "previous_average_score": 0,
+        }
+
+    return {
+        "posts_analyzed": count,
+        "engagement_rate": {"value": engagement_rate, "basis": engagement_basis},
+        "average_per_post": average,
+        "best_content_type": best_content_type,
+        "content_types": type_rows,
+        "best_posting_hours": best_hours,
+        "growth_trend": growth_trend,
+        "top_posts": top_posts,
+        "score_note": (
+            "Comparative performance score = engagement actions + 10% of reach + 5% of views. "
+            "It is used only to compare this account's recent posts."
+        ),
+    }
+
+
+def generate_advanced_analytics_summary(advanced):
+    """Return a short AI interpretation with a deterministic fallback."""
+    best_type = (advanced.get("best_content_type") or {}).get("type", "your strongest format")
+    hours = advanced.get("best_posting_hours") or []
+    best_hour = hours[0].get("hour") if hours else "your usual high-performing window"
+    trend = advanced.get("growth_trend") or {}
+    direction = trend.get("direction", "flat")
+    change = trend.get("change_percent", 0)
+
+    fallback = (
+        f"{best_type} is currently the strongest recent format. "
+        f"Your best observed posting window starts around {best_hour}. "
+        f"Recent performance trend is {direction} ({change:+.1f}%)."
+    )
+
+    if GEMINI_CLIENT is None or not advanced.get("posts_analyzed"):
+        return fallback
+
+    prompt = f"""
+You are analyzing Instagram performance for @imran.prompts.
+Write exactly 3 concise sentences in English:
+1) what is working,
+2) what is weaker or changing,
+3) what to focus on next week.
+Do not invent numbers or claim causation. Be practical and premium, not hype.
+
+Advanced analytics JSON:
+{json.dumps(advanced, ensure_ascii=False)}
+"""
+    try:
+        response = GEMINI_CLIENT.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.35),
+        )
+        summary = re.sub(r"\s+", " ", str(response.text or "")).strip()
+        return summary[:900] if summary else fallback
+    except Exception as error:
+        print("ADVANCED ANALYTICS GEMINI ERROR:", error)
+        return fallback
+
+
 @app.route("/api/instagram-analytics", methods=["GET"])
 def get_instagram_analytics():
     """Return resilient Instagram analytics for the latest media.
@@ -4067,11 +4296,15 @@ def get_instagram_analytics():
             reverse=True
         )
 
+        advanced = build_advanced_analytics(posts, account.get("followers_count", 0))
+        advanced["ai_summary"] = generate_advanced_analytics_summary(advanced)
+
         return {
             "account": account,
             "totals": totals,
             "posts": posts,
             "top_posts": ranked[:6],
+            "advanced": advanced,
             "note": (
                 "Reach, saves, shares, views and impressions depend on the "
                 "Instagram media type and the permissions available to this account."

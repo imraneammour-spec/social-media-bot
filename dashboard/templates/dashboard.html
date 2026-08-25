@@ -461,6 +461,24 @@
             .planner-actions { grid-template-columns:1fr; }
         }
 
+
+        /* V0.2 Advanced Analytics */
+        .advanced-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin-top:18px; }
+        .advanced-card { background:#111114; border:1px solid #29292f; border-radius:15px; padding:15px; min-width:0; }
+        .advanced-label { color:#9999a3; font-size:10px; text-transform:uppercase; letter-spacing:.06em; margin-bottom:7px; }
+        .advanced-value { font-size:19px; font-weight:800; line-height:1.3; word-break:break-word; }
+        .advanced-sub { color:#9999a3; font-size:11px; margin-top:5px; line-height:1.4; }
+        .advanced-layout { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:14px; }
+        .advanced-summary { color:#d7d7dd; line-height:1.65; font-size:13px; }
+        .advanced-hours { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+        .advanced-hour { background:#29292f; border-radius:999px; padding:7px 10px; font-size:11px; color:#eee; }
+        .advanced-trend.up { color:#9bf7b0; }
+        .advanced-trend.down { color:#ff9c9c; }
+        .advanced-trend.flat { color:#ffe184; }
+        .advanced-top-title { margin-top:18px; margin-bottom:10px; font-size:13px; color:#c7c9d2; text-transform:uppercase; letter-spacing:.05em; }
+        @media(max-width:850px) { .advanced-grid { grid-template-columns:1fr 1fr; } .advanced-layout { grid-template-columns:1fr; } }
+        @media(max-width:430px) { .advanced-grid { grid-template-columns:1fr 1fr; gap:8px; } .advanced-card { padding:12px; } .advanced-value { font-size:17px; } }
+
     </style>
 </head>
 <body>
@@ -649,6 +667,44 @@
                 <div id="analyticsText" class="view-note">Open Analytics to load live Instagram data.</div>
                 <div id="analyticsStatus" class="analytics-status"></div>
                 <div id="analyticsPosts" class="analytics-posts"></div>
+
+                <div class="advanced-top-title">Advanced analytics • V0.2</div>
+                <div class="advanced-grid">
+                    <div class="advanced-card">
+                        <div class="advanced-label">Engagement rate</div>
+                        <div id="advancedEngagementRate" class="advanced-value">—</div>
+                        <div id="advancedEngagementBasis" class="advanced-sub">—</div>
+                    </div>
+                    <div class="advanced-card">
+                        <div class="advanced-label">Best content type</div>
+                        <div id="advancedBestType" class="advanced-value">—</div>
+                        <div id="advancedBestTypeMeta" class="advanced-sub">—</div>
+                    </div>
+                    <div class="advanced-card">
+                        <div class="advanced-label">Growth trend</div>
+                        <div id="advancedGrowth" class="advanced-value advanced-trend flat">—</div>
+                        <div class="advanced-sub">Recent half vs previous half</div>
+                    </div>
+                    <div class="advanced-card">
+                        <div class="advanced-label">Avg. reach / post</div>
+                        <div id="advancedAvgReach" class="advanced-value">—</div>
+                        <div id="advancedAvgViews" class="advanced-sub">—</div>
+                    </div>
+                </div>
+                <div class="advanced-layout">
+                    <div class="advanced-card">
+                        <div class="advanced-label">Best observed posting hours</div>
+                        <div id="advancedHours" class="advanced-hours"><span class="advanced-hour">—</span></div>
+                        <div class="advanced-sub">Africa/Casablanca • based on recent post performance</div>
+                    </div>
+                    <div class="advanced-card">
+                        <div class="advanced-label">AI performance summary</div>
+                        <div id="advancedAiSummary" class="advanced-summary">—</div>
+                    </div>
+                </div>
+                <div class="advanced-top-title">Top 5 posts by recent performance</div>
+                <div id="advancedTopPosts" class="analytics-posts"></div>
+
             </section>
         </div>
 
@@ -1582,12 +1638,75 @@ function paintAnalytics(data) {
         empty.className = "view-note";
         empty.textContent = "No Instagram posts available for analytics yet.";
         analyticsPosts.appendChild(empty);
+        paintAdvancedAnalytics(data);
         return;
     }
 
     topPosts.forEach(post => analyticsPosts.appendChild(renderAnalyticsPost(post)));
+    paintAdvancedAnalytics(data);
 }
 
+
+
+function paintAdvancedAnalytics(data) {
+    const advanced = data.advanced || {};
+    const rate = advanced.engagement_rate || {};
+    const bestType = advanced.best_content_type || {};
+    const trend = advanced.growth_trend || {};
+    const average = advanced.average_per_post || {};
+    const hours = Array.isArray(advanced.best_posting_hours) ? advanced.best_posting_hours : [];
+    const topPosts = Array.isArray(advanced.top_posts) ? advanced.top_posts : [];
+
+    document.getElementById("advancedEngagementRate").textContent =
+        Number(rate.value || 0).toFixed(2).replace(/\.00$/, "") + "%";
+    document.getElementById("advancedEngagementBasis").textContent =
+        rate.basis === "followers" ? "Average engagement ÷ followers" : "Engagement actions ÷ reach";
+
+    document.getElementById("advancedBestType").textContent = bestType.type || "—";
+    document.getElementById("advancedBestTypeMeta").textContent = bestType.posts
+        ? formatMetric(bestType.posts) + " recent post(s) in this format"
+        : "Not enough data";
+
+    const growth = document.getElementById("advancedGrowth");
+    const change = Number(trend.change_percent || 0);
+    const direction = ["up", "down", "flat"].includes(trend.direction) ? trend.direction : "flat";
+    growth.className = "advanced-value advanced-trend " + direction;
+    growth.textContent = (change > 0 ? "+" : "") + change.toFixed(1) + "%";
+
+    document.getElementById("advancedAvgReach").textContent = formatMetric(average.reach);
+    document.getElementById("advancedAvgViews").textContent =
+        "Avg. views: " + formatMetric(average.views);
+
+    const hoursBox = document.getElementById("advancedHours");
+    hoursBox.innerHTML = "";
+    if (!hours.length) {
+        const empty = document.createElement("span");
+        empty.className = "advanced-hour";
+        empty.textContent = "Not enough timestamp data";
+        hoursBox.appendChild(empty);
+    } else {
+        hours.forEach(item => {
+            const pill = document.createElement("span");
+            pill.className = "advanced-hour";
+            pill.textContent = (item.hour || "—") + " • " + formatMetric(item.posts) + " post(s)";
+            hoursBox.appendChild(pill);
+        });
+    }
+
+    document.getElementById("advancedAiSummary").textContent =
+        advanced.ai_summary || "No AI summary available.";
+
+    const topBox = document.getElementById("advancedTopPosts");
+    topBox.innerHTML = "";
+    if (!topPosts.length) {
+        const empty = document.createElement("div");
+        empty.className = "view-note";
+        empty.textContent = "No posts available for advanced ranking.";
+        topBox.appendChild(empty);
+    } else {
+        topPosts.slice(0, 5).forEach(post => topBox.appendChild(renderAnalyticsPost(post)));
+    }
+}
 
 function formatLeadDate(value) {
     if (!value) return "";
