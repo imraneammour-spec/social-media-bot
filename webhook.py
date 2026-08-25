@@ -4438,6 +4438,28 @@ def auto_story_settings_api():
     return {"success": True, "settings": load_auto_story_settings()}, 200
 
 
+@app.route("/api/auto-story-test", methods=["POST"])
+def auto_story_test_api():
+    """Queue one Daily Auto Story immediately for a controlled live test."""
+    queued = queue_daily_archive_story(force=True)
+    if not queued:
+        return {
+            "error": (
+                "Auto Story test could not be queued. Check that the account has "
+                "an older image/post available and that Cloudinary is configured."
+            )
+        }, 409
+
+    return {
+        "success": True,
+        "queued": int(queued),
+        "message": (
+            "Daily Auto Story test queued. The background scheduler will publish "
+            "it on the next cycle."
+        ),
+    }, 200
+
+
 def auto_story_fallback_comment(caption=""):
     caption = re.sub(r"\s+", " ", str(caption or "")).strip().lower()
     if "prompt" in caption or "comment ai" in caption:
@@ -4749,9 +4771,9 @@ def _daily_story_gap_ok(stories, now_utc, min_gap_hours):
     return True
 
 
-def queue_daily_archive_story(now=None):
+def queue_daily_archive_story(now=None, force=False):
     settings = load_auto_story_settings()
-    if not settings.get("daily_enabled"):
+    if not force and not settings.get("daily_enabled"):
         return 0
 
     now = now or datetime.now(timezone.utc)
@@ -4766,22 +4788,28 @@ def queue_daily_archive_story(now=None):
 
     # Daily archive is only a fallback. If a real post was published today,
     # do nothing for the day.
-    if post_published_today(posts, now=now_utc):
+    if not force and post_published_today(posts, now=now_utc):
         return 0
 
     with STATE_LOCK:
         stories = load_stories()
 
-        # Never create more than one Daily Auto Story group per local day.
-        for item in stories:
-            if not isinstance(item, dict) or item.get("source_type") != "daily_archive":
-                continue
-            created = _parse_iso_datetime(item.get("created_at"))
-            if created and created.astimezone(SCHEDULER_TIMEZONE).date() == now_local.date():
-                return 0
+        # Normal daily runs are limited to one per local day and respect the
+        # minimum Story gap. A manual test run bypasses only these timing gates.
+        if not force:
+            for item in stories:
+                if not isinstance(item, dict) or item.get("source_type") != "daily_archive":
+                    continue
+                created = _parse_iso_datetime(item.get("created_at"))
+                if created and created.astimezone(SCHEDULER_TIMEZONE).date() == now_local.date():
+                    return 0
 
-        if not _daily_story_gap_ok(stories, now_utc, settings.get("min_gap_hours", AUTO_STORY_MIN_GAP_HOURS)):
-            return 0
+            if not _daily_story_gap_ok(
+                stories,
+                now_utc,
+                settings.get("min_gap_hours", AUTO_STORY_MIN_GAP_HOURS),
+            ):
+                return 0
 
     candidate = choose_daily_archive_post(
         posts,
@@ -4815,6 +4843,7 @@ def queue_daily_archive_story(now=None):
         "id": story_id,
         "group_id": "daily-" + uuid.uuid4().hex[:12],
         "source_type": "daily_archive",
+        "test_run": bool(force),
         "source_key": source_media_id,
         "source_media_id": source_media_id,
         "story_comment": comment,
@@ -4832,12 +4861,13 @@ def queue_daily_archive_story(now=None):
 
     with STATE_LOCK:
         stories = load_stories()
-        for item in stories:
-            if not isinstance(item, dict) or item.get("source_type") != "daily_archive":
-                continue
-            created = _parse_iso_datetime(item.get("created_at"))
-            if created and created.astimezone(SCHEDULER_TIMEZONE).date() == now_local.date():
-                return 0
+        if not force:
+            for item in stories:
+                if not isinstance(item, dict) or item.get("source_type") != "daily_archive":
+                    continue
+                created = _parse_iso_datetime(item.get("created_at"))
+                if created and created.astimezone(SCHEDULER_TIMEZONE).date() == now_local.date():
+                    return 0
         stories.append(record)
         if len(stories) > 1000:
             stories = stories[-1000:]
