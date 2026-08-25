@@ -128,6 +128,30 @@
         @media(max-width:1000px) { .lead-profiles { grid-template-columns:1fr; } }
         @media(max-width:850px) { .leads-stats { grid-template-columns:1fr 1fr; } .lead-card { grid-template-columns:56px minmax(0,1fr); } .lead-image { width:56px; height:56px; } .lead-actions { grid-column:1/-1; flex-direction:row; align-items:center; justify-content:flex-end; } .lead-profile { grid-template-columns:52px minmax(0,1fr) auto; } .lead-profile-image { width:52px; height:52px; } }
 
+        .story-grid { display:grid; grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr); gap:18px; }
+        .story-upload { min-height:220px; }
+        .story-preview { margin-top:14px; border:1px solid #2c2c33; border-radius:16px; overflow:hidden; background:#0f0f12; min-height:120px; display:grid; place-items:center; }
+        .story-preview img, .story-preview video { display:block; width:100%; max-height:520px; object-fit:contain; background:#0f0f12; }
+        .story-actions { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:8px; }
+        .story-list { display:grid; gap:12px; margin-top:14px; }
+        .story-item { display:grid; grid-template-columns:92px minmax(0,1fr) auto; gap:14px; align-items:center; padding:12px; border:1px solid #2b2b31; border-radius:15px; background:#111114; }
+        .story-thumb { width:92px; height:120px; border-radius:12px; overflow:hidden; background:#0f0f12; display:grid; place-items:center; color:#8d8d96; font-size:11px; }
+        .story-thumb img, .story-thumb video { width:100%; height:100%; object-fit:cover; display:block; }
+        .story-item-title { font-weight:800; margin-bottom:6px; }
+        .story-item-meta { color:#9999a3; font-size:12px; line-height:1.55; }
+        .story-item-error { color:#ffb4b4; font-size:12px; margin-top:6px; line-height:1.4; word-break:break-word; }
+        .story-item-actions { display:flex; flex-direction:column; gap:8px; align-items:flex-end; }
+        .story-small-btn { border:0; border-radius:10px; padding:9px 11px; cursor:pointer; font-weight:800; white-space:nowrap; }
+        .story-small-btn.primary { background:#fff; color:#111; }
+        .story-small-btn.secondary { background:#27272d; color:#fff; }
+        .story-status { display:inline-flex; border-radius:999px; padding:6px 9px; font-size:10px; font-weight:800; text-transform:uppercase; border:1px solid #35353d; }
+        .story-status.published { background:#102719; border-color:#285c3d; color:#baf5cb; }
+        .story-status.scheduled { background:#18202d; border-color:#334760; color:#c7ddff; }
+        .story-status.publishing { background:#302711; border-color:#6b572a; color:#ffe09a; }
+        .story-status.failed { background:#3a1515; border-color:#7a3030; color:#ffb4b4; }
+        .story-status.cancelled { background:#29292f; color:#aaaab3; }
+        @media(max-width:850px) { .story-grid { grid-template-columns:1fr; } .story-item { grid-template-columns:72px minmax(0,1fr); } .story-thumb { width:72px; height:96px; } .story-item-actions { grid-column:1/-1; flex-direction:row; justify-content:flex-end; } }
+
         .system-summary {
             display:grid;
             grid-template-columns:repeat(4,minmax(0,1fr));
@@ -192,6 +216,7 @@
             <button data-view="new">New Post</button>
             <button data-view="drafts">Drafts</button>
             <button data-view="scheduled">Scheduled</button>
+            <button data-view="stories">Stories</button>
             <button data-view="published">Published</button>
             <button data-view="leads">Requests / Leads</button>
             <button data-view="analytics">Analytics</button>
@@ -296,6 +321,37 @@
 
         </div>
 
+        <div id="storiesSection" class="hidden">
+            <div class="story-grid">
+                <section class="card">
+                    <h2>Publish a Story</h2>
+                    <label class="upload story-upload" for="storyMedia">
+                        <div><strong>Upload one image or video</strong><br><br>Images are converted to JPEG automatically. Video: MP4 or MOV.</div>
+                    </label>
+                    <input id="storyMedia" type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime">
+                    <div id="storyPreview" class="story-preview"><div class="view-note">No Story media selected.</div></div>
+                    <div id="storyMessage" class="message"></div>
+                </section>
+
+                <section class="card">
+                    <h2>Story publishing</h2>
+                    <label>Schedule date & time</label>
+                    <input id="storySchedule" type="datetime-local">
+                    <div class="view-note">Leave the date empty to publish now. Scheduled Stories use Africa/Casablanca time.</div>
+                    <div class="story-actions">
+                        <button id="storyScheduleButton" class="btn btn-secondary" type="button">Schedule Story</button>
+                        <button id="storyPublishButton" class="btn btn-primary" type="button">Publish Story Now</button>
+                    </div>
+                </section>
+            </div>
+
+            <div class="section-title">Story history</div>
+            <section class="card">
+                <div id="storiesStatus" class="view-note">Loading Stories...</div>
+                <div id="storiesList" class="story-list"></div>
+            </section>
+        </div>
+
         <div id="leadsSection" class="hidden">
             <div class="leads-stats">
                 <div class="lead-stat"><div id="leadTotal" class="lead-stat-value">—</div><div class="lead-stat-label">Prompt requests</div></div>
@@ -383,6 +439,7 @@ const composerSection = document.getElementById("composerSection");
 const dashboardOverview = document.getElementById("dashboardOverview");
 const analyticsSection = document.getElementById("analyticsSection");
 const leadsSection = document.getElementById("leadsSection");
+const storiesSection = document.getElementById("storiesSection");
 const systemSection = document.getElementById("systemSection");
 const listSection = document.getElementById("listSection");
 const listTitle = document.getElementById("listTitle");
@@ -399,6 +456,8 @@ let cachedLeads = null;
 let leadsLoading = false;
 let systemLoading = false;
 let cachedSystemHealth = null;
+let cachedStories = [];
+let storiesLoading = false;
 
 function setMessage(type, text) {
     generationMessage.className = "message" + (type ? " " + type : "");
@@ -1600,12 +1659,257 @@ async function loadSystemCheck(force = false) {
 
 document.getElementById("systemRefresh").addEventListener("click", () => loadSystemCheck(true));
 
+
+function setStoryMessage(type, text) {
+    const box = document.getElementById("storyMessage");
+    box.className = "message" + (type ? " " + type : "");
+    box.textContent = text || "";
+}
+
+function formatStoryDate(value) {
+    if (!value) return "—";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+    return date.toLocaleString();
+}
+
+async function prepareStoryMedia(file) {
+    if (!file) throw new Error("Choose one image or video.");
+    const type = String(file.type || "").toLowerCase();
+    const name = String(file.name || "").toLowerCase();
+    const isVideo = type.startsWith("video/") || /\.(mp4|mov|m4v)$/.test(name);
+    if (isVideo) {
+        if (!(type === "video/mp4" || type === "video/quicktime" || type === "video/x-m4v" || /\.(mp4|mov|m4v)$/.test(name))) {
+            throw new Error("Story video must be MP4 or MOV.");
+        }
+        return file;
+    }
+    return await fileToInstagramJpeg(file, 1);
+}
+
+function renderStoryPreview(file) {
+    const box = document.getElementById("storyPreview");
+    box.innerHTML = "";
+    if (!file) {
+        box.innerHTML = '<div class="view-note">No Story media selected.</div>';
+        return;
+    }
+    const url = URL.createObjectURL(file);
+    const isVideo = String(file.type || "").startsWith("video/") || /\.(mp4|mov|m4v)$/i.test(file.name || "");
+    const node = document.createElement(isVideo ? "video" : "img");
+    node.src = url;
+    if (isVideo) {
+        node.controls = true;
+        node.muted = true;
+        node.playsInline = true;
+    }
+    node.onload = node.onloadedmetadata = function () { URL.revokeObjectURL(url); };
+    node.onerror = function () { URL.revokeObjectURL(url); box.innerHTML = '<div class="view-note">Could not preview this file.</div>'; };
+    box.appendChild(node);
+}
+
+document.getElementById("storyMedia").addEventListener("change", function () {
+    setStoryMessage("", "");
+    renderStoryPreview(this.files && this.files[0]);
+});
+
+async function submitStory(action) {
+    const input = document.getElementById("storyMedia");
+    const file = input.files && input.files[0];
+    if (!file) {
+        setStoryMessage("error", "Choose one image or video for the Story.");
+        return;
+    }
+    const scheduleInput = document.getElementById("storySchedule");
+    if (action === "schedule" && !scheduleInput.value) {
+        setStoryMessage("error", "Choose a date and time for the Story.");
+        return;
+    }
+
+    const publishButton = document.getElementById("storyPublishButton");
+    const scheduleButton = document.getElementById("storyScheduleButton");
+    publishButton.disabled = true;
+    scheduleButton.disabled = true;
+    setStoryMessage("", "");
+
+    try {
+        const prepared = await prepareStoryMedia(file);
+        const formData = new FormData();
+        formData.append("media", prepared, prepared.name || file.name || "story-media");
+        formData.append("action", action);
+        if (action === "schedule") formData.append("scheduled_for", scheduleInput.value);
+
+        setStoryMessage("success", action === "schedule" ? "Uploading and scheduling Story..." : "Uploading and publishing Story...");
+        const response = await fetch("/api/story-create", { method: "POST", body: formData });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Story operation failed.");
+
+        input.value = "";
+        scheduleInput.value = "";
+        renderStoryPreview(null);
+        cachedStories = [];
+        setStoryMessage("success", action === "schedule" ? "Story scheduled successfully ✓" : "Story published successfully ✓");
+        await loadStories(true);
+    } catch (error) {
+        console.error("Story error:", error);
+        setStoryMessage("error", error.message || "Story operation failed.");
+    } finally {
+        publishButton.disabled = false;
+        scheduleButton.disabled = false;
+    }
+}
+
+document.getElementById("storyPublishButton").addEventListener("click", () => submitStory("publish"));
+document.getElementById("storyScheduleButton").addEventListener("click", () => submitStory("schedule"));
+
+function renderStories(items) {
+    const list = document.getElementById("storiesList");
+    const status = document.getElementById("storiesStatus");
+    list.innerHTML = "";
+    const stories = Array.isArray(items) ? items : [];
+    status.textContent = stories.length ? `${stories.length} Story item(s).` : "No Stories yet.";
+    if (!stories.length) return;
+
+    stories.forEach(story => {
+        const row = document.createElement("div");
+        row.className = "story-item";
+
+        const thumb = document.createElement("div");
+        thumb.className = "story-thumb";
+        if (story.media_url) {
+            if (story.media_kind === "video") {
+                const video = document.createElement("video");
+                video.src = story.media_url;
+                video.muted = true;
+                video.preload = "metadata";
+                thumb.appendChild(video);
+            } else {
+                const img = document.createElement("img");
+                img.src = story.media_url;
+                img.loading = "lazy";
+                thumb.appendChild(img);
+            }
+        } else {
+            thumb.textContent = "Story";
+        }
+
+        const body = document.createElement("div");
+        const title = document.createElement("div");
+        title.className = "story-item-title";
+        title.textContent = story.media_kind === "video" ? "Video Story" : "Image Story";
+        const meta = document.createElement("div");
+        meta.className = "story-item-meta";
+        const statusValue = String(story.status || "unknown");
+        let details = `Created: ${formatStoryDate(story.created_at)}`;
+        if (story.scheduled_local) details += `\nScheduled: ${formatStoryDate(story.scheduled_local)}`;
+        if (story.published_at) details += `\nPublished: ${formatStoryDate(story.published_at)}`;
+        if (story.instagram_media_id) details += `\nInstagram Media ID: ${story.instagram_media_id}`;
+        meta.textContent = details;
+        meta.style.whiteSpace = "pre-line";
+        body.appendChild(title);
+        body.appendChild(meta);
+        if (story.error) {
+            const error = document.createElement("div");
+            error.className = "story-item-error";
+            error.textContent = story.error;
+            body.appendChild(error);
+        }
+
+        const actions = document.createElement("div");
+        actions.className = "story-item-actions";
+        const badge = document.createElement("span");
+        badge.className = "story-status " + statusValue;
+        badge.textContent = statusValue;
+        actions.appendChild(badge);
+
+        if (statusValue === "scheduled") {
+            const cancel = document.createElement("button");
+            cancel.className = "story-small-btn secondary";
+            cancel.type = "button";
+            cancel.textContent = "Cancel";
+            cancel.addEventListener("click", async () => {
+                if (!confirm("Cancel this scheduled Story?")) return;
+                cancel.disabled = true;
+                try {
+                    const response = await fetch("/api/story-cancel", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ story_id: story.id })
+                    });
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.error || "Could not cancel Story.");
+                    await loadStories(true);
+                } catch (error) {
+                    alert(error.message || "Could not cancel Story.");
+                } finally {
+                    cancel.disabled = false;
+                }
+            });
+            actions.appendChild(cancel);
+        }
+
+        if (["failed", "cancelled"].includes(statusValue)) {
+            const retry = document.createElement("button");
+            retry.className = "story-small-btn primary";
+            retry.type = "button";
+            retry.textContent = "Publish Now";
+            retry.addEventListener("click", async () => {
+                if (!confirm("Publish this Story now?")) return;
+                retry.disabled = true;
+                try {
+                    const response = await fetch("/api/story-retry", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ story_id: story.id })
+                    });
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.error || "Story publish failed.");
+                    await loadStories(true);
+                } catch (error) {
+                    alert(error.message || "Story publish failed.");
+                } finally {
+                    retry.disabled = false;
+                }
+            });
+            actions.appendChild(retry);
+        }
+
+        row.appendChild(thumb);
+        row.appendChild(body);
+        row.appendChild(actions);
+        list.appendChild(row);
+    });
+}
+
+async function loadStories(force = false) {
+    if (storiesLoading) return;
+    if (cachedStories.length && !force) {
+        renderStories(cachedStories);
+        return;
+    }
+    storiesLoading = true;
+    try {
+        const response = await fetch("/api/stories", { cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Could not load Stories.");
+        cachedStories = Array.isArray(data.stories) ? data.stories : [];
+        renderStories(cachedStories);
+    } catch (error) {
+        console.error("Stories load error:", error);
+        document.getElementById("storiesStatus").textContent = error.message || "Could not load Stories.";
+        document.getElementById("storiesList").innerHTML = "";
+    } finally {
+        storiesLoading = false;
+    }
+}
+
 function renderCurrentView() {
     const names = {
         dashboard: ["Content Dashboard", "Instagram automation • Online", "Recent Drafts"],
         new: ["New Post", "Create, approve, publish or schedule", "Recent Drafts"],
         drafts: ["Drafts", "Approved posts waiting for action", "Drafts"],
         scheduled: ["Scheduled", "Posts waiting for automatic publishing", "Scheduled Posts"],
+        stories: ["Stories", "Publish or schedule Instagram Stories", ""],
         published: ["Published", "Posts successfully published to Instagram", "Published Posts"],
         leads: ["Requests / Leads", "Instagram prompt requests and delivery status", ""],
         analytics: ["Analytics", "Live Instagram performance", ""],
@@ -1621,8 +1925,9 @@ function renderCurrentView() {
     composerSection.classList.toggle("hidden", !showComposer);
     analyticsSection.classList.toggle("hidden", currentView !== "analytics");
     leadsSection.classList.toggle("hidden", currentView !== "leads");
+    storiesSection.classList.toggle("hidden", currentView !== "stories");
     systemSection.classList.toggle("hidden", currentView !== "system");
-    listSection.classList.toggle("hidden", ["analytics", "dashboard", "leads", "system"].includes(currentView));
+    listSection.classList.toggle("hidden", ["analytics", "dashboard", "leads", "stories", "system"].includes(currentView));
 
     navButtons.forEach(btn => btn.classList.toggle("active", btn.dataset.view === currentView));
 
@@ -1632,6 +1937,8 @@ function renderCurrentView() {
         renderAnalytics();
     } else if (currentView === "leads") {
         loadLeads(true);
+    } else if (currentView === "stories") {
+        loadStories(true);
     } else if (currentView === "system") {
         loadSystemCheck(true);
     } else if (currentView === "published") {
@@ -1655,7 +1962,8 @@ navButtons.forEach(function (button) {
 
 function updateScheduleMinimum() {
     const input = document.getElementById("schedule");
-    if (!input) return;
+    const storyInput = document.getElementById("storySchedule");
+    if (!input && !storyInput) return;
 
     const now = new Date(Date.now() + 60000);
     const pad = value => String(value).padStart(2, "0");
@@ -1666,7 +1974,8 @@ function updateScheduleMinimum() {
         pad(now.getHours()) + ":" +
         pad(now.getMinutes());
 
-    input.min = localValue;
+    if (input) input.min = localValue;
+    if (storyInput) storyInput.min = localValue;
 }
 
 updateScheduleMinimum();
