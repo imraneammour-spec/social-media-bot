@@ -58,6 +58,12 @@ AUTO_STORY_SETTINGS_FILE = DATA_DIR / "auto_story_settings.json"
 DRAFTS_FILE = DATA_DIR / "dashboard_drafts.json"
 DRAFT_IMAGES_DIR = DATA_DIR / "dashboard_drafts"
 
+# Story and follow-up scheduler configuration. Posts remain manual-only.
+SCHEDULER_TIMEZONE = ZoneInfo("Africa/Casablanca")
+SCHEDULER_POLL_SECONDS = 15
+SCHEDULER_LOCKS_DIR = DATA_DIR / "scheduler_locks"
+SCHEDULER_LOCKS_DIR.mkdir(parents=True, exist_ok=True)
+
 load_dotenv(ENV_FILE)
 
 app = Flask(__name__)
