@@ -4666,51 +4666,108 @@ def retry_dashboard_story():
 
 
 def publish_scheduled_story(story_id):
+    """
+    Publish a scheduled Story safely.
+
+    The media URL is stored when the Story is scheduled, but the Instagram
+    Story container is created only when publication is due. If Meta returns
+    a transient publishing error, retry the complete create/wait/publish cycle
+    with a brand-new container instead of reusing an unavailable creation_id.
+    """
     lock_path = acquire_schedule_lock("story-" + str(story_id))
     if not lock_path:
         return
+
     try:
         with STATE_LOCK:
             stories = load_stories()
             story = _find_story(stories, story_id)
+
             if not story or not story_is_due(story):
                 return
+
             story["status"] = "publishing"
             story["publish_started_at"] = datetime.now(timezone.utc).isoformat()
             story["error"] = ""
-            media_url = str(story.get("media_url", "") or "")
-            media_kind = str(story.get("media_kind", "") or "")
+
+            media_url = str(story.get("media_url", "") or "").strip()
+            media_kind = str(story.get("media_kind", "") or "").strip().lower()
+
             save_stories(stories)
 
-        instagram_media_id, error_text = publish_instagram_story_url(media_url, media_kind)
+        instagram_media_id = None
+        error_text = ""
+
+        if not media_url:
+            error_text = "Scheduled Story media URL is missing."
+        elif media_kind not in {"image", "video"}:
+            error_text = "Scheduled Story media type is invalid."
+        else:
+            max_attempts = 3
+
+            for attempt in range(1, max_attempts + 1):
+                print(
+                    "Scheduled Story publish attempt:",
+                    story_id,
+                    f"{attempt}/{max_attempts}"
+                )
+
+                instagram_media_id, error_text = publish_instagram_story_url(
+                    media_url,
+                    media_kind
+                )
+
+                if instagram_media_id:
+                    break
+
+                print(
+                    "Scheduled Story publish attempt failed:",
+                    story_id,
+                    str(error_text or "")[:500]
+                )
+
+                if attempt < max_attempts:
+                    time.sleep(5)
+
         finished_at = datetime.now(timezone.utc).isoformat()
+
         with STATE_LOCK:
             stories = load_stories()
             story = _find_story(stories, story_id)
+
             if not story:
                 return
+
             if instagram_media_id:
                 story["status"] = "published"
                 story["published_at"] = finished_at
                 story["instagram_media_id"] = instagram_media_id
                 story["error"] = ""
+                story.pop("failed_at", None)
                 print("Scheduled Instagram Story published:", story_id, instagram_media_id)
             else:
                 story["status"] = "failed"
                 story["failed_at"] = finished_at
-                story["error"] = str(error_text or "Scheduled Story publishing failed.")[:1000]
+                story["error"] = str(
+                    error_text or "Scheduled Story publishing failed."
+                )[:1000]
                 print("Scheduled Instagram Story failed:", story_id, story["error"])
+
             save_stories(stories)
+
     except Exception as error:
         print("SCHEDULED STORY ERROR:", error)
+
         with STATE_LOCK:
             stories = load_stories()
             story = _find_story(stories, story_id)
+
             if story:
                 story["status"] = "failed"
                 story["failed_at"] = datetime.now(timezone.utc).isoformat()
                 story["error"] = str(error)[:1000]
                 save_stories(stories)
+
     finally:
         release_schedule_lock(lock_path)
 
