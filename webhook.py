@@ -3592,7 +3592,14 @@ Use exactly this structure:
 {
   "caption": "...",
   "cta": "...",
-  "hashtags": "..."
+  "hashtags": "...",
+  "music_suggestions": [
+    {"track": "...", "artist": "...", "reason": "..."},
+    {"track": "...", "artist": "...", "reason": "..."},
+    {"track": "...", "artist": "...", "reason": "..."},
+    {"track": "...", "artist": "...", "reason": "..."},
+    {"track": "...", "artist": "...", "reason": "..."}
+  ]
 }
 
 CAPTION RULES:
@@ -3614,6 +3621,15 @@ HASHTAGS:
 - Exactly 5 relevant hashtags.
 - One line.
 - Avoid spammy or unrelated hashtags.
+
+MUSIC SUGGESTIONS:
+- Return exactly 5 real, recognizable songs/tracks that fit the visual mood.
+- Prefer recent/popular/trend-friendly music when you have confidence, but NEVER claim
+  that a track is currently trending because this request has no live Instagram Music data.
+- Mix strong mainstream choices with visually suitable choices.
+- Give the real track title and artist.
+- reason must be one short sentence explaining why it fits this specific post.
+- The user will manually search these tracks inside Instagram Music before publishing.
 """
 
     contents = [prompt]
@@ -3667,7 +3683,17 @@ HASHTAGS:
 
             "hashtags": str(
                 result.get("hashtags", "")
-            ).strip()
+            ).strip(),
+
+            "music_suggestions": [
+                {
+                    "track": str(item.get("track", "") or "").strip(),
+                    "artist": str(item.get("artist", "") or "").strip(),
+                    "reason": str(item.get("reason", "") or "").strip()
+                }
+                for item in (result.get("music_suggestions", []) or [])[:5]
+                if isinstance(item, dict) and str(item.get("track", "") or "").strip()
+            ]
         }, 200
 
     except Exception as error:
@@ -6113,126 +6139,9 @@ def publish_instagram_draft(draft, public_base_url):
 
 @app.route("/api/publish-draft", methods=["POST"])
 def publish_dashboard_draft():
-
-    payload = request.get_json(silent=True) or {}
-    draft_id = str(payload.get("draft_id", "") or "").strip()
-
-    if not draft_id:
-        return {"error": "Draft ID is required."}, 400
-
-    publish_lock_path = None
-
-    with STATE_LOCK:
-        drafts = load_dashboard_drafts()
-
-        draft = next(
-            (
-                item
-                for item in drafts
-                if str(item.get("id", "")) == draft_id
-            ),
-            None
-        )
-
-        if not draft:
-            return {"error": "Draft not found."}, 404
-
-        if draft.get("status") == "published":
-            return {
-                "error": "This draft has already been published.",
-                "instagram_media_id": draft.get("instagram_media_id")
-            }, 409
-
-        was_scheduled = draft.get("status") == "scheduled"
-
-        # Work with a copy outside the lock while the network request runs.
-        draft_copy = dict(draft)
-
-    if was_scheduled:
-        publish_lock_path = acquire_schedule_lock(draft_id)
-        if not publish_lock_path:
-            return {
-                "error": "This scheduled post is currently being processed. Try again in a moment."
-            }, 409
-
-    # Railway sits behind a reverse proxy. Flask can see the internal
-    # request as HTTP even though the public site is HTTPS. Instagram
-    # requires a publicly reachable HTTPS media URL, so build the public
-    # base URL explicitly from Railway/proxy information.
-    railway_domain = str(
-        os.getenv("RAILWAY_PUBLIC_DOMAIN", "") or ""
-    ).strip()
-
-    if railway_domain:
-        public_base_url = f"https://{railway_domain}".rstrip("/")
-    else:
-        forwarded_host = str(
-            request.headers.get("X-Forwarded-Host")
-            or request.host
-            or ""
-        ).split(",")[0].strip()
-
-        if not forwarded_host:
-            return {
-                "error": "Could not determine the public Railway domain."
-            }, 500
-
-        public_base_url = f"https://{forwarded_host}".rstrip("/")
-
-    print("Instagram public media base URL:", public_base_url)
-
-    instagram_media_id, error_text = publish_instagram_draft(
-        draft_copy,
-        public_base_url
-    )
-
-    if not instagram_media_id:
-        if publish_lock_path:
-            release_schedule_lock(publish_lock_path)
-        return {
-            "error": error_text or "Instagram publishing failed."
-        }, 500
-
-    published_at = datetime.now(timezone.utc).isoformat()
-
-    with STATE_LOCK:
-        drafts = load_dashboard_drafts()
-
-        for item in drafts:
-            if str(item.get("id", "")) == draft_id:
-                item["status"] = "published"
-                item["published_at"] = published_at
-                item["instagram_media_id"] = instagram_media_id
-                break
-
-        save_json_file(DRAFTS_FILE, drafts)
-
-    print(
-        "Dashboard draft published:",
-        draft_id,
-        instagram_media_id
-    )
-
-    if publish_lock_path:
-        release_schedule_lock(publish_lock_path)
-
     return {
-        "success": True,
-        "draft_id": draft_id,
-        "status": "published",
-        "instagram_media_id": instagram_media_id
-    }, 200
-
-
-# ============================================================
-# DASHBOARD - SCHEDULED PUBLISHING
-# ============================================================
-
-SCHEDULER_TIMEZONE = ZoneInfo("Africa/Casablanca")
-SCHEDULER_POLL_SECONDS = 15
-SCHEDULER_LOCKS_DIR = DATA_DIR / "scheduler_locks"
-SCHEDULER_LOCKS_DIR.mkdir(parents=True, exist_ok=True)
-
+        "error": "Post auto-publishing is disabled. Use the Post Assistant, then publish manually in Instagram."
+    }, 410
 
 def parse_dashboard_schedule(value):
     """Convert the dashboard datetime-local value from Morocco time to UTC."""
@@ -6296,49 +6205,9 @@ def release_schedule_lock(lock_path):
 
 @app.route("/api/schedule-draft", methods=["POST"])
 def schedule_dashboard_draft():
-    payload = request.get_json(silent=True) or {}
-    draft_id = str(payload.get("draft_id", "") or "").strip()
-    scheduled_value = str(payload.get("scheduled_for", "") or "").strip()
-
-    if not draft_id:
-        return {"error": "Draft ID is required."}, 400
-
-    scheduled_utc, schedule_error = parse_dashboard_schedule(scheduled_value)
-    if not scheduled_utc:
-        return {"error": schedule_error}, 400
-
-    scheduled_local = scheduled_utc.astimezone(SCHEDULER_TIMEZONE)
-
-    with STATE_LOCK:
-        drafts = load_dashboard_drafts()
-        draft = next((item for item in drafts if str(item.get("id", "")) == draft_id), None)
-
-        if not draft:
-            return {"error": "Draft not found."}, 404
-
-        if draft.get("status") == "published":
-            return {
-                "error": "This draft has already been published.",
-                "instagram_media_id": draft.get("instagram_media_id")
-            }, 409
-
-        draft["status"] = "scheduled"
-        draft["scheduled_for"] = scheduled_utc.isoformat()
-        draft["scheduled_local"] = scheduled_local.isoformat()
-        draft["scheduled_timezone"] = "Africa/Casablanca"
-        draft["schedule_error"] = None
-        save_json_file(DRAFTS_FILE, drafts)
-
-    print("Dashboard draft scheduled:", draft_id, scheduled_local.isoformat())
     return {
-        "success": True,
-        "draft_id": draft_id,
-        "status": "scheduled",
-        "scheduled_for": scheduled_utc.isoformat(),
-        "scheduled_local": scheduled_local.isoformat(),
-        "timezone": "Africa/Casablanca"
-    }, 200
-
+        "error": "Post auto-publishing is disabled. Use the Post Assistant, then publish manually in Instagram."
+    }, 410
 
 @app.route("/api/cancel-schedule", methods=["POST"])
 def cancel_dashboard_schedule():
@@ -6501,7 +6370,7 @@ def dashboard_scheduler_loop():
     print("Dashboard scheduler: ON", f"({SCHEDULER_POLL_SECONDS}s, Africa/Casablanca)")
     while True:
         try:
-            process_due_scheduled_posts()
+            # V0.2: Posts are manual-publish only. Keep Story automation active.
             process_daily_auto_story()
             process_due_scheduled_stories()
             process_due_followups()
