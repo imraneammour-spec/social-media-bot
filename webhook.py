@@ -4544,10 +4544,17 @@ def _story_font(size, bold=True):
         except Exception:
             continue
 
-    # Last-resort fallback. This is intentionally kept only so Story creation
-    # does not crash if the host image unexpectedly has no TrueType fonts.
+    # Pillow 10.1+ ships a scalable built-in font. Unlike load_default()
+    # without a size, this renders sharply at the requested pixel size and
+    # does not depend on Linux/Windows system fonts being installed.
     try:
-        return ImageFont.load_default()
+        return ImageFont.load_default(size=int(size))
+    except TypeError:
+        # Compatibility fallback for older Pillow versions.
+        try:
+            return ImageFont.load_default()
+        except Exception:
+            return None
     except Exception:
         return None
 
