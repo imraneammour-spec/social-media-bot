@@ -3935,7 +3935,7 @@ def get_instagram_analytics():
                     "id,caption,media_type,media_url,thumbnail_url,permalink,"
                     "timestamp,like_count,comments_count"
                 ),
-                "limit": 12
+                "limit": 30
             }
         )
 
@@ -3948,7 +3948,7 @@ def get_instagram_analytics():
                     "fields": (
                         "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp"
                     ),
-                    "limit": 12
+                    "limit": 30
                 }
             )
 
@@ -4084,6 +4084,106 @@ def get_instagram_analytics():
     except Exception as error:
         print("INSTAGRAM ANALYTICS ERROR:", error)
         return {"error": "Could not load Instagram analytics."}, 500
+
+
+
+
+# ============================================================
+# V0.2 - SMART CONTENT PLANNER
+# ============================================================
+
+@app.route("/api/content-planner", methods=["POST"])
+def generate_content_planner():
+    """
+    Analyze up to the latest 30 Instagram posts supplied by the dashboard's
+    live analytics response and return one actionable next-post recommendation.
+    This endpoint is read-only: it never publishes or schedules anything.
+    """
+    if GEMINI_CLIENT is None:
+        return {"error": "Gemini client is not available."}, 500
+
+    payload = request.get_json(silent=True) or {}
+    raw_posts = payload.get("posts", [])
+    if not isinstance(raw_posts, list) or not raw_posts:
+        return {"error": "No Instagram analytics are available to analyze."}, 400
+
+    posts = []
+    for raw in raw_posts[:30]:
+        if not isinstance(raw, dict):
+            continue
+        posts.append({
+            "caption": str(raw.get("caption", "") or "")[:900],
+            "media_type": str(raw.get("media_type", "") or ""),
+            "timestamp": str(raw.get("timestamp", "") or ""),
+            "likes": int(raw.get("like_count", 0) or 0),
+            "comments": int(raw.get("comments_count", 0) or 0),
+            "reach": int(raw.get("reach", 0) or 0),
+            "saved": int(raw.get("saved", 0) or 0),
+            "shares": int(raw.get("shares", 0) or 0),
+            "views": int(raw.get("views", 0) or 0),
+        })
+
+    if not posts:
+        return {"error": "No valid Instagram posts are available to analyze."}, 400
+
+    prompt = """
+You are the Smart Content Planner for @imran.prompts, an Instagram account
+focused on premium AI imagery and AI prompts.
+
+Analyze the supplied recent Instagram post performance and recommend ONE
+specific next post. Use the metrics as evidence; do not invent metrics.
+
+Return ONLY valid JSON with exactly these keys:
+{
+  "content_type": "...",
+  "reason": "...",
+  "best_time": "HH:MM",
+  "caption": "...",
+  "cta": "...",
+  "hashtags": "..."
+}
+
+Rules:
+- English output.
+- content_type: short concrete creative direction, not a generic word.
+- reason: maximum 2 concise sentences and mention the performance pattern.
+- best_time: Morocco local time in 24-hour HH:MM format. Infer from timestamps
+  of stronger posts when possible; otherwise use a sensible evening time.
+- caption: premium, natural, concise, suitable for the recommended next post.
+- CTA: short and encourage "Comment AI" naturally.
+- hashtags: exactly 5 relevant hashtags on one line.
+- Never claim certainty about causation.
+- Do not publish or schedule anything.
+
+Recent post data:
+""" + json.dumps(posts, ensure_ascii=False)
+
+    try:
+        response = GEMINI_CLIENT.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.45
+            )
+        )
+        result = json.loads(response.text or "{}")
+        required = ("content_type", "reason", "best_time", "caption", "cta", "hashtags")
+        cleaned = {key: str(result.get(key, "") or "").strip() for key in required}
+
+        if not cleaned["content_type"] or not cleaned["caption"]:
+            return {"error": "Gemini returned an incomplete recommendation."}, 502
+
+        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", cleaned["best_time"]):
+            cleaned["best_time"] = "20:30"
+
+        cleaned["posts_analyzed"] = len(posts)
+        cleaned["success"] = True
+        return cleaned, 200
+
+    except Exception as error:
+        print("CONTENT PLANNER GEMINI ERROR:", error)
+        return {"error": "Gemini could not generate the content plan."}, 500
 
 
 @app.route("/api/published-permalink/<draft_id>", methods=["GET"])

@@ -445,6 +445,22 @@
             .analytics-post img { width:68px; height:68px; }
         }
 
+
+        /* V0.2 Smart Content Planner */
+        .planner-layout { display:grid; grid-template-columns:.8fr 1.2fr; gap:18px; }
+        .planner-result { display:grid; gap:12px; }
+        .planner-field { background:#111114; border:1px solid #29292f; border-radius:14px; padding:14px; }
+        .planner-field-label { color:#8d8d96; font-size:11px; text-transform:uppercase; letter-spacing:.06em; margin-bottom:7px; }
+        .planner-field-value { color:#f5f5f7; font-size:14px; line-height:1.5; white-space:pre-wrap; }
+        .planner-type { font-size:20px; font-weight:800; line-height:1.25; }
+        .planner-actions { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:4px; }
+        .planner-message { margin-top:12px; color:#aeb2c1; font-size:12px; line-height:1.45; }
+        .planner-message.error { color:#ffb4b4; }
+        @media(max-width:850px) {
+            .planner-layout { grid-template-columns:1fr; }
+            .planner-actions { grid-template-columns:1fr; }
+        }
+
     </style>
 </head>
 <body>
@@ -465,6 +481,7 @@
             <button data-view="published">Published</button>
             <button data-view="leads">Requests / Leads</button>
             <button data-view="analytics">Analytics</button>
+            <button data-view="planner">Content Planner</button>
             <button data-view="system">System Check</button>
         </div>
     </aside>
@@ -637,6 +654,56 @@
 
 
 
+
+        <div id="plannerSection" class="hidden">
+            <div class="planner-layout">
+                <section class="card">
+                    <h2>Smart Content Planner</h2>
+                    <div class="view-note">
+                        V0.2 analyzes your latest 30 Instagram posts and uses their real
+                        performance data to recommend the next content direction.
+                    </div>
+                    <button id="plannerAnalyzeButton" class="btn btn-primary" type="button">Analyze Instagram ✨</button>
+                    <div id="plannerStatus" class="planner-message">No analysis generated yet.</div>
+                </section>
+
+                <section class="card">
+                    <h2>Next post recommendation</h2>
+                    <div id="plannerEmpty" class="view-note">Press Analyze Instagram to generate a recommendation.</div>
+                    <div id="plannerResult" class="planner-result hidden">
+                        <div class="planner-field">
+                            <div class="planner-field-label">Recommended next post</div>
+                            <div id="plannerType" class="planner-field-value planner-type"></div>
+                        </div>
+                        <div class="planner-field">
+                            <div class="planner-field-label">Why</div>
+                            <div id="plannerReason" class="planner-field-value"></div>
+                        </div>
+                        <div class="planner-field">
+                            <div class="planner-field-label">Suggested Morocco time</div>
+                            <div id="plannerTime" class="planner-field-value"></div>
+                        </div>
+                        <div class="planner-field">
+                            <div class="planner-field-label">Caption</div>
+                            <div id="plannerCaption" class="planner-field-value"></div>
+                        </div>
+                        <div class="planner-field">
+                            <div class="planner-field-label">CTA</div>
+                            <div id="plannerCta" class="planner-field-value"></div>
+                        </div>
+                        <div class="planner-field">
+                            <div class="planner-field-label">Hashtags</div>
+                            <div id="plannerHashtags" class="planner-field-value"></div>
+                        </div>
+                        <div class="planner-actions">
+                            <button id="plannerCreateDraft" class="btn btn-primary" type="button">Create Draft</button>
+                            <button id="plannerRefresh" class="btn btn-secondary" type="button">Analyze Again</button>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </div>
+
         <div id="systemSection" class="hidden">
             <div class="system-summary">
                 <div class="system-summary-card"><div id="systemRequests" class="system-summary-value">—</div><div class="system-summary-label">Requests logged</div></div>
@@ -686,6 +753,7 @@ const analyticsSection = document.getElementById("analyticsSection");
 const leadsSection = document.getElementById("leadsSection");
 const storiesSection = document.getElementById("storiesSection");
 const systemSection = document.getElementById("systemSection");
+const plannerSection = document.getElementById("plannerSection");
 const listSection = document.getElementById("listSection");
 const listTitle = document.getElementById("listTitle");
 const pageTitle = document.getElementById("pageTitle");
@@ -703,6 +771,8 @@ let systemLoading = false;
 let cachedSystemHealth = null;
 let cachedStories = [];
 let storiesLoading = false;
+let cachedContentPlan = null;
+let plannerLoading = false;
 
 function setMessage(type, text) {
     generationMessage.className = "message" + (type ? " " + type : "");
@@ -2148,6 +2218,104 @@ async function loadStories(force = false) {
     }
 }
 
+
+// ============================================================
+// V0.2 - SMART CONTENT PLANNER
+// ============================================================
+function paintContentPlan(plan) {
+    cachedContentPlan = plan || null;
+    const result = document.getElementById("plannerResult");
+    const empty = document.getElementById("plannerEmpty");
+    if (!plan) {
+        result.classList.add("hidden");
+        empty.classList.remove("hidden");
+        return;
+    }
+
+    document.getElementById("plannerType").textContent = plan.content_type || "—";
+    document.getElementById("plannerReason").textContent = plan.reason || "—";
+    document.getElementById("plannerTime").textContent = plan.best_time || "—";
+    document.getElementById("plannerCaption").textContent = plan.caption || "—";
+    document.getElementById("plannerCta").textContent = plan.cta || "—";
+    document.getElementById("plannerHashtags").textContent = plan.hashtags || "—";
+    empty.classList.add("hidden");
+    result.classList.remove("hidden");
+}
+
+async function analyzeContentPlanner(forceAnalytics = false) {
+    if (plannerLoading) return;
+
+    const button = document.getElementById("plannerAnalyzeButton");
+    const status = document.getElementById("plannerStatus");
+    plannerLoading = true;
+    button.disabled = true;
+    button.textContent = "Analyzing 30 posts...";
+    status.className = "planner-message";
+    status.textContent = "Loading live Instagram performance...";
+
+    try {
+        if (!cachedInstagramAnalytics || forceAnalytics) {
+            const analyticsResponse = await fetch("/api/instagram-analytics", { cache: "no-store" });
+            const analyticsData = await analyticsResponse.json();
+            if (!analyticsResponse.ok) {
+                throw new Error(analyticsData.error || "Could not load Instagram analytics.");
+            }
+            cachedInstagramAnalytics = analyticsData;
+        }
+
+        const posts = Array.isArray(cachedInstagramAnalytics.posts)
+            ? cachedInstagramAnalytics.posts.slice(0, 30)
+            : [];
+
+        if (!posts.length) {
+            throw new Error("No Instagram posts are available for analysis.");
+        }
+
+        status.textContent = "Gemini is finding the strongest content pattern...";
+
+        const response = await fetch("/api/content-planner", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ posts: posts })
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || "Content Planner analysis failed.");
+        }
+
+        paintContentPlan(data);
+        status.textContent = "Analysis complete • " + (data.posts_analyzed || posts.length) + " posts analyzed.";
+
+    } catch (error) {
+        console.error("Content Planner error:", error);
+        status.className = "planner-message error";
+        status.textContent = error.message || "Content Planner analysis failed.";
+    } finally {
+        plannerLoading = false;
+        button.disabled = false;
+        button.textContent = "Analyze Instagram ✨";
+    }
+}
+
+document.getElementById("plannerAnalyzeButton").addEventListener("click", () => analyzeContentPlanner(true));
+document.getElementById("plannerRefresh").addEventListener("click", () => analyzeContentPlanner(true));
+
+document.getElementById("plannerCreateDraft").addEventListener("click", function () {
+    if (!cachedContentPlan) return;
+
+    caption.value = cachedContentPlan.caption || "";
+    cta.value = cachedContentPlan.cta || "";
+    hashtags.value = cachedContentPlan.hashtags || "";
+
+    switchView("new");
+    setMessage(
+        "success",
+        "Content Planner draft loaded ✓ Upload the image/carousel, then press Approve to save it."
+    );
+    window.scrollTo({ top: 0, behavior: "smooth" });
+});
+
+
 function renderCurrentView() {
     const names = {
         dashboard: ["Content Dashboard", "Instagram automation • Online", "Recent Drafts"],
@@ -2158,6 +2326,7 @@ function renderCurrentView() {
         published: ["Published", "Posts successfully published to Instagram", "Published Posts"],
         leads: ["Requests / Leads", "Instagram prompt requests and delivery status", ""],
         analytics: ["Analytics", "Live Instagram performance", ""],
+        planner: ["Content Planner", "V0.2 • AI recommendations from your latest 30 posts", ""],
         system: ["System Check", "V0.1 readiness • read-only diagnostics", ""]
     };
     const meta = names[currentView] || names.dashboard;
@@ -2172,7 +2341,8 @@ function renderCurrentView() {
     leadsSection.classList.toggle("hidden", currentView !== "leads");
     storiesSection.classList.toggle("hidden", currentView !== "stories");
     systemSection.classList.toggle("hidden", currentView !== "system");
-    listSection.classList.toggle("hidden", ["analytics", "dashboard", "leads", "stories", "system"].includes(currentView));
+    plannerSection.classList.toggle("hidden", currentView !== "planner");
+    listSection.classList.toggle("hidden", ["analytics", "dashboard", "leads", "stories", "system", "planner"].includes(currentView));
 
     navButtons.forEach(btn => btn.classList.toggle("active", btn.dataset.view === currentView));
 
@@ -2180,6 +2350,8 @@ function renderCurrentView() {
         renderDashboardOverview();
     } else if (currentView === "analytics") {
         renderAnalytics();
+    } else if (currentView === "planner") {
+        if (cachedContentPlan) paintContentPlan(cachedContentPlan);
     } else if (currentView === "leads") {
         loadLeads(true);
     } else if (currentView === "stories") {
