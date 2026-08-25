@@ -10,6 +10,7 @@ from pathlib import Path
 from io import BytesIO
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
@@ -4105,11 +4106,17 @@ Advanced analytics JSON:
 
 @app.route("/api/instagram-analytics", methods=["GET"])
 def get_instagram_analytics():
-    """Return resilient Instagram analytics for the latest media.
+    """Return resilient Instagram analytics without blocking Railway.
 
-    Likes/comments come from media fields. Media insights are requested
-    one metric at a time so an unsupported metric for one media type does
-    not break the whole Analytics page.
+    V0.2 fix: the previous implementation made up to five sequential insight
+    requests for every post. With 30 posts that could mean ~150 Graph API calls,
+    which can exceed the web request timeout; Railway then returns an HTML 5xx
+    page and the dashboard reports ``Unexpected token '<'`` while parsing JSON.
+
+    This version keeps the same JSON contract but fetches each post concurrently
+    and requests supported insight metrics in one Graph API call per post. If a
+    media type rejects an insight bundle, public counters still load and the
+    unsupported insights remain zero instead of breaking the whole page.
     """
     if not INSTAGRAM_ACCESS_TOKEN:
         return {"error": "Instagram access token is missing."}, 500
@@ -4123,13 +4130,13 @@ def get_instagram_analytics():
             except (TypeError, ValueError):
                 return 0
 
-    def graph_get(path, params=None):
+    def graph_get(path, params=None, timeout=12):
         query = dict(params or {})
         query["access_token"] = INSTAGRAM_ACCESS_TOKEN
         response = requests.get(
             f"https://graph.instagram.com/{API_VERSION}/{path.lstrip('/')}",
             params=query,
-            timeout=30
+            timeout=timeout,
         )
         try:
             data = response.json()
@@ -4137,18 +4144,86 @@ def get_instagram_analytics():
             data = {}
         return response, data
 
+    def insight_value(row):
+        if not isinstance(row, dict):
+            return 0
+        if "value" in row:
+            return as_int(row.get("value"))
+        values = row.get("values", [])
+        if isinstance(values, list) and values:
+            last = values[-1] if isinstance(values[-1], dict) else {}
+            return as_int(last.get("value"))
+        return 0
+
+    def build_post(raw):
+        media_id = str(raw.get("id", "") or "")
+        post = {
+            "id": media_id,
+            "caption": str(raw.get("caption", "") or ""),
+            "media_type": str(raw.get("media_type", "") or ""),
+            "media_url": str(raw.get("media_url", "") or ""),
+            "thumbnail_url": str(raw.get("thumbnail_url", "") or ""),
+            "permalink": str(raw.get("permalink", "") or ""),
+            "timestamp": str(raw.get("timestamp", "") or ""),
+            "like_count": as_int(raw.get("like_count")),
+            "comments_count": as_int(raw.get("comments_count")),
+            "reach": 0,
+            "saved": 0,
+            "shares": 0,
+            "views": 0,
+            "impressions": 0,
+            "available_insights": [],
+        }
+        if not media_id:
+            return post
+
+        # If list-level counters were unavailable, recover them without making
+        # this failure fatal. This normally does not add a request.
+        if "like_count" not in raw or "comments_count" not in raw:
+            try:
+                count_response, count_data = graph_get(
+                    media_id, {"fields": "like_count,comments_count"}
+                )
+                if count_response.ok and isinstance(count_data, dict):
+                    post["like_count"] = as_int(count_data.get("like_count"))
+                    post["comments_count"] = as_int(count_data.get("comments_count"))
+            except requests.RequestException:
+                pass
+
+        # One insights request per media instead of five sequential requests.
+        # `impressions` is intentionally excluded from the bundle because newer
+        # Instagram API versions/media types can reject it. The dashboard already
+        # treats missing metrics as zero.
+        try:
+            insight_response, insight_data = graph_get(
+                f"{media_id}/insights",
+                {"metric": "reach,saved,shares,views"},
+            )
+            if insight_response.ok and isinstance(insight_data, dict):
+                rows = insight_data.get("data", [])
+                if isinstance(rows, list):
+                    for row in rows:
+                        if not isinstance(row, dict):
+                            continue
+                        metric = str(row.get("name", "") or "")
+                        if metric in {"reach", "saved", "shares", "views"}:
+                            post[metric] = insight_value(row)
+                            post["available_insights"].append(metric)
+        except requests.RequestException:
+            pass
+
+        return post
+
     try:
-        # Account-level summary. These fields are available for professional
-        # Instagram accounts; if one is unavailable we still return media data.
         account = {
             "id": str(INSTAGRAM_USER_ID),
             "username": "",
             "followers_count": 0,
-            "media_count": 0
+            "media_count": 0,
         }
         account_response, account_data = graph_get(
             str(INSTAGRAM_USER_ID),
-            {"fields": "id,username,followers_count,media_count"}
+            {"fields": "id,username,followers_count,media_count"},
         )
         if account_response.ok and isinstance(account_data, dict):
             account["id"] = str(account_data.get("id", INSTAGRAM_USER_ID) or INSTAGRAM_USER_ID)
@@ -4156,7 +4231,6 @@ def get_instagram_analytics():
             account["followers_count"] = as_int(account_data.get("followers_count"))
             account["media_count"] = as_int(account_data.get("media_count"))
 
-        # Get the latest posts and the reliable public engagement counters.
         media_response, media_data = graph_get(
             f"{INSTAGRAM_USER_ID}/media",
             {
@@ -4164,21 +4238,18 @@ def get_instagram_analytics():
                     "id,caption,media_type,media_url,thumbnail_url,permalink,"
                     "timestamp,like_count,comments_count"
                 ),
-                "limit": 30
-            }
+                "limit": 30,
+            },
         )
 
-        # Some account/API combinations can reject one of the counters.
-        # Retry with the basic fields instead of failing the whole page.
+        # Some account/API combinations reject one of the public counters.
         if not media_response.ok:
             media_response, media_data = graph_get(
                 f"{INSTAGRAM_USER_ID}/media",
                 {
-                    "fields": (
-                        "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp"
-                    ),
-                    "limit": 30
-                }
+                    "fields": "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp",
+                    "limit": 30,
+                },
             )
 
         if not media_response.ok:
@@ -4192,108 +4263,60 @@ def get_instagram_analytics():
         raw_posts = media_data.get("data", []) if isinstance(media_data, dict) else []
         if not isinstance(raw_posts, list):
             raw_posts = []
+        raw_posts = [item for item in raw_posts[:30] if isinstance(item, dict) and item.get("id")]
 
-        posts = []
+        # Keep the request comfortably below Railway's web timeout. Results are
+        # restored to Instagram's original order after concurrent fetching.
+        indexed_posts = {}
+        if raw_posts:
+            worker_count = min(8, len(raw_posts))
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                future_map = {
+                    executor.submit(build_post, raw): index
+                    for index, raw in enumerate(raw_posts)
+                }
+                for future in as_completed(future_map):
+                    index = future_map[future]
+                    try:
+                        indexed_posts[index] = future.result()
+                    except Exception as error:
+                        print("INSTAGRAM ANALYTICS MEDIA ERROR:", error)
+                        indexed_posts[index] = build_post(raw_posts[index]) if False else {
+                            "id": str(raw_posts[index].get("id", "") or ""),
+                            "caption": str(raw_posts[index].get("caption", "") or ""),
+                            "media_type": str(raw_posts[index].get("media_type", "") or ""),
+                            "media_url": str(raw_posts[index].get("media_url", "") or ""),
+                            "thumbnail_url": str(raw_posts[index].get("thumbnail_url", "") or ""),
+                            "permalink": str(raw_posts[index].get("permalink", "") or ""),
+                            "timestamp": str(raw_posts[index].get("timestamp", "") or ""),
+                            "like_count": as_int(raw_posts[index].get("like_count")),
+                            "comments_count": as_int(raw_posts[index].get("comments_count")),
+                            "reach": 0, "saved": 0, "shares": 0, "views": 0,
+                            "impressions": 0, "available_insights": [],
+                        }
+
+        posts = [indexed_posts[index] for index in sorted(indexed_posts)]
+
         totals = {
-            "posts": 0,
-            "likes": 0,
-            "comments": 0,
-            "reach": 0,
-            "saved": 0,
-            "shares": 0,
-            "views": 0,
-            "impressions": 0
+            "posts": len(posts),
+            "likes": sum(as_int(item.get("like_count")) for item in posts),
+            "comments": sum(as_int(item.get("comments_count")) for item in posts),
+            "reach": sum(as_int(item.get("reach")) for item in posts),
+            "saved": sum(as_int(item.get("saved")) for item in posts),
+            "shares": sum(as_int(item.get("shares")) for item in posts),
+            "views": sum(as_int(item.get("views")) for item in posts),
+            "impressions": sum(as_int(item.get("impressions")) for item in posts),
         }
 
-        # Query each insight separately. Instagram exposes different metrics
-        # depending on IMAGE / CAROUSEL_ALBUM / VIDEO / REELS, so unsupported
-        # metrics are simply omitted rather than turning the endpoint into an error.
-        insight_metrics = ("reach", "saved", "shares", "views", "impressions")
-
-        for raw in raw_posts:
-            if not isinstance(raw, dict):
-                continue
-
-            media_id = str(raw.get("id", "") or "")
-            if not media_id:
-                continue
-
-            post = {
-                "id": media_id,
-                "caption": str(raw.get("caption", "") or ""),
-                "media_type": str(raw.get("media_type", "") or ""),
-                "media_url": str(raw.get("media_url", "") or ""),
-                "thumbnail_url": str(raw.get("thumbnail_url", "") or ""),
-                "permalink": str(raw.get("permalink", "") or ""),
-                "timestamp": str(raw.get("timestamp", "") or ""),
-                "like_count": as_int(raw.get("like_count")),
-                "comments_count": as_int(raw.get("comments_count")),
-                "reach": 0,
-                "saved": 0,
-                "shares": 0,
-                "views": 0,
-                "impressions": 0,
-                "available_insights": []
-            }
-
-            # If counters were absent from the media list response, try the
-            # individual media node. Failure here is harmless.
-            if "like_count" not in raw or "comments_count" not in raw:
-                count_response, count_data = graph_get(
-                    media_id,
-                    {"fields": "like_count,comments_count"}
-                )
-                if count_response.ok and isinstance(count_data, dict):
-                    post["like_count"] = as_int(count_data.get("like_count"))
-                    post["comments_count"] = as_int(count_data.get("comments_count"))
-
-            for metric in insight_metrics:
-                insight_response, insight_data = graph_get(
-                    f"{media_id}/insights",
-                    {"metric": metric}
-                )
-                if not insight_response.ok or not isinstance(insight_data, dict):
-                    continue
-
-                rows = insight_data.get("data", [])
-                if not isinstance(rows, list) or not rows:
-                    continue
-
-                value = 0
-                first = rows[0] if isinstance(rows[0], dict) else {}
-                # Current API responses can expose a direct value or a values array.
-                if "value" in first:
-                    value = as_int(first.get("value"))
-                else:
-                    values = first.get("values", [])
-                    if isinstance(values, list) and values:
-                        last_value = values[-1] if isinstance(values[-1], dict) else {}
-                        value = as_int(last_value.get("value"))
-
-                post[metric] = value
-                post["available_insights"].append(metric)
-
-            totals["posts"] += 1
-            totals["likes"] += post["like_count"]
-            totals["comments"] += post["comments_count"]
-            totals["reach"] += post["reach"]
-            totals["saved"] += post["saved"]
-            totals["shares"] += post["shares"]
-            totals["views"] += post["views"]
-            totals["impressions"] += post["impressions"]
-
-            posts.append(post)
-
-        # Highest-engagement first for the "Top posts" area.
         ranked = sorted(
             posts,
             key=lambda item: (
-                item.get("like_count", 0)
-                + item.get("comments_count", 0)
-                + item.get("saved", 0)
-                + item.get("shares", 0)
+                as_int(item.get("like_count"))
+                + as_int(item.get("comments_count"))
+                + as_int(item.get("saved"))
+                + as_int(item.get("shares"))
             ),
-            reverse=True
+            reverse=True,
         )
 
         advanced = build_advanced_analytics(posts, account.get("followers_count", 0))
@@ -4306,9 +4329,10 @@ def get_instagram_analytics():
             "top_posts": ranked[:6],
             "advanced": advanced,
             "note": (
-                "Reach, saves, shares, views and impressions depend on the "
-                "Instagram media type and the permissions available to this account."
-            )
+                "Reach, saves, shares and views depend on the Instagram media type "
+                "and permissions available to this account. Analytics now uses a "
+                "bounded concurrent fetch to avoid web-request timeouts."
+            ),
         }, 200
 
     except requests.RequestException as error:
