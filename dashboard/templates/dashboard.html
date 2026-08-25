@@ -32,9 +32,6 @@
         .btn:disabled { opacity: .55; cursor: not-allowed; }
         .btn-primary { background: white; color: #111; }
         .btn-secondary { background: #27272d; color: white; }
-        .approval { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 15px; }
-        .approve { background: #ffffff; color: #111; }
-        .reject { background: #2a2a30; color: #ddd; }
         .preview-images { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 15px; }
         .preview-images img { width: 80px; height: 80px; object-fit: cover; border-radius: 10px; border: 1px solid #333; }
         .section-title { margin: 28px 0 15px; color: #aaaab4; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; }
@@ -502,11 +499,8 @@
         <div class="logo">IMRAN <span>PROMPTS</span></div>
         <div class="nav">
             <button class="active" data-view="dashboard">Dashboard</button>
-            <button data-view="new">New Post</button>
-            <button data-view="drafts">Drafts</button>
-            <button data-view="scheduled">Scheduled</button>
+            <button data-view="new">Post Assistant</button>
             <button data-view="stories">Stories</button>
-            <button data-view="published">Published</button>
             <button data-view="leads">Requests / Leads</button>
             <button data-view="analytics">Analytics</button>
             <button data-view="planner">Content Planner</button>
@@ -525,9 +519,9 @@
 
         <div id="dashboardOverview">
             <div class="overview-grid">
-                <div class="overview-card"><div id="overviewDrafts" class="overview-value">—</div><div class="overview-label">Drafts</div></div>
-                <div class="overview-card"><div id="overviewScheduled" class="overview-value">—</div><div class="overview-label">Scheduled</div></div>
-                <div class="overview-card"><div id="overviewPublished" class="overview-value">—</div><div class="overview-label">Published / analyzed</div></div>
+                <div class="overview-card"><div id="overviewStoriesScheduled" class="overview-value">—</div><div class="overview-label">Stories scheduled</div></div>
+                <div class="overview-card"><div id="overviewStoriesPublished" class="overview-value">—</div><div class="overview-label">Stories published</div></div>
+                <div class="overview-card"><div id="overviewPublished" class="overview-value">—</div><div class="overview-label">Posts analyzed</div></div>
                 <div class="overview-card"><div id="overviewReach" class="overview-value">—</div><div class="overview-label">Recent reach</div></div>
             </div>
 
@@ -535,16 +529,16 @@
                 <section class="card">
                     <h2>Workflow overview</h2>
                     <div class="overview-row">
-                        <div><div class="overview-row-title">Drafts waiting for action</div><div class="overview-row-sub">Approved posts ready to publish or schedule.</div></div>
-                        <span id="overviewDraftBadge" class="overview-pill">—</span>
+                        <div><div class="overview-row-title">Story automation</div><div id="overviewStoriesSummary" class="overview-row-sub">Loading Story status...</div></div>
+                        <span id="overviewStoriesBadge" class="overview-pill">—</span>
                     </div>
                     <div class="overview-row">
-                        <div><div class="overview-row-title">Next scheduled post</div><div id="overviewNextScheduled" class="overview-row-sub">No scheduled post.</div></div>
-                        <span id="overviewScheduledBadge" class="overview-pill">—</span>
+                        <div><div class="overview-row-title">Post workflow</div><div class="overview-row-sub">Create a Post Kit with Gemini, then publish manually in Instagram.</div></div>
+                        <span class="overview-pill">Manual</span>
                     </div>
                     <div class="overview-actions">
-                        <button id="overviewNewPost" class="overview-action primary" type="button">Create New Post</button>
-                        <button id="overviewOpenScheduled" class="overview-action secondary" type="button">Open Scheduled</button>
+                        <button id="overviewNewPost" class="overview-action primary" type="button">Create Post Kit</button>
+                        <button id="overviewOpenStories" class="overview-action secondary" type="button">Open Stories</button>
                     </div>
                 </section>
 
@@ -560,7 +554,6 @@
                     <div id="overviewBestPost"></div>
                     <div class="overview-actions">
                         <button id="overviewOpenAnalytics" class="overview-action secondary" type="button">Open Analytics</button>
-                        <button id="overviewOpenPublished" class="overview-action secondary" type="button">Open Published</button>
                     </div>
                 </section>
             </div>
@@ -782,7 +775,6 @@
                 <div class="system-summary-card"><div id="systemRequests" class="system-summary-value">—</div><div class="system-summary-label">Requests logged</div></div>
                 <div class="system-summary-card"><div id="systemFollowPending" class="system-summary-value">—</div><div class="system-summary-label">Follow-ups pending</div></div>
                 <div class="system-summary-card"><div id="systemFollowSent" class="system-summary-value">—</div><div class="system-summary-label">Follow-ups sent</div></div>
-                <div class="system-summary-card"><div id="systemScheduled" class="system-summary-value">—</div><div class="system-summary-label">Scheduled posts</div></div>
             </div>
 
             <section class="card">
@@ -801,12 +793,6 @@
             </section>
         </div>
 
-        <div id="listSection">
-        <div id="listTitle" class="section-title">Recent Drafts</div>
-        <section class="card">
-            <div id="draftsList" class="empty-drafts">Loading drafts...</div>
-        </section>
-        </div>
     </main>
 </div>
 
@@ -818,8 +804,6 @@ const generationMessage = document.getElementById("generationMessage");
 const caption = document.getElementById("caption");
 const cta = document.getElementById("cta");
 const hashtags = document.getElementById("hashtags");
-const approveButton = document.getElementById("approveButton");
-const draftsList = document.getElementById("draftsList");
 const composerSection = document.getElementById("composerSection");
 const dashboardOverview = document.getElementById("dashboardOverview");
 const analyticsSection = document.getElementById("analyticsSection");
@@ -827,15 +811,10 @@ const leadsSection = document.getElementById("leadsSection");
 const storiesSection = document.getElementById("storiesSection");
 const systemSection = document.getElementById("systemSection");
 const plannerSection = document.getElementById("plannerSection");
-const listSection = document.getElementById("listSection");
-const listTitle = document.getElementById("listTitle");
 const pageTitle = document.getElementById("pageTitle");
 const pageSubtitle = document.getElementById("pageSubtitle");
 const navButtons = Array.from(document.querySelectorAll(".nav button[data-view]"));
-let currentDraftId = "";
 let currentView = "dashboard";
-let cachedDrafts = [];
-let cachedInstagramPublished = [];
 let cachedInstagramAnalytics = null;
 let analyticsLoading = false;
 let cachedLeads = null;
@@ -850,6 +829,15 @@ let plannerLoading = false;
 function setMessage(type, text) {
     generationMessage.className = "message" + (type ? " " + type : "");
     generationMessage.textContent = text || "";
+}
+
+function escapeHtml(value) {
+    return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
 }
 
 async function fileToInstagramJpeg(file, index) {
@@ -1003,6 +991,701 @@ generateButton.addEventListener("click", async function () {
     }
 });
 
+function formatMetric(value) {
+    const number = Number(value || 0);
+    if (!Number.isFinite(number)) return "0";
+    return new Intl.NumberFormat().format(number);
+}
+
+function renderAnalyticsPost(post) {
+    const card = document.createElement("div");
+    card.className = "analytics-post";
+
+    const image = document.createElement("img");
+    image.loading = "lazy";
+    image.alt = "Instagram post";
+    image.src = post.thumbnail_url || post.media_url || "";
+    image.onerror = function () { this.style.display = "none"; };
+
+    const body = document.createElement("div");
+    body.className = "analytics-post-body";
+    const captionText = document.createElement("div");
+    captionText.className = "analytics-post-caption";
+    captionText.textContent = post.caption || "Instagram post";
+
+    const metrics = document.createElement("div");
+    metrics.className = "analytics-metrics";
+    [
+        ["Likes", post.like_count], ["Comments", post.comments_count],
+        ["Reach", post.reach], ["Saves", post.saved],
+        ["Shares", post.shares], ["Views", post.views]
+    ].forEach(([label, value]) => {
+        const item = document.createElement("span");
+        item.innerHTML = "<strong>" + formatMetric(value) + "</strong> " + label;
+        metrics.appendChild(item);
+    });
+
+    body.appendChild(captionText);
+    body.appendChild(metrics);
+    card.appendChild(image);
+    card.appendChild(body);
+    if (post.permalink) {
+        card.style.cursor = "pointer";
+        card.title = "Open on Instagram";
+        card.addEventListener("click", () => window.open(post.permalink, "_blank", "noopener,noreferrer"));
+    }
+    return card;
+}
+
+async function renderAnalytics(force = false) {
+    const analyticsText = document.getElementById("analyticsText");
+    const analyticsStatus = document.getElementById("analyticsStatus");
+    const analyticsPosts = document.getElementById("analyticsPosts");
+    if (analyticsLoading) return;
+    if (cachedInstagramAnalytics && !force) {
+        paintAnalytics(cachedInstagramAnalytics);
+        return;
+    }
+
+    analyticsLoading = true;
+    analyticsText.textContent = "Loading live Instagram analytics...";
+    analyticsStatus.textContent = "";
+    analyticsStatus.classList.remove("analytics-error");
+    analyticsPosts.innerHTML = "";
+    try {
+        const response = await fetch("/api/instagram-analytics", { cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Could not load Instagram analytics.");
+        cachedInstagramAnalytics = data;
+        paintAnalytics(data);
+    } catch (error) {
+        console.error("Instagram analytics error:", error);
+        analyticsText.textContent = "Instagram analytics could not be loaded.";
+        analyticsStatus.textContent = error.message || "Unknown Instagram analytics error.";
+        analyticsStatus.classList.add("analytics-error");
+    } finally {
+        analyticsLoading = false;
+    }
+}
+
+function paintAnalytics(data) {
+    const account = data.account || {};
+    const totals = data.totals || {};
+    const topPosts = Array.isArray(data.top_posts) ? data.top_posts : [];
+    const analyticsText = document.getElementById("analyticsText");
+    const analyticsStatus = document.getElementById("analyticsStatus");
+    const analyticsPosts = document.getElementById("analyticsPosts");
+
+    document.getElementById("statFollowers").textContent = formatMetric(account.followers_count);
+    document.getElementById("statLikes").textContent = formatMetric(totals.likes);
+    document.getElementById("statComments").textContent = formatMetric(totals.comments);
+    document.getElementById("statReach").textContent = formatMetric(totals.reach);
+    document.getElementById("statSaves").textContent = formatMetric(totals.saved);
+    document.getElementById("statViews").textContent = formatMetric(totals.views || totals.impressions);
+    document.getElementById("statShares").textContent = formatMetric(totals.shares);
+    document.getElementById("statPostsAnalyzed").textContent = formatMetric(totals.posts);
+
+    analyticsText.textContent = (account.username ? "@" + account.username : "Instagram") +
+        " • Live totals from the latest " + formatMetric(totals.posts) + " posts.";
+    analyticsStatus.textContent = data.note || "";
+    analyticsStatus.classList.remove("analytics-error");
+    analyticsPosts.innerHTML = "";
+    if (!topPosts.length) {
+        const empty = document.createElement("div");
+        empty.className = "view-note";
+        empty.textContent = "No Instagram posts available for analytics yet.";
+        analyticsPosts.appendChild(empty);
+    } else {
+        topPosts.forEach(post => analyticsPosts.appendChild(renderAnalyticsPost(post)));
+    }
+    paintAdvancedAnalytics(data);
+}
+
+function paintAdvancedAnalytics(data) {
+    const advanced = data.advanced || {};
+    const rate = advanced.engagement_rate || {};
+    const bestType = advanced.best_content_type || {};
+    const trend = advanced.growth_trend || {};
+    const average = advanced.average_per_post || {};
+    const hours = Array.isArray(advanced.best_posting_hours) ? advanced.best_posting_hours : [];
+    const topPosts = Array.isArray(advanced.top_posts) ? advanced.top_posts : [];
+
+    document.getElementById("advancedEngagementRate").textContent = Number(rate.value || 0).toFixed(2).replace(/\.00$/, "") + "%";
+    document.getElementById("advancedEngagementBasis").textContent = rate.basis === "followers"
+        ? "Average engagement ÷ followers" : "Engagement actions ÷ reach";
+    document.getElementById("advancedBestType").textContent = bestType.type || "—";
+    document.getElementById("advancedBestTypeMeta").textContent = bestType.posts
+        ? formatMetric(bestType.posts) + " recent post(s) in this format" : "Not enough data";
+
+    const growth = document.getElementById("advancedGrowth");
+    const change = Number(trend.change_percent || 0);
+    const direction = ["up", "down", "flat"].includes(trend.direction) ? trend.direction : "flat";
+    growth.className = "advanced-value advanced-trend " + direction;
+    growth.textContent = (change > 0 ? "+" : "") + change.toFixed(1) + "%";
+    document.getElementById("advancedAvgReach").textContent = formatMetric(average.reach);
+    document.getElementById("advancedAvgViews").textContent = "Avg. views: " + formatMetric(average.views);
+
+    const hoursBox = document.getElementById("advancedHours");
+    hoursBox.innerHTML = "";
+    (hours.length ? hours : [{ hour: "Not enough timestamp data", posts: "" }]).forEach(item => {
+        const pill = document.createElement("span");
+        pill.className = "advanced-hour";
+        pill.textContent = item.posts === "" ? item.hour : (item.hour || "—") + " • " + formatMetric(item.posts) + " post(s)";
+        hoursBox.appendChild(pill);
+    });
+    document.getElementById("advancedAiSummary").textContent = advanced.ai_summary || "No AI summary available.";
+    const topBox = document.getElementById("advancedTopPosts");
+    topBox.innerHTML = "";
+    if (topPosts.length) topPosts.slice(0, 5).forEach(post => topBox.appendChild(renderAnalyticsPost(post)));
+    else {
+        const empty = document.createElement("div");
+        empty.className = "view-note";
+        empty.textContent = "No posts available for advanced ranking.";
+        topBox.appendChild(empty);
+    }
+}
+
+function formatLeadDate(value) {
+    if (!value) return "";
+    try { return new Date(value).toLocaleString(); }
+    catch (error) { return String(value); }
+}
+
+function renderLeads(data) {
+    const summary = data.summary || {};
+    const leads = Array.isArray(data.leads) ? data.leads : [];
+    const profiles = Array.isArray(data.profiles) ? data.profiles : [];
+    document.getElementById("leadTotal").textContent = formatMetric(summary.total);
+    document.getElementById("leadUnique").textContent = formatMetric(summary.unique_people);
+    document.getElementById("leadReturning").textContent = formatMetric(summary.returning_people);
+    document.getElementById("leadHot").textContent = formatMetric(summary.hot_leads);
+    document.getElementById("leadFollowPending").textContent = formatMetric(summary.followup_pending);
+    document.getElementById("leadFollowSent").textContent = formatMetric(summary.followup_sent);
+
+    const list = document.getElementById("leadsList");
+    const profilesList = document.getElementById("leadProfiles");
+    const status = document.getElementById("leadsStatus");
+    list.innerHTML = "";
+    profilesList.innerHTML = "";
+    status.textContent = (summary.delivered || 0) + " delivered • " +
+        (summary.waiting || 0) + " waiting • " + (summary.returning_people || 0) +
+        " returning people • " + (summary.followup_pending || 0) +
+        " follow-up pending • " + (summary.followup_sent || 0) + " sent.";
+
+    if (!profiles.length) {
+        const empty = document.createElement("div");
+        empty.className = "lead-empty";
+        empty.textContent = "No lead profiles yet.";
+        profilesList.appendChild(empty);
+    } else {
+        profiles.forEach(profile => {
+            const card = document.createElement("div");
+            card.className = "lead-profile";
+            const image = document.createElement("img");
+            image.className = "lead-profile-image";
+            image.loading = "lazy";
+            image.alt = "Latest requested Instagram post";
+            image.src = profile.latest_post_thumbnail_url || profile.latest_post_media_url || "";
+            image.onerror = function () { this.style.visibility = "hidden"; };
+
+            const body = document.createElement("div");
+            const name = document.createElement("div");
+            name.className = "lead-profile-name";
+            name.textContent = profile.username ? "@" + profile.username : (profile.commenter_id ? "Instagram user " + profile.commenter_id : "Instagram user");
+            const meta = document.createElement("div");
+            meta.className = "lead-profile-meta";
+            meta.textContent = formatMetric(profile.request_count) + " prompt request(s) • " +
+                formatMetric(profile.delivered_count) + " delivered • " + formatMetric(profile.waiting_count) + " waiting\n" +
+                "Last activity: " + formatLeadDate(profile.last_activity) + "\nAuto follow-up: " +
+                (profile.followup_status ? profile.followup_status.replaceAll("_", " ") : "not queued");
+            meta.style.whiteSpace = "pre-line";
+            body.appendChild(name);
+            body.appendChild(meta);
+            const latestUrl = profile.latest_post_permalink || profile.latest_page_url || "";
+            if (latestUrl) {
+                const link = document.createElement("a");
+                link.className = "lead-profile-link";
+                link.href = latestUrl;
+                link.target = "_blank";
+                link.rel = "noopener noreferrer";
+                link.textContent = "View latest activity →";
+                body.appendChild(link);
+            }
+            const temperature = document.createElement("span");
+            temperature.className = "lead-temp " + (profile.temperature || "new");
+            temperature.textContent = profile.temperature || "new";
+            card.appendChild(image);
+            card.appendChild(body);
+            card.appendChild(temperature);
+            profilesList.appendChild(card);
+        });
+    }
+
+    if (!leads.length) {
+        const empty = document.createElement("div");
+        empty.className = "lead-empty";
+        empty.textContent = "No prompt requests recorded yet.";
+        list.appendChild(empty);
+        return;
+    }
+    leads.forEach(lead => {
+        const card = document.createElement("div");
+        card.className = "lead-card";
+        const image = document.createElement("img");
+        image.className = "lead-image";
+        image.loading = "lazy";
+        image.alt = "Instagram post";
+        image.src = lead.post_thumbnail_url || lead.post_media_url || "";
+        image.onerror = function () { this.style.visibility = "hidden"; };
+        const body = document.createElement("div");
+        const person = document.createElement("div");
+        person.className = "lead-person";
+        person.textContent = lead.username ? "@" + lead.username : (lead.commenter_id ? "Instagram user " + lead.commenter_id : "Instagram user");
+        const post = document.createElement("div");
+        post.className = "lead-post";
+        post.textContent = lead.post_caption || (lead.media_id ? "Post " + lead.media_id : "Prompt request");
+        const meta = document.createElement("div");
+        meta.className = "lead-meta";
+        meta.textContent = formatLeadDate(lead.created_at) + (lead.comment_id ? " • Comment " + lead.comment_id : "");
+        body.appendChild(person);
+        body.appendChild(post);
+        body.appendChild(meta);
+        const actions = document.createElement("div");
+        actions.className = "lead-actions";
+        const badge = document.createElement("span");
+        badge.className = "lead-badge " + (lead.status || "");
+        badge.textContent = lead.status_label || lead.status || "Request";
+        actions.appendChild(badge);
+        const linkUrl = lead.post_permalink || lead.page_url || "";
+        if (linkUrl) {
+            const link = document.createElement("a");
+            link.className = "lead-link";
+            link.href = linkUrl;
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            link.textContent = lead.post_permalink ? "View Post" : "View Prompt Page";
+            actions.appendChild(link);
+        }
+        card.appendChild(image);
+        card.appendChild(body);
+        card.appendChild(actions);
+        list.appendChild(card);
+    });
+}
+
+async function loadLeads(force = false) {
+    if (leadsLoading) return;
+    if (cachedLeads && !force) {
+        renderLeads(cachedLeads);
+        return;
+    }
+    leadsLoading = true;
+    const status = document.getElementById("leadsStatus");
+    const list = document.getElementById("leadsList");
+    status.textContent = "Loading prompt requests...";
+    try {
+        const response = await fetch("/api/leads", { cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Could not load leads.");
+        cachedLeads = data;
+        renderLeads(data);
+    } catch (error) {
+        console.error("Leads error:", error);
+        status.textContent = error.message || "Could not load prompt requests.";
+        list.innerHTML = '<div class="lead-empty">Could not load requests.</div>';
+    } finally {
+        leadsLoading = false;
+    }
+}
+
+function formatOverviewDate(value) {
+    if (!value) return "No scheduled Story.";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+}
+
+function paintDashboardAnalytics(data) {
+    const account = data.account || {};
+    const totals = data.totals || {};
+    const topPosts = Array.isArray(data.top_posts) ? data.top_posts : [];
+    document.getElementById("overviewPublished").textContent = formatMetric(totals.posts);
+    document.getElementById("overviewReach").textContent = formatMetric(totals.reach);
+    document.getElementById("overviewFollowers").textContent = formatMetric(account.followers_count);
+    document.getElementById("overviewLikes").textContent = formatMetric(totals.likes);
+    document.getElementById("overviewViews").textContent = formatMetric(totals.views || totals.impressions);
+    document.getElementById("overviewShares").textContent = formatMetric(totals.shares);
+    document.getElementById("overviewAnalyticsStatus").textContent =
+        (account.username ? "@" + account.username : "Instagram") + " • latest " + formatMetric(totals.posts) + " posts";
+
+    const bestContainer = document.getElementById("overviewBestPost");
+    bestContainer.innerHTML = "";
+    const best = topPosts[0];
+    if (!best) return;
+    const card = document.createElement("div");
+    card.className = "overview-best-post";
+    const image = document.createElement("img");
+    image.alt = "Top Instagram post";
+    image.src = best.thumbnail_url || best.media_url || "";
+    image.onerror = function () { this.style.display = "none"; };
+    const body = document.createElement("div");
+    body.className = "overview-best-body";
+    const captionEl = document.createElement("div");
+    captionEl.className = "overview-best-caption";
+    captionEl.textContent = best.caption || "Top Instagram post";
+    const meta = document.createElement("div");
+    meta.className = "overview-best-meta";
+    meta.textContent = formatMetric(best.like_count) + " likes • " + formatMetric(best.comments_count) + " comments • " + formatMetric(best.reach) + " reach";
+    body.appendChild(captionEl);
+    body.appendChild(meta);
+    card.appendChild(image);
+    card.appendChild(body);
+    if (best.permalink) {
+        card.style.cursor = "pointer";
+        card.title = "Open on Instagram";
+        card.addEventListener("click", () => window.open(best.permalink, "_blank", "noopener,noreferrer"));
+    }
+    bestContainer.appendChild(card);
+}
+
+async function loadDashboardAnalytics() {
+    const status = document.getElementById("overviewAnalyticsStatus");
+    status.textContent = "Loading live performance...";
+    try {
+        const response = await fetch("/api/instagram-analytics", { cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Could not load Instagram analytics.");
+        cachedInstagramAnalytics = data;
+        paintDashboardAnalytics(data);
+    } catch (error) {
+        console.error("Dashboard overview analytics error:", error);
+        status.textContent = error.message || "Could not load live performance.";
+        document.getElementById("overviewPublished").textContent = "—";
+        document.getElementById("overviewReach").textContent = "—";
+    }
+}
+
+function renderDashboardOverview() {
+    const scheduled = cachedStories.filter(story => story.status === "scheduled");
+    const published = cachedStories.filter(story => story.status === "published");
+    const next = scheduled.slice().sort((a, b) => new Date(a.scheduled_for || a.scheduled_local) - new Date(b.scheduled_for || b.scheduled_local))[0];
+    document.getElementById("overviewStoriesScheduled").textContent = formatMetric(scheduled.length);
+    document.getElementById("overviewStoriesPublished").textContent = formatMetric(published.length);
+    document.getElementById("overviewStoriesBadge").textContent = scheduled.length + " scheduled";
+    document.getElementById("overviewStoriesSummary").textContent = next
+        ? "Next Story: " + formatOverviewDate(next.scheduled_local || next.scheduled_for)
+        : "No Stories are scheduled.";
+    if (!cachedStories.length) loadStories();
+    if (cachedInstagramAnalytics) paintDashboardAnalytics(cachedInstagramAnalytics);
+    else loadDashboardAnalytics();
+}
+
+document.getElementById("overviewNewPost").addEventListener("click", () => switchView("new"));
+document.getElementById("overviewOpenStories").addEventListener("click", () => switchView("stories"));
+document.getElementById("overviewOpenAnalytics").addEventListener("click", () => switchView("analytics"));
+
+function systemBadgeClass(status) {
+    if (status === "pass" || status === "ready") return "pass";
+    if (status === "fail" || status === "not_ready") return "fail";
+    return "warn";
+}
+
+function formatSystemTime(value) {
+    if (!value) return "";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function paintSystemCheck(data) {
+    cachedSystemHealth = data;
+    const overall = String(data.overall || "attention");
+    const overallBox = document.getElementById("systemOverall");
+    const badge = overallBox.querySelector(".system-badge");
+    const title = overallBox.querySelector("strong");
+    const labels = { ready: "V0.1 core checks passed", attention: "V0.1 needs attention", not_ready: "V0.1 is not ready" };
+    title.textContent = labels[overall] || "V0.1 system status";
+    badge.className = "system-badge " + systemBadgeClass(overall);
+    badge.textContent = overall.replaceAll("_", " ");
+    document.getElementById("systemCheckedAt").textContent = data.checked_at ? "Checked: " + formatSystemTime(data.checked_at) : "";
+    document.getElementById("systemRequests").textContent = formatMetric(data.requests_total || 0);
+    document.getElementById("systemFollowPending").textContent = formatMetric((data.followups || {}).pending || 0);
+    document.getElementById("systemFollowSent").textContent = formatMetric((data.followups || {}).sent || 0);
+
+    const checksBox = document.getElementById("systemChecks");
+    checksBox.innerHTML = "";
+    (Array.isArray(data.checks) ? data.checks : []).forEach(check => {
+        const row = document.createElement("div");
+        row.className = "system-check";
+        const copy = document.createElement("div");
+        const checkTitle = document.createElement("div");
+        checkTitle.className = "system-check-title";
+        checkTitle.textContent = check.label || check.key || "Check";
+        const detail = document.createElement("div");
+        detail.className = "system-check-detail";
+        detail.textContent = check.detail || "";
+        copy.appendChild(checkTitle);
+        copy.appendChild(detail);
+        const status = document.createElement("span");
+        status.className = "system-badge " + systemBadgeClass(check.status);
+        status.textContent = String(check.status || "warn").toUpperCase();
+        row.appendChild(copy);
+        row.appendChild(status);
+        checksBox.appendChild(row);
+    });
+    const rulesBox = document.getElementById("systemRules");
+    rulesBox.innerHTML = "";
+    const rules = data.anti_spam || {};
+    [
+        ["Duplicate guard", rules.duplicate_comment_guard ? "ON" : "OFF"],
+        ["Request cooldown", formatMetric(rules.request_cooldown_minutes) + " min"],
+        ["Smart reply interval", formatMetric(rules.smart_reply_min_interval_seconds) + " sec"],
+        ["Smart replies/hour", formatMetric(rules.smart_reply_max_per_hour)],
+        ["Follow-up delay", formatMetric(rules.followup_delay_hours) + " h"],
+        ["Follow-up cooldown", formatMetric(rules.followup_cooldown_days) + " days"]
+    ].forEach(([label, value]) => {
+        const card = document.createElement("div");
+        card.className = "system-rule";
+        const strong = document.createElement("strong");
+        strong.textContent = value;
+        const span = document.createElement("span");
+        span.textContent = label;
+        card.appendChild(strong);
+        card.appendChild(span);
+        rulesBox.appendChild(card);
+    });
+    document.getElementById("systemNote").textContent = data.note || "";
+}
+
+async function loadSystemCheck(force = false) {
+    if (systemLoading) return;
+    if (cachedSystemHealth && !force) {
+        paintSystemCheck(cachedSystemHealth);
+        return;
+    }
+    systemLoading = true;
+    const checksBox = document.getElementById("systemChecks");
+    checksBox.innerHTML = '<div class="view-note">Running read-only system checks...</div>';
+    try {
+        const response = await fetch("/api/v01-health", { cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "System check failed.");
+        paintSystemCheck(data);
+    } catch (error) {
+        console.error("System check error:", error);
+        checksBox.innerHTML = '<div class="analytics-error">' + (error.message || "System check failed.") + "</div>";
+    } finally {
+        systemLoading = false;
+    }
+}
+
+document.getElementById("systemRefresh").addEventListener("click", () => loadSystemCheck(true));
+
+function setStoryMessage(type, text) {
+    const box = document.getElementById("storyMessage");
+    box.className = "message" + (type ? " " + type : "");
+    box.textContent = text || "";
+}
+
+function formatStoryDate(value) {
+    if (!value) return "—";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+}
+
+async function prepareStoryMedia(file) {
+    if (!file) throw new Error("Choose one image or video.");
+    const type = String(file.type || "").toLowerCase();
+    const name = String(file.name || "").toLowerCase();
+    const isVideo = type.startsWith("video/") || /\.(mp4|mov|m4v)$/.test(name);
+    if (isVideo) {
+        if (!(type === "video/mp4" || type === "video/quicktime" || type === "video/x-m4v" || /\.(mp4|mov|m4v)$/.test(name))) {
+            throw new Error("Story video must be MP4 or MOV.");
+        }
+        return file;
+    }
+    return fileToInstagramJpeg(file, 1);
+}
+
+function renderStoryPreview(file) {
+    const box = document.getElementById("storyPreview");
+    box.innerHTML = "";
+    if (!file) {
+        box.innerHTML = '<div class="view-note">No Story media selected.</div>';
+        return;
+    }
+    const url = URL.createObjectURL(file);
+    const isVideo = String(file.type || "").startsWith("video/") || /\.(mp4|mov|m4v)$/i.test(file.name || "");
+    const node = document.createElement(isVideo ? "video" : "img");
+    node.src = url;
+    if (isVideo) {
+        node.controls = true;
+        node.muted = true;
+        node.playsInline = true;
+    }
+    node.onload = node.onloadedmetadata = () => URL.revokeObjectURL(url);
+    node.onerror = () => {
+        URL.revokeObjectURL(url);
+        box.innerHTML = '<div class="view-note">Could not preview this file.</div>';
+    };
+    box.appendChild(node);
+}
+
+document.getElementById("storyMedia").addEventListener("change", function () {
+    setStoryMessage("", "");
+    renderStoryPreview(this.files && this.files[0]);
+});
+
+async function submitStory(action) {
+    const input = document.getElementById("storyMedia");
+    const file = input.files && input.files[0];
+    if (!file) {
+        setStoryMessage("error", "Choose one image or video for the Story.");
+        return;
+    }
+    const scheduleInput = document.getElementById("storySchedule");
+    if (action === "schedule" && !scheduleInput.value) {
+        setStoryMessage("error", "Choose a date and time for the Story.");
+        return;
+    }
+    const publishButton = document.getElementById("storyPublishButton");
+    const scheduleButton = document.getElementById("storyScheduleButton");
+    publishButton.disabled = true;
+    scheduleButton.disabled = true;
+    setStoryMessage("", "");
+    try {
+        const prepared = await prepareStoryMedia(file);
+        const formData = new FormData();
+        formData.append("media", prepared, prepared.name || file.name || "story-media");
+        formData.append("action", action);
+        if (action === "schedule") formData.append("scheduled_for", scheduleInput.value);
+        setStoryMessage("success", action === "schedule" ? "Uploading and scheduling Story..." : "Uploading and publishing Story...");
+        const response = await fetch("/api/story-create", { method: "POST", body: formData });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Story operation failed.");
+        input.value = "";
+        scheduleInput.value = "";
+        renderStoryPreview(null);
+        cachedStories = [];
+        setStoryMessage("success", action === "schedule" ? "Story scheduled successfully ✓" : "Story published successfully ✓");
+        await loadStories(true);
+    } catch (error) {
+        console.error("Story error:", error);
+        setStoryMessage("error", error.message || "Story operation failed.");
+    } finally {
+        publishButton.disabled = false;
+        scheduleButton.disabled = false;
+    }
+}
+
+document.getElementById("storyPublishButton").addEventListener("click", () => submitStory("publish"));
+document.getElementById("storyScheduleButton").addEventListener("click", () => submitStory("schedule"));
+
+function renderStories(items) {
+    const list = document.getElementById("storiesList");
+    const status = document.getElementById("storiesStatus");
+    list.innerHTML = "";
+    const stories = Array.isArray(items) ? items : [];
+    status.textContent = stories.length ? `${stories.length} Story item(s).` : "No Stories yet.";
+    if (!stories.length) return;
+    stories.forEach(story => {
+        const row = document.createElement("div");
+        row.className = "story-item";
+        const thumb = document.createElement("div");
+        thumb.className = "story-thumb";
+        if (story.media_url) {
+            const media = document.createElement(story.media_kind === "video" ? "video" : "img");
+            media.src = story.media_url;
+            if (story.media_kind === "video") {
+                media.muted = true;
+                media.preload = "metadata";
+            } else {
+                media.loading = "lazy";
+            }
+            thumb.appendChild(media);
+        } else {
+            thumb.textContent = "Story";
+        }
+        const body = document.createElement("div");
+        const title = document.createElement("div");
+        title.className = "story-item-title";
+        title.textContent = story.media_kind === "video" ? "Video Story" : "Image Story";
+        const meta = document.createElement("div");
+        meta.className = "story-item-meta";
+        const statusValue = String(story.status || "unknown");
+        let details = `Created: ${formatStoryDate(story.created_at)}`;
+        if (story.scheduled_local) details += `\nScheduled: ${formatStoryDate(story.scheduled_local)}`;
+        if (story.published_at) details += `\nPublished: ${formatStoryDate(story.published_at)}`;
+        if (story.instagram_media_id) details += `\nInstagram Media ID: ${story.instagram_media_id}`;
+        meta.textContent = details;
+        meta.style.whiteSpace = "pre-line";
+        body.appendChild(title);
+        body.appendChild(meta);
+        if (story.error) {
+            const error = document.createElement("div");
+            error.className = "story-item-error";
+            error.textContent = story.error;
+            body.appendChild(error);
+        }
+        const actions = document.createElement("div");
+        actions.className = "story-item-actions";
+        const badge = document.createElement("span");
+        badge.className = "story-status " + statusValue;
+        badge.textContent = statusValue;
+        actions.appendChild(badge);
+        if (statusValue === "scheduled") {
+            const cancel = document.createElement("button");
+            cancel.className = "story-small-btn secondary";
+            cancel.type = "button";
+            cancel.textContent = "Cancel";
+            cancel.addEventListener("click", async () => {
+                if (!confirm("Cancel this scheduled Story?")) return;
+                cancel.disabled = true;
+                try {
+                    const response = await fetch("/api/story-cancel", {
+                        method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ story_id: story.id })
+                    });
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.error || "Could not cancel Story.");
+                    await loadStories(true);
+                } catch (error) {
+                    alert(error.message || "Could not cancel Story.");
+                } finally {
+                    cancel.disabled = false;
+                }
+            });
+            actions.appendChild(cancel);
+        }
+        if (["failed", "cancelled"].includes(statusValue)) {
+            const retry = document.createElement("button");
+            retry.className = "story-small-btn primary";
+            retry.type = "button";
+            retry.textContent = "Publish Now";
+            retry.addEventListener("click", async () => {
+                if (!confirm("Publish this Story now?")) return;
+                retry.disabled = true;
+                try {
+                    const response = await fetch("/api/story-retry", {
+                        method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ story_id: story.id })
+                    });
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.error || "Story publish failed.");
+                    await loadStories(true);
+                } catch (error) {
+                    alert(error.message || "Story publish failed.");
+                } finally {
+                    retry.disabled = false;
+                }
+            });
+            actions.appendChild(retry);
+        }
+        row.appendChild(thumb);
+        row.appendChild(body);
+        row.appendChild(actions);
+        list.appendChild(row);
+    });
+}
+
 async function loadStories(force = false) {
     if (storiesLoading) return;
     if (cachedStories.length && !force) {
@@ -1016,6 +1699,7 @@ async function loadStories(force = false) {
         if (!response.ok) throw new Error(data.error || "Could not load Stories.");
         cachedStories = Array.isArray(data.stories) ? data.stories : [];
         renderStories(cachedStories);
+        if (currentView === "dashboard") renderDashboardOverview();
     } catch (error) {
         console.error("Stories load error:", error);
         document.getElementById("storiesStatus").textContent = error.message || "Could not load Stories.";
@@ -1117,7 +1801,7 @@ document.getElementById("plannerCreateDraft").addEventListener("click", function
     switchView("new");
     setMessage(
         "success",
-        "Content Planner draft loaded ✓ Upload the image/carousel, then press Approve to save it."
+        "Content Planner kit loaded ✓ Upload the image or carousel, then generate the Post Kit with Gemini."
     );
     window.scrollTo({ top: 0, behavior: "smooth" });
 });
@@ -1126,11 +1810,8 @@ document.getElementById("plannerCreateDraft").addEventListener("click", function
 function renderCurrentView() {
     const names = {
         dashboard: ["Content Dashboard", "Instagram automation • Online", "Recent Drafts"],
-        new: ["New Post", "Create, approve, publish or schedule", "Recent Drafts"],
-        drafts: ["Drafts", "Approved posts waiting for action", "Drafts"],
-        scheduled: ["Scheduled", "Posts waiting for automatic publishing", "Scheduled Posts"],
+        new: ["Post Assistant", "Generate, edit and copy your Post Kit", ""],
         stories: ["Stories", "Publish or schedule Instagram Stories", ""],
-        published: ["Published", "Posts successfully published to Instagram", "Published Posts"],
         leads: ["Requests / Leads", "Instagram prompt requests and delivery status", ""],
         analytics: ["Analytics", "Live Instagram performance", ""],
         planner: ["Content Planner", "V0.2 • AI recommendations from your latest 30 posts", ""],
@@ -1139,8 +1820,6 @@ function renderCurrentView() {
     const meta = names[currentView] || names.dashboard;
     pageTitle.textContent = meta[0];
     pageSubtitle.textContent = meta[1];
-    listTitle.textContent = meta[2] || "Recent Drafts";
-
     const showComposer = currentView === "new";
     dashboardOverview.classList.toggle("hidden", currentView !== "dashboard");
     composerSection.classList.toggle("hidden", !showComposer);
@@ -1149,8 +1828,6 @@ function renderCurrentView() {
     storiesSection.classList.toggle("hidden", currentView !== "stories");
     systemSection.classList.toggle("hidden", currentView !== "system");
     plannerSection.classList.toggle("hidden", currentView !== "planner");
-    listSection.classList.toggle("hidden", ["analytics", "dashboard", "leads", "stories", "system", "planner"].includes(currentView));
-
     navButtons.forEach(btn => btn.classList.toggle("active", btn.dataset.view === currentView));
 
     if (currentView === "dashboard") {
@@ -1165,10 +1842,6 @@ function renderCurrentView() {
         loadStories(true);
     } else if (currentView === "system") {
         loadSystemCheck(true);
-    } else if (currentView === "published") {
-        loadInstagramPublished();
-    } else {
-        renderDraftList(filteredDraftsForView());
     }
 }
 
@@ -1185,9 +1858,8 @@ navButtons.forEach(function (button) {
 });
 
 function updateScheduleMinimum() {
-    const input = document.getElementById("schedule");
     const storyInput = document.getElementById("storySchedule");
-    if (!input && !storyInput) return;
+    if (!storyInput) return;
 
     const now = new Date(Date.now() + 60000);
     const pad = value => String(value).padStart(2, "0");
@@ -1198,8 +1870,7 @@ function updateScheduleMinimum() {
         pad(now.getHours()) + ":" +
         pad(now.getMinutes());
 
-    if (input) input.min = localValue;
-    if (storyInput) storyInput.min = localValue;
+    storyInput.min = localValue;
 }
 
 
@@ -1251,7 +1922,7 @@ window.addEventListener("resize", function () {
 
 updateScheduleMinimum();
 setInterval(updateScheduleMinimum, 60000);
-loadDrafts();
+renderCurrentView();
 </script>
 </body>
 </html>
