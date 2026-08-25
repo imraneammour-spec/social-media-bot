@@ -7,7 +7,8 @@ import threading
 import uuid
 import time
 from pathlib import Path
-from datetime import datetime, timezone
+from io import BytesIO
+from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
@@ -18,6 +19,13 @@ from werkzeug.utils import secure_filename
 
 from google import genai
 from google.genai import types
+
+try:
+    from PIL import Image, ImageDraw, ImageFont, ImageFilter
+    PIL_AVAILABLE = True
+except Exception:
+    Image = ImageDraw = ImageFont = ImageFilter = None
+    PIL_AVAILABLE = False
 
 
 # ==================================================
@@ -45,6 +53,7 @@ REQUESTS_FILE = DATA_DIR / "requests.json"
 SMART_REPLY_ACTIVITY_FILE = DATA_DIR / "smart_reply_activity.json"
 FOLLOWUPS_FILE = DATA_DIR / "followups.json"
 STORIES_FILE = DATA_DIR / "stories.json"
+AUTO_STORY_SETTINGS_FILE = DATA_DIR / "auto_story_settings.json"
 DRAFTS_FILE = DATA_DIR / "dashboard_drafts.json"
 DRAFT_IMAGES_DIR = DATA_DIR / "dashboard_drafts"
 
@@ -89,6 +98,11 @@ SMART_REPLY_MAX_LENGTH = 180
 FOLLOWUP_DELAY_HOURS = 6
 FOLLOWUP_MAX_AGE_HOURS = 23
 FOLLOWUP_COOLDOWN_DAYS = 7
+
+AUTO_STORY_DAILY_ENABLED = True
+AUTO_STORY_DAILY_TIME = "20:00"
+AUTO_STORY_REPEAT_AFTER_DAYS = 7
+AUTO_STORY_MIN_GAP_HOURS = 6
 
 PUBLIC_REPLY_MESSAGES = [
     "Sent! Check your DMs ✨",
@@ -4351,6 +4365,510 @@ def upload_draft_image_to_cloudinary(draft_id, image_number, file_path):
 
 
 
+
+# ============================================================
+# DAILY AUTO STORY AUTOMATION
+# ============================================================
+
+def default_auto_story_settings():
+    return {
+        "daily_enabled": AUTO_STORY_DAILY_ENABLED,
+        "daily_time": AUTO_STORY_DAILY_TIME,
+        "repeat_after_days": AUTO_STORY_REPEAT_AFTER_DAYS,
+        "min_gap_hours": AUTO_STORY_MIN_GAP_HOURS,
+    }
+
+
+def load_auto_story_settings():
+    data = load_json_file(AUTO_STORY_SETTINGS_FILE, {})
+    settings = default_auto_story_settings()
+    if isinstance(data, dict):
+        for key in settings:
+            if key in data:
+                settings[key] = data[key]
+
+    settings["daily_enabled"] = bool(settings.get("daily_enabled"))
+
+    daily_time = str(settings.get("daily_time", AUTO_STORY_DAILY_TIME) or AUTO_STORY_DAILY_TIME).strip()
+    if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", daily_time):
+        daily_time = AUTO_STORY_DAILY_TIME
+    settings["daily_time"] = daily_time
+
+    try:
+        settings["repeat_after_days"] = max(1, min(90, int(settings.get("repeat_after_days", AUTO_STORY_REPEAT_AFTER_DAYS))))
+    except Exception:
+        settings["repeat_after_days"] = AUTO_STORY_REPEAT_AFTER_DAYS
+
+    try:
+        settings["min_gap_hours"] = max(0, min(24, int(settings.get("min_gap_hours", AUTO_STORY_MIN_GAP_HOURS))))
+    except Exception:
+        settings["min_gap_hours"] = AUTO_STORY_MIN_GAP_HOURS
+
+    return settings
+
+
+@app.route("/api/auto-story-settings", methods=["GET", "POST"])
+def auto_story_settings_api():
+    if request.method == "GET":
+        return {"settings": load_auto_story_settings()}, 200
+
+    payload = request.get_json(silent=True) or {}
+    current = load_auto_story_settings()
+
+    if "daily_enabled" in payload:
+        current["daily_enabled"] = bool(payload.get("daily_enabled"))
+    if "daily_time" in payload:
+        current["daily_time"] = str(payload.get("daily_time") or "").strip()
+    if "repeat_after_days" in payload:
+        current["repeat_after_days"] = payload.get("repeat_after_days")
+    if "min_gap_hours" in payload:
+        current["min_gap_hours"] = payload.get("min_gap_hours")
+
+    if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", str(current.get("daily_time", ""))):
+        return {"error": "Daily time must use HH:MM."}, 400
+
+    try:
+        current["repeat_after_days"] = max(1, min(90, int(current.get("repeat_after_days", AUTO_STORY_REPEAT_AFTER_DAYS))))
+        current["min_gap_hours"] = max(0, min(24, int(current.get("min_gap_hours", AUTO_STORY_MIN_GAP_HOURS))))
+    except Exception:
+        return {"error": "Invalid Auto Story numeric settings."}, 400
+
+    current["daily_enabled"] = bool(current.get("daily_enabled"))
+    save_json_file(AUTO_STORY_SETTINGS_FILE, current)
+    return {"success": True, "settings": load_auto_story_settings()}, 200
+
+
+def auto_story_fallback_comment(caption=""):
+    caption = re.sub(r"\s+", " ", str(caption or "")).strip().lower()
+    if "prompt" in caption or "comment ai" in caption:
+        return "Missed this one? 👀 Comment AI for the prompt"
+    return "Still one of my favorites ✨"
+
+
+def generate_daily_story_comment(caption=""):
+    fallback = auto_story_fallback_comment(caption)
+    if GEMINI_CLIENT is None:
+        return fallback
+
+    prompt = f"""
+You write one very short Instagram Story overlay for @imran.prompts.
+The Story is resurfacing an older Instagram post.
+
+Rules:
+- English.
+- One short line only.
+- Maximum 55 characters.
+- Natural and premium, not spammy.
+- If the post is about AI prompts, a light 'Comment AI' CTA is allowed.
+- No hashtags.
+- No links.
+- No quotation marks.
+- Do not say the post is new.
+- Return only the overlay text.
+
+Post caption:
+{str(caption or '')[:1200]}
+"""
+
+    try:
+        response = GEMINI_CLIENT.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.5),
+        )
+        result = re.sub(r"\s+", " ", str(response.text or "")).strip().strip('"\'')
+        if result:
+            return result[:80]
+    except Exception as error:
+        print("DAILY AUTO STORY GEMINI ERROR:", error)
+
+    return fallback
+
+
+def _story_font(size, bold=True):
+    if not PIL_AVAILABLE:
+        return None
+    names = ["DejaVuSans-Bold.ttf", "DejaVuSans.ttf"] if bold else ["DejaVuSans.ttf", "DejaVuSans-Bold.ttf"]
+    for name in names:
+        try:
+            return ImageFont.truetype(name, size)
+        except Exception:
+            pass
+    try:
+        return ImageFont.load_default()
+    except Exception:
+        return None
+
+
+def _wrap_story_text(draw, text, font, max_width):
+    words = str(text or "").split()
+    lines = []
+    current = ""
+    for word in words:
+        test = word if not current else current + " " + word
+        try:
+            width = draw.textbbox((0, 0), test, font=font)[2]
+        except Exception:
+            width = len(test) * 18
+        if current and width > max_width:
+            lines.append(current)
+            current = word
+        else:
+            current = test
+    if current:
+        lines.append(current)
+    return lines[:3]
+
+
+def render_daily_story_image(image_bytes, comment):
+    """Create a 1080x1920 Story while keeping the full original image visible."""
+    if not PIL_AVAILABLE:
+        return None, "Pillow is required for Daily Auto Story."
+
+    try:
+        source = Image.open(BytesIO(image_bytes)).convert("RGB")
+        canvas_w, canvas_h = 1080, 1920
+
+        bg = source.copy()
+        scale = max(canvas_w / bg.width, canvas_h / bg.height)
+        bg = bg.resize(
+            (max(1, int(bg.width * scale)), max(1, int(bg.height * scale))),
+            Image.Resampling.LANCZOS,
+        )
+        left = max(0, (bg.width - canvas_w) // 2)
+        top = max(0, (bg.height - canvas_h) // 2)
+        bg = bg.crop((left, top, left + canvas_w, top + canvas_h)).filter(ImageFilter.GaussianBlur(30))
+        overlay = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 54))
+        canvas = Image.alpha_composite(bg.convert("RGBA"), overlay)
+
+        fg = source.copy()
+        fg.thumbnail((980, 1450), Image.Resampling.LANCZOS)
+        x = (canvas_w - fg.width) // 2
+        y = max(170, (canvas_h - fg.height) // 2 - 10)
+
+        shadow = Image.new("RGBA", (fg.width + 40, fg.height + 40), (0, 0, 0, 0))
+        sd = ImageDraw.Draw(shadow)
+        sd.rounded_rectangle((20, 20, fg.width + 20, fg.height + 20), radius=28, fill=(0, 0, 0, 95))
+        shadow = shadow.filter(ImageFilter.GaussianBlur(16))
+        canvas.alpha_composite(shadow, (x - 20, y - 20))
+        canvas.alpha_composite(fg.convert("RGBA"), (x, y))
+
+        text = str(comment or "").strip()
+        if text:
+            draw = ImageDraw.Draw(canvas)
+            font = _story_font(54, True)
+            lines = _wrap_story_text(draw, text, font, 900)
+            if lines:
+                line_h = 66
+                box_h = 42 + len(lines) * line_h
+                box_y = canvas_h - box_h - 120
+                draw.rounded_rectangle((70, box_y, 1010, canvas_h - 90), radius=34, fill=(0, 0, 0, 180))
+                ty = box_y + 24
+                for line in lines:
+                    draw.text((105, ty), line, font=font, fill=(255, 255, 255, 255))
+                    ty += line_h
+
+        output = BytesIO()
+        canvas.convert("RGB").save(output, format="JPEG", quality=92, optimize=True)
+        return output.getvalue(), ""
+    except Exception as error:
+        return None, "Could not compose Daily Auto Story image: " + str(error)
+
+
+def upload_daily_story_bytes_to_cloudinary(story_id, media_bytes):
+    if not cloudinary_is_configured():
+        return None, "Cloudinary is not configured."
+    if not media_bytes:
+        return None, "Daily Auto Story image is empty."
+
+    upload_url = (
+        "https://api.cloudinary.com/v1_1/"
+        f"{CLOUDINARY_CLOUD_NAME}/image/upload"
+    )
+    data = {
+        "folder": "imran-prompts/stories",
+        "format": "jpg",
+        "overwrite": "true",
+        "public_id": f"daily-story-{story_id}",
+    }
+
+    try:
+        response = requests.post(
+            upload_url,
+            auth=(CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET),
+            data=data,
+            files={"file": ("daily-story.jpg", media_bytes, "image/jpeg")},
+            timeout=120,
+        )
+        if not response.ok:
+            print("DAILY AUTO STORY CLOUDINARY ERROR:", response.text[:500])
+            return None, "Cloudinary could not host Daily Auto Story."
+        result = response.json()
+        secure_url = str(result.get("secure_url", "") or "").strip()
+        if not secure_url.startswith("https://"):
+            return None, "Cloudinary did not return a HTTPS Story URL."
+        return secure_url, ""
+    except Exception as error:
+        return None, "Daily Auto Story upload failed: " + str(error)
+
+
+def instagram_archive_posts(limit=25):
+    if not INSTAGRAM_ACCESS_TOKEN:
+        return []
+
+    try:
+        response = requests.get(
+            f"https://graph.instagram.com/{API_VERSION}/{INSTAGRAM_USER_ID}/media",
+            params={
+                "fields": "id,caption,media_type,media_url,thumbnail_url,timestamp,children{id,media_type,media_url,thumbnail_url}",
+                "limit": int(limit),
+                "access_token": INSTAGRAM_ACCESS_TOKEN,
+            },
+            timeout=30,
+        )
+        data = response.json()
+        if not response.ok or not isinstance(data, dict):
+            print("DAILY AUTO STORY MEDIA LOOKUP ERROR:", response.text[:500])
+            return []
+        return [item for item in data.get("data", []) if isinstance(item, dict)]
+    except Exception as error:
+        print("DAILY AUTO STORY MEDIA LOOKUP ERROR:", error)
+        return []
+
+
+def _post_timestamp_utc(post):
+    value = str((post or {}).get("timestamp", "") or "").strip()
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def post_published_today(posts, now=None):
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    local_today = now.astimezone(SCHEDULER_TIMEZONE).date()
+
+    for post in posts or []:
+        timestamp = _post_timestamp_utc(post)
+        if timestamp and timestamp.astimezone(SCHEDULER_TIMEZONE).date() == local_today:
+            return True
+    return False
+
+
+def choose_daily_archive_post(posts, stories, now=None, repeat_after_days=7):
+    """Choose an older post that was not used by Daily Auto Story recently."""
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    now = now.astimezone(timezone.utc)
+    today_local = now.astimezone(SCHEDULER_TIMEZONE).date()
+    cutoff = now - timedelta(days=max(1, int(repeat_after_days or 1)))
+
+    recently_used = set()
+    for story in stories or []:
+        if not isinstance(story, dict) or story.get("source_type") != "daily_archive":
+            continue
+        created = _parse_iso_datetime(story.get("created_at"))
+        if created and created >= cutoff:
+            recently_used.add(str(story.get("source_media_id", "") or ""))
+
+    for post in posts or []:
+        if not isinstance(post, dict):
+            continue
+        media_id = str(post.get("id", "") or "").strip()
+        if not media_id or media_id in recently_used:
+            continue
+        timestamp = _post_timestamp_utc(post)
+        if timestamp and timestamp.astimezone(SCHEDULER_TIMEZONE).date() >= today_local:
+            continue
+        return post
+
+    return None
+
+
+def _daily_archive_image_url(post):
+    if not isinstance(post, dict):
+        return ""
+
+    media_type = str(post.get("media_type", "") or "")
+    if media_type == "CAROUSEL_ALBUM":
+        children = (post.get("children") or {}).get("data", []) if isinstance(post.get("children"), dict) else []
+        for child in children:
+            if not isinstance(child, dict):
+                continue
+            if str(child.get("media_type", "") or "") == "IMAGE":
+                url = str(child.get("media_url", "") or "").strip()
+                if url:
+                    return url
+        return ""
+
+    if media_type == "IMAGE":
+        return str(post.get("media_url", "") or "").strip()
+
+    # For Reels/videos, use a thumbnail so Gemini text can be overlaid safely.
+    return str(post.get("thumbnail_url", "") or "").strip()
+
+
+def _download_daily_archive_image(url):
+    if not url:
+        return None
+    try:
+        response = requests.get(str(url), timeout=60)
+        if response.ok and response.content:
+            return response.content
+    except Exception as error:
+        print("DAILY AUTO STORY DOWNLOAD ERROR:", error)
+    return None
+
+
+def _daily_story_gap_ok(stories, now_utc, min_gap_hours):
+    gap = timedelta(hours=max(0, int(min_gap_hours or 0)))
+    if gap.total_seconds() <= 0:
+        return True
+
+    for item in reversed(stories or []):
+        if not isinstance(item, dict):
+            continue
+        reference = _parse_iso_datetime(
+            item.get("published_at")
+            or item.get("scheduled_for")
+            or item.get("created_at")
+        )
+        if not reference:
+            continue
+        delta = now_utc - reference
+        if timedelta(0) <= delta < gap:
+            return False
+    return True
+
+
+def queue_daily_archive_story(now=None):
+    settings = load_auto_story_settings()
+    if not settings.get("daily_enabled"):
+        return 0
+
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    now_utc = now.astimezone(timezone.utc)
+    now_local = now_utc.astimezone(SCHEDULER_TIMEZONE)
+
+    posts = instagram_archive_posts(25)
+    if not posts:
+        return 0
+
+    # Daily archive is only a fallback. If a real post was published today,
+    # do nothing for the day.
+    if post_published_today(posts, now=now_utc):
+        return 0
+
+    with STATE_LOCK:
+        stories = load_stories()
+
+        # Never create more than one Daily Auto Story group per local day.
+        for item in stories:
+            if not isinstance(item, dict) or item.get("source_type") != "daily_archive":
+                continue
+            created = _parse_iso_datetime(item.get("created_at"))
+            if created and created.astimezone(SCHEDULER_TIMEZONE).date() == now_local.date():
+                return 0
+
+        if not _daily_story_gap_ok(stories, now_utc, settings.get("min_gap_hours", AUTO_STORY_MIN_GAP_HOURS)):
+            return 0
+
+    candidate = choose_daily_archive_post(
+        posts,
+        stories,
+        now=now_utc,
+        repeat_after_days=settings.get("repeat_after_days", AUTO_STORY_REPEAT_AFTER_DAYS),
+    )
+    if not candidate:
+        return 0
+
+    image_url = _daily_archive_image_url(candidate)
+    image_bytes = _download_daily_archive_image(image_url)
+    if not image_bytes:
+        return 0
+
+    comment = generate_daily_story_comment(candidate.get("caption", ""))
+    rendered, error_text = render_daily_story_image(image_bytes, comment)
+    if not rendered:
+        print("DAILY AUTO STORY RENDER ERROR:", error_text)
+        return 0
+
+    story_id = uuid.uuid4().hex[:12]
+    media_url, error_text = upload_daily_story_bytes_to_cloudinary(story_id, rendered)
+    if not media_url:
+        print("DAILY AUTO STORY UPLOAD ERROR:", error_text)
+        return 0
+
+    source_media_id = str(candidate.get("id", "") or "")
+    created_at = datetime.now(timezone.utc).isoformat()
+    record = {
+        "id": story_id,
+        "group_id": "daily-" + uuid.uuid4().hex[:12],
+        "source_type": "daily_archive",
+        "source_key": source_media_id,
+        "source_media_id": source_media_id,
+        "story_comment": comment,
+        "media_kind": "image",
+        "media_url": media_url,
+        "status": "scheduled",
+        "created_at": created_at,
+        "scheduled_for": now_utc.isoformat(),
+        "scheduled_local": now_local.isoformat(),
+        "scheduled_timezone": "Africa/Casablanca",
+        "published_at": None,
+        "instagram_media_id": None,
+        "error": "",
+    }
+
+    with STATE_LOCK:
+        stories = load_stories()
+        for item in stories:
+            if not isinstance(item, dict) or item.get("source_type") != "daily_archive":
+                continue
+            created = _parse_iso_datetime(item.get("created_at"))
+            if created and created.astimezone(SCHEDULER_TIMEZONE).date() == now_local.date():
+                return 0
+        stories.append(record)
+        if len(stories) > 1000:
+            stories = stories[-1000:]
+        save_stories(stories)
+
+    print("Daily Auto Story queued:", source_media_id, comment)
+    return 1
+
+
+def process_daily_auto_story(now=None):
+    settings = load_auto_story_settings()
+    if not settings.get("daily_enabled"):
+        return
+
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+
+    local = now.astimezone(SCHEDULER_TIMEZONE)
+    try:
+        hour, minute = [int(value) for value in str(settings.get("daily_time", AUTO_STORY_DAILY_TIME)).split(":", 1)]
+    except Exception:
+        hour, minute = 20, 0
+
+    due = local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if local < due:
+        return
+
+    queue_daily_archive_story(now=now)
+
+
 # ============================================================
 # DASHBOARD - INSTAGRAM STORIES
 # ============================================================
@@ -5438,6 +5956,7 @@ def dashboard_scheduler_loop():
     while True:
         try:
             process_due_scheduled_posts()
+            process_daily_auto_story()
             process_due_scheduled_stories()
             process_due_followups()
         except Exception as error:
