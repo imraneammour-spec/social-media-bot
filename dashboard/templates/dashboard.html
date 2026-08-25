@@ -17,6 +17,9 @@
         .nav button.active { background: #202025; color: white; }
         .main { padding: 32px; max-width: 1250px; width: 100%; margin: auto; }
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; }
+        .account-actions { display: flex; align-items: center; gap: 10px; color: #b8bbc7; font-size: 13px; }
+        .account-actions form { margin: 0; }
+        .account-actions button { border: 1px solid #3b3b44; border-radius: 8px; background: #202026; color: #f5f5f7; padding: 8px 10px; cursor: pointer; }
         h1 { font-size: 30px; }
         .status { color: #8d8d96; font-size: 13px; }
         .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
@@ -488,7 +491,7 @@
 
     </style>
 </head>
-<body>
+<body data-csrf-token="{{ csrf_token }}">
 <div class="mobile-topbar" id="mobileTopbar">
     <div class="mobile-brand">IMRAN <span>PROMPTS</span></div>
     <button id="mobileMenuButton" class="mobile-menu-button" type="button" aria-label="Open navigation" aria-controls="dashboardSidebar" aria-expanded="false">☰</button>
@@ -513,6 +516,13 @@
             <div>
                 <h1 id="pageTitle">Content Dashboard</h1>
                 <div id="pageSubtitle" class="status">Instagram automation • Online</div>
+            </div>
+            <div class="account-actions">
+                <span>{{ current_user.display_name }}</span>
+                <form method="post" action="{{ url_for('logout') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit">Sign out</button>
+                </form>
             </div>
         </div>
 
@@ -797,6 +807,10 @@
 </div>
 
 <script>
+const csrfToken = (document.body && document.body.dataset.csrfToken) || "";
+function csrfHeaders(headers = {}) {
+    return { ...headers, "X-CSRF-Token": csrfToken };
+}
 const imageInput = document.getElementById("images");
 const preview = document.getElementById("preview");
 const generateButton = document.getElementById("generateButton");
@@ -971,6 +985,7 @@ generateButton.addEventListener("click", async function () {
     try {
         const response = await fetch("/api/generate-content", {
             method: "POST",
+            headers: csrfHeaders(),
             body: formData
         });
         const data = await response.json();
@@ -1558,7 +1573,9 @@ async function submitStory(action) {
         formData.append("action", action);
         if (action === "schedule") formData.append("scheduled_for", scheduleInput.value);
         setStoryMessage("success", action === "schedule" ? "Uploading and scheduling Story..." : "Uploading and publishing Story...");
-        const response = await fetch("/api/story-create", { method: "POST", body: formData });
+        const response = await fetch("/api/story-create", {
+            method: "POST", headers: csrfHeaders(), body: formData
+        });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "Story operation failed.");
         input.value = "";
@@ -1641,7 +1658,7 @@ function renderStories(items) {
                 cancel.disabled = true;
                 try {
                     const response = await fetch("/api/story-cancel", {
-                        method: "POST", headers: { "Content-Type": "application/json" },
+                        method: "POST", headers: csrfHeaders({ "Content-Type": "application/json" }),
                         body: JSON.stringify({ story_id: story.id })
                     });
                     const data = await response.json();
@@ -1665,7 +1682,7 @@ function renderStories(items) {
                 retry.disabled = true;
                 try {
                     const response = await fetch("/api/story-retry", {
-                        method: "POST", headers: { "Content-Type": "application/json" },
+                        method: "POST", headers: csrfHeaders({ "Content-Type": "application/json" }),
                         body: JSON.stringify({ story_id: story.id })
                     });
                     const data = await response.json();
@@ -1766,7 +1783,7 @@ async function analyzeContentPlanner(forceAnalytics = false) {
 
         const response = await fetch("/api/content-planner", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: csrfHeaders({ "Content-Type": "application/json" }),
             body: JSON.stringify({ posts: posts })
         });
         const data = await response.json();

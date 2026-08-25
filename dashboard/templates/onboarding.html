@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Workspace access | Imran Prompts</title>
+    <style>
+        :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; background: #0b0b0e; color: #f5f5f7; }
+        body { min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 24px; box-sizing: border-box; }
+        main { width: min(100%, 580px); background: #16161b; border: 1px solid #2b2b33; border-radius: 18px; padding: 30px; }
+        h1 { margin: 0 0 8px; } p { color: #c4c6d0; line-height: 1.6; }
+        form { margin-top: 24px; } button { border: 1px solid #444450; border-radius: 9px; padding: 10px 14px; color: inherit; background: #24242b; font: inherit; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <main>
+        <h1>Workspace access is not connected</h1>
+        <p>{{ current_user.display_name }}: this account does not have an Instagram workspace yet. Account connection will be available in a future phase.</p>
+        <form method="post" action="{{ url_for('logout') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit">Sign out</button>
+        </form>
+    </main>
+</body>
+</html>

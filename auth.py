@@ -1,0 +1,375 @@
+"""Authentication primitives for the additive Phase 3A Flask flow."""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import secrets
+import threading
+import time
+import uuid
+from dataclasses import dataclass
+from datetime import timedelta
+from functools import wraps
+from typing import Callable, TypeVar
+
+from flask import current_app, jsonify, redirect, render_template, request, session, url_for
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.orm import sessionmaker
+from werkzeug.security import check_password_hash, generate_password_hash
+
+from database.models import InstagramAccount, User
+from database.runtime import create_session_factory
+
+
+CSRF_SESSION_KEY = "_csrf_token"
+USER_SESSION_KEY = "user_id"
+CSRF_TOKEN_BYTES = 32
+SESSION_LIFETIME_HOURS = 8
+
+F = TypeVar("F", bound=Callable)
+
+
+@dataclass
+class AuthState:
+    session_factory: sessionmaker | None
+    legacy_instagram_user_id: str
+    configured: bool
+    rate_limit_attempts: dict[tuple[str, str], list[float]]
+    rate_limit_lock: threading.Lock
+
+
+def configure_auth(
+    app,
+    *,
+    database_url: str | None,
+    secret_key: str | None,
+    legacy_instagram_user_id: str,
+    production: bool,
+) -> None:
+    """Configure secure cookies without a production secret-key fallback."""
+
+    configured_secret = str(secret_key or "").strip()
+    if configured_secret:
+        app.config["SECRET_KEY"] = configured_secret
+
+    app.config.update(
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_SECURE=bool(production),
+        PERMANENT_SESSION_LIFETIME=timedelta(hours=SESSION_LIFETIME_HOURS),
+    )
+    session_factory = create_session_factory(database_url) if database_url else None
+    app.extensions["phase3a_auth"] = AuthState(
+        session_factory=session_factory,
+        legacy_instagram_user_id=str(legacy_instagram_user_id or ""),
+        configured=bool(configured_secret and session_factory),
+        rate_limit_attempts={},
+        rate_limit_lock=threading.Lock(),
+    )
+
+
+def _auth_state() -> AuthState:
+    return current_app.extensions["phase3a_auth"]
+
+
+def authentication_available() -> bool:
+    return _auth_state().configured
+
+
+def csrf_token() -> str:
+    """Return a cryptographically random token tied to Flask's signed session."""
+
+    token = session.get(CSRF_SESSION_KEY)
+    if not isinstance(token, str) or len(token) < CSRF_TOKEN_BYTES:
+        token = secrets.token_urlsafe(CSRF_TOKEN_BYTES)
+        session[CSRF_SESSION_KEY] = token
+    return token
+
+
+def validate_csrf_token(provided_token: str | None) -> bool:
+    expected_token = session.get(CSRF_SESSION_KEY)
+    return bool(
+        isinstance(expected_token, str)
+        and isinstance(provided_token, str)
+        and hmac.compare_digest(expected_token, provided_token)
+    )
+
+
+def request_csrf_token() -> str | None:
+    return request.form.get("csrf_token") or request.headers.get("X-CSRF-Token")
+
+
+def verify_meta_signature() -> bool | None:
+    """Verify Meta's POST signature, or return None when not configured yet."""
+
+    app_secret = str(current_app.config.get("META_APP_SECRET") or "")
+    if not app_secret:
+        return None
+    supplied_signature = request.headers.get("X-Hub-Signature-256", "")
+    if not supplied_signature.startswith("sha256="):
+        return False
+    expected_signature = "sha256=" + hmac.new(
+        app_secret.encode("utf-8"), request.get_data(cache=True), hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected_signature, supplied_signature)
+
+
+def webhook_signature_verification_active() -> bool:
+    return bool(str(current_app.config.get("META_APP_SECRET") or ""))
+
+
+def get_current_user() -> User | None:
+    """Resolve only a validated UUID stored in session; clear invalid state."""
+
+    raw_user_id = session.get(USER_SESSION_KEY)
+    try:
+        user_id = uuid.UUID(str(raw_user_id))
+    except (TypeError, ValueError, AttributeError):
+        if raw_user_id is not None:
+            session.clear()
+        return None
+
+    state = _auth_state()
+    if not state.session_factory:
+        return None
+    try:
+        with state.session_factory() as db_session:
+            user = db_session.get(User, user_id)
+    except SQLAlchemyError:
+        return None
+    if user is None:
+        session.clear()
+    return user
+
+
+def current_user_has_legacy_workspace_access() -> bool:
+    user = get_current_user()
+    state = _auth_state()
+    if user is None or not state.session_factory or not state.legacy_instagram_user_id:
+        return False
+    try:
+        with state.session_factory() as db_session:
+            account_id = db_session.scalar(
+                select(InstagramAccount.id).where(
+                    InstagramAccount.user_id == user.id,
+                    InstagramAccount.instagram_user_id
+                    == state.legacy_instagram_user_id,
+                )
+            )
+    except SQLAlchemyError:
+        return False
+    return account_id is not None
+
+
+def rotate_authenticated_session(user: User) -> None:
+    """Replace session state on login to prevent fixation and rotate CSRF state."""
+
+    session.clear()
+    session[USER_SESSION_KEY] = str(user.id)
+    session[CSRF_SESSION_KEY] = secrets.token_urlsafe(CSRF_TOKEN_BYTES)
+    session.permanent = True
+
+
+def clear_authenticated_session() -> None:
+    session.clear()
+
+
+def _rate_limit_allowed(scope: str, limit: int = 5, window_seconds: int = 900) -> bool:
+    """Small temporary in-memory rate limiter for unauthenticated auth actions."""
+
+    state = _auth_state()
+    client_key = str(request.remote_addr or "unknown")
+    now = time.monotonic()
+    key = (scope, client_key)
+    with state.rate_limit_lock:
+        attempts = [
+            attempt
+            for attempt in state.rate_limit_attempts.get(key, [])
+            if now - attempt < window_seconds
+        ]
+        if len(attempts) >= limit:
+            state.rate_limit_attempts[key] = attempts
+            return False
+        attempts.append(now)
+        state.rate_limit_attempts[key] = attempts
+    return True
+
+
+def _validate_registration(display_name: str, email: str, password: str) -> str | None:
+    if not display_name or len(display_name) > 80:
+        return "Enter a display name of 80 characters or fewer."
+    if not email or len(email) > 254 or "@" not in email or email.startswith("@"):
+        return "Enter a valid email address."
+    if len(password) < 12:
+        return "Use a password with at least 12 characters."
+    return None
+
+
+def _auth_template(template_name: str, *, status: int = 200, error: str | None = None):
+    return render_template(template_name, csrf_token=csrf_token(), error=error), status
+
+
+def register_auth_routes(app) -> None:
+    """Register only additive Phase 3A browser authentication routes."""
+
+    @app.route("/register", methods=["GET", "POST"])
+    def register():
+        if not authentication_available():
+            return _unavailable_response()
+        if request.method == "GET":
+            return _auth_template("register.html")
+        if not validate_csrf_token(request_csrf_token()):
+            return _auth_template("register.html", status=400, error="Invalid form token. Refresh and try again.")
+        if not _rate_limit_allowed("register"):
+            return _auth_template("register.html", status=429, error="Too many attempts. Try again later.")
+
+        display_name = str(request.form.get("display_name") or "").strip()
+        email = str(request.form.get("email") or "").strip().lower()
+        password = str(request.form.get("password") or "")
+        validation_error = _validate_registration(display_name, email, password)
+        if validation_error:
+            return _auth_template("register.html", status=400, error=validation_error)
+
+        state = _auth_state()
+        try:
+            with state.session_factory.begin() as db_session:  # type: ignore[union-attr]
+                user = User(
+                    email=email,
+                    display_name=display_name,
+                    password_hash=generate_password_hash(password),
+                )
+                db_session.add(user)
+                db_session.flush()
+                user_id = user.id
+        except IntegrityError:
+            return _auth_template("register.html", status=409, error="An account with that email already exists.")
+        except SQLAlchemyError:
+            return _unavailable_response()
+
+        with state.session_factory() as db_session:  # type: ignore[union-attr]
+            user = db_session.get(User, user_id)
+            if user is None:
+                return _unavailable_response()
+            rotate_authenticated_session(user)
+        return redirect(url_for("onboarding"))
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        if not authentication_available():
+            return _unavailable_response()
+        user = get_current_user()
+        if request.method == "GET" and user is not None:
+            destination = "dashboard" if current_user_has_legacy_workspace_access() else "onboarding"
+            return redirect(url_for(destination))
+        if request.method == "GET":
+            return _auth_template("login.html")
+        if not validate_csrf_token(request_csrf_token()):
+            return _auth_template("login.html", status=400, error="Invalid form token. Refresh and try again.")
+        if not _rate_limit_allowed("login"):
+            return _auth_template("login.html", status=429, error="Too many attempts. Try again later.")
+
+        email = str(request.form.get("email") or "").strip().lower()
+        password = str(request.form.get("password") or "")
+        try:
+            with _auth_state().session_factory() as db_session:  # type: ignore[union-attr]
+                user = db_session.scalar(select(User).where(User.email == email))
+        except SQLAlchemyError:
+            return _unavailable_response()
+        if user is None or not check_password_hash(user.password_hash, password):
+            return _auth_template("login.html", status=401, error="Invalid email or password.")
+        rotate_authenticated_session(user)
+        destination = "dashboard" if current_user_has_legacy_workspace_access() else "onboarding"
+        return redirect(url_for(destination))
+
+    @app.post("/logout")
+    @login_required
+    def logout():
+        if not validate_csrf_token(request_csrf_token()):
+            return "Invalid form token.", 400
+        clear_authenticated_session()
+        return redirect(url_for("login"))
+
+    @app.get("/onboarding")
+    @login_required
+    def onboarding():
+        return render_template(
+            "onboarding.html", current_user=get_current_user(), csrf_token=csrf_token()
+        )
+
+
+def install_auth_route_guard(app) -> None:
+    """Protect the existing legacy workspace without changing individual routes."""
+
+    public_endpoints = {
+        "home", "privacy", "terms", "deletion", "verify_webhook", "receive_webhook",
+        "login", "register", "logout", "onboarding", "static",
+    }
+    disabled_post_endpoints = {
+        "approve_dashboard_draft", "publish_dashboard_draft", "schedule_dashboard_draft",
+    }
+
+    @app.before_request
+    def require_legacy_workspace_access():
+        endpoint = request.endpoint
+        if endpoint is None or endpoint in public_endpoints or endpoint in disabled_post_endpoints:
+            return None
+        protected_path = (
+            request.path == "/dashboard"
+            or request.path.startswith("/api/")
+            or request.path.startswith("/draft-image/")
+        )
+        if not protected_path:
+            return None
+        if not authentication_available():
+            return _unavailable_response()
+        if get_current_user() is None:
+            return _unauthenticated_response()
+        if not current_user_has_legacy_workspace_access():
+            if request.path.startswith("/api/") or request.path.startswith("/draft-image/"):
+                return jsonify(error="Legacy workspace access is not available for this account."), 403
+            return redirect(url_for("onboarding"))
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not validate_csrf_token(request_csrf_token()):
+            return jsonify(error="Invalid CSRF token."), 400
+        return None
+
+
+def _unauthenticated_response():
+    if request.path.startswith("/api/") or request.path.startswith("/draft-image/"):
+        return jsonify(error="Authentication is required."), 401
+    return redirect(url_for("login"))
+
+
+def _unavailable_response():
+    if request.path.startswith("/api/") or request.path.startswith("/draft-image/"):
+        return jsonify(error="Authentication service is unavailable."), 503
+    return "Authentication service is unavailable.", 503
+
+
+def login_required(function: F) -> F:
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        if not authentication_available():
+            return _unavailable_response()
+        if get_current_user() is None:
+            return _unauthenticated_response()
+        return function(*args, **kwargs)
+
+    return wrapped  # type: ignore[return-value]
+
+
+def legacy_workspace_required(function: F) -> F:
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        if not authentication_available():
+            return _unavailable_response()
+        if get_current_user() is None:
+            return _unauthenticated_response()
+        if not current_user_has_legacy_workspace_access():
+            if request.path.startswith("/api/") or request.path.startswith("/draft-image/"):
+                return jsonify(error="Legacy workspace access is not available for this account."), 403
+            return redirect(url_for("onboarding"))
+        return function(*args, **kwargs)
+
+    return wrapped  # type: ignore[return-value]

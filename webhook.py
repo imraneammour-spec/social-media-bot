@@ -3,6 +3,7 @@ import re
 import json
 import html
 import hashlib
+import hmac
 import threading
 import uuid
 import time
@@ -15,11 +16,20 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 
 from dotenv import load_dotenv
-from flask import Flask, request, send_file, Response, url_for
+from flask import Flask, request, send_file, Response, url_for, render_template
 from werkzeug.utils import secure_filename
 
 from database.cli import register_database_commands
 from database.config import database_url_from_environment
+from auth import (
+    configure_auth,
+    csrf_token,
+    get_current_user,
+    install_auth_route_guard,
+    register_auth_routes,
+    verify_meta_signature,
+    webhook_signature_verification_active,
+)
 
 from google import genai
 from google.genai import types
@@ -75,7 +85,7 @@ app = Flask(__name__)
 # JSON-to-SQL migration occurs during application startup.
 DATABASE_URL = database_url_from_environment()
 
-VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "imran_social_media_bot_2026")
+VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "").strip()
 
 INSTAGRAM_ACCESS_TOKEN = os.getenv(
     "INSTAGRAM_ACCESS_TOKEN"
@@ -101,6 +111,26 @@ CLOUDINARY_API_SECRET = os.getenv(
 ).strip()
 
 INSTAGRAM_USER_ID = "17841438617458289"
+
+# Phase 3A auth is additive.  If this deployment has not yet configured both
+# DATABASE_URL and FLASK_SECRET_KEY, public compatibility routes keep working
+# while dashboard/auth access safely remains unavailable.
+FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "")
+META_APP_SECRET = os.getenv("META_APP_SECRET", "")
+APP_ENVIRONMENT = os.getenv("APP_ENV", os.getenv("FLASK_ENV", "")).strip().lower()
+IS_PRODUCTION = APP_ENVIRONMENT in {"production", "prod"} or bool(
+    os.getenv("RAILWAY_ENVIRONMENT_NAME", "").strip()
+)
+configure_auth(
+    app,
+    database_url=DATABASE_URL,
+    secret_key=FLASK_SECRET_KEY,
+    legacy_instagram_user_id=INSTAGRAM_USER_ID,
+    production=IS_PRODUCTION,
+)
+app.config["META_APP_SECRET"] = META_APP_SECRET
+register_auth_routes(app)
+install_auth_route_guard(app)
 
 # The command is explicit (``flask --app webhook bootstrap-owner``) and lazy:
 # registering it neither connects to PostgreSQL nor changes Phase 0 JSON state.
@@ -227,6 +257,9 @@ def deletion():
 @app.route("/webhook", methods=["GET"])
 def verify_webhook():
 
+    if not VERIFY_TOKEN:
+        return "Webhook verification is unavailable.", 503
+
     mode = request.args.get(
         "hub.mode"
     )
@@ -241,7 +274,8 @@ def verify_webhook():
 
     if (
         mode == "subscribe"
-        and token == VERIFY_TOKEN
+        and isinstance(token, str)
+        and hmac.compare_digest(token, VERIFY_TOKEN)
     ):
 
         print(
@@ -3547,6 +3581,10 @@ def process_webhook_background(
 )
 def receive_webhook():
 
+    signature_valid = verify_meta_signature()
+    if signature_valid is False:
+        return "Invalid webhook signature.", 403
+
     data = request.get_json(
         silent=True
     ) or {}
@@ -6538,6 +6576,17 @@ def get_v01_health():
         True,
     )
 
+    signature_verification_active = webhook_signature_verification_active()
+    add_check(
+        "webhook_signature",
+        "Webhook POST signature verification",
+        "pass" if signature_verification_active else "warn",
+        "X-Hub-Signature-256 verification is active."
+        if signature_verification_active
+        else "Webhook POST signature verification is NOT active; META_APP_SECRET is not configured.",
+        False,
+    )
+
     # Read-only live Instagram account check. A transient Meta/network issue is
     # reported as warning so it does not mutate or break the bot.
     instagram_live = False
@@ -6668,8 +6717,6 @@ def get_v01_health():
 # DASHBOARD
 # ============================================================
 
-from flask import render_template
-
 # Dashboard folders
 app.template_folder = "dashboard/templates"
 app.static_folder = "dashboard/static"
@@ -6680,7 +6727,9 @@ def dashboard():
     """
     Main Social Media Bot Dashboard
     """
-    return render_template("dashboard.html")
+    return render_template(
+        "dashboard.html", current_user=get_current_user(), csrf_token=csrf_token()
+    )
 
 
 # ============================================================
