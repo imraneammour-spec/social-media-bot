@@ -18,6 +18,9 @@ from dotenv import load_dotenv
 from flask import Flask, request, send_file, Response, url_for
 from werkzeug.utils import secure_filename
 
+from database.cli import register_database_commands
+from database.config import database_url_from_environment
+
 from google import genai
 from google.genai import types
 
@@ -68,6 +71,10 @@ load_dotenv(ENV_FILE)
 
 app = Flask(__name__)
 
+# Optional Phase 2 configuration only.  No engine, session, table creation, or
+# JSON-to-SQL migration occurs during application startup.
+DATABASE_URL = database_url_from_environment()
+
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "imran_social_media_bot_2026")
 
 INSTAGRAM_ACCESS_TOKEN = os.getenv(
@@ -94,6 +101,10 @@ CLOUDINARY_API_SECRET = os.getenv(
 ).strip()
 
 INSTAGRAM_USER_ID = "17841438617458289"
+
+# The command is explicit (``flask --app webhook bootstrap-owner``) and lazy:
+# registering it neither connects to PostgreSQL nor changes Phase 0 JSON state.
+register_database_commands(app, lambda: INSTAGRAM_USER_ID)
 
 API_VERSION = "v25.0"
 
