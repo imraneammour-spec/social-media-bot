@@ -58,10 +58,16 @@ class InstagramAccount(TimestampMixin, Base):
         String(64), nullable=False, unique=True, index=True
     )
     username: Mapped[str | None] = mapped_column(String(255), index=True)
+    provider: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="instagram", server_default="instagram"
+    )
     connection_status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="environment_managed"
     )
     token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    disconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_connection_error_code: Mapped[str | None] = mapped_column(String(128))
 
     owner: Mapped[User] = relationship(back_populates="instagram_accounts")
     credentials: Mapped[list["InstagramCredential"]] = relationship(
@@ -88,6 +94,12 @@ class InstagramCredential(TimestampMixin, Base):
     encryption_key_id: Mapped[str | None] = mapped_column(String(255))
     scopes: Mapped[list[str] | None] = mapped_column(JSON)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    token_status: Mapped[str | None] = mapped_column(String(32))
+    issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(128))
 
     instagram_account: Mapped[InstagramAccount] = relationship(back_populates="credentials")
 
