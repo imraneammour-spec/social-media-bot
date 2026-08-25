@@ -4678,14 +4678,49 @@ def render_daily_story_image(image_bytes, comment):
 
             text_layers = []
             for line in lines:
-                layer = _render_story_text_line(
+                line = str(line or "").strip()
+                if not line:
+                    continue
+
+                # Render the TrueType font directly at its final visual size.
+                # Do NOT enlarge the rendered bitmap: that was the source of
+                # the blurry/pixelated caption in the previous test.
+                probe = Image.new("RGBA", (1000, 180), (0, 0, 0, 0))
+                probe_draw = ImageDraw.Draw(probe)
+                bbox = probe_draw.textbbox(
+                    (0, 0),
                     line,
-                    font,
-                    target_height=64,
-                    max_width=820,
+                    font=font,
+                    stroke_width=0,
                 )
-                if layer is not None:
-                    text_layers.append(layer)
+                x0, y0, x1, y1 = bbox
+
+                layer = Image.new(
+                    "RGBA",
+                    (max(1, x1 - x0) + 16, max(1, y1 - y0) + 16),
+                    (0, 0, 0, 0),
+                )
+                layer_draw = ImageDraw.Draw(layer)
+                layer_draw.text(
+                    (8 - x0, 8 - y0),
+                    line,
+                    font=font,
+                    fill=(255, 255, 255, 255),
+                )
+
+                crop = layer.getbbox()
+                if crop:
+                    layer = layer.crop(crop)
+
+                # Reduce only if a line is unusually wide. Never upscale.
+                if layer.width > 820:
+                    scale = 820 / layer.width
+                    layer = layer.resize(
+                        (820, max(1, int(layer.height * scale))),
+                        Image.Resampling.LANCZOS,
+                    )
+
+                text_layers.append(layer)
 
             if text_layers:
                 line_gap = 24
