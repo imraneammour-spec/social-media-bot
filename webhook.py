@@ -4438,28 +4438,6 @@ def auto_story_settings_api():
     return {"success": True, "settings": load_auto_story_settings()}, 200
 
 
-@app.route("/api/auto-story-test", methods=["POST"])
-def auto_story_test_api():
-    """Queue one Daily Auto Story immediately for a controlled live test."""
-    queued = queue_daily_archive_story(force=True)
-    if not queued:
-        return {
-            "error": (
-                "Auto Story test could not be queued. Check that the account has "
-                "an older image/post available and that Cloudinary is configured."
-            )
-        }, 409
-
-    return {
-        "success": True,
-        "queued": int(queued),
-        "message": (
-            "Daily Auto Story test queued. The background scheduler will publish "
-            "it on the next cycle."
-        ),
-    }, 200
-
-
 def auto_story_fallback_comment(caption=""):
     caption = re.sub(r"\s+", " ", str(caption or "")).strip().lower()
     if "prompt" in caption or "comment ai" in caption:
