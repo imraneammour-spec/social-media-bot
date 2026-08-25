@@ -4552,24 +4552,80 @@ def _story_font(size, bold=True):
         return None
 
 
-def _wrap_story_text(draw, text, font, max_width):
-    words = str(text or "").split()
+def _wrap_story_text(text, max_chars=28):
+    """Wrap Story copy independently from the installed font metrics."""
+    words = str(text or "").strip().split()
     lines = []
     current = ""
+
     for word in words:
         test = word if not current else current + " " + word
-        try:
-            width = draw.textbbox((0, 0), test, font=font)[2]
-        except Exception:
-            width = len(test) * 18
-        if current and width > max_width:
+        if current and len(test) > max_chars:
             lines.append(current)
             current = word
         else:
             current = test
+
     if current:
         lines.append(current)
-    return lines[:3]
+
+    # Story overlays should stay compact and readable.
+    if len(lines) > 2:
+        lines = [lines[0], " ".join(lines[1:])]
+    return lines[:2]
+
+
+def _render_story_text_line(line, font, target_height=64, max_width=820):
+    """
+    Render one line to a transparent layer and force a readable visual size.
+
+    This is intentionally independent of the host font installation. Even if
+    Pillow falls back to its tiny bitmap font, the rendered text bitmap is
+    enlarged to the target height before it is composited onto the Story.
+    """
+    line = str(line or "").strip()
+    if not line:
+        return None
+
+    probe = Image.new("RGBA", (1600, 300), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(probe)
+
+    try:
+        bbox = draw.textbbox((0, 0), line, font=font, stroke_width=1)
+        x0, y0, x1, y1 = bbox
+    except Exception:
+        x0, y0, x1, y1 = 0, 0, max(1, len(line) * 12), 24
+
+    width = max(1, x1 - x0)
+    height = max(1, y1 - y0)
+
+    raw = Image.new("RGBA", (width + 16, height + 16), (0, 0, 0, 0))
+    raw_draw = ImageDraw.Draw(raw)
+    raw_draw.text(
+        (8 - x0, 8 - y0),
+        line,
+        font=font,
+        fill=(255, 255, 255, 255),
+        stroke_width=1,
+        stroke_fill=(255, 255, 255, 255),
+    )
+
+    content_bbox = raw.getbbox()
+    if content_bbox:
+        raw = raw.crop(content_bbox)
+
+    # First guarantee the requested text height.
+    scale = target_height / max(1, raw.height)
+    new_w = max(1, int(raw.width * scale))
+    new_h = max(1, int(raw.height * scale))
+
+    # Then keep the line within the Story safe width.
+    if new_w > max_width:
+        width_scale = max_width / new_w
+        new_w = max(1, int(new_w * width_scale))
+        new_h = max(1, int(new_h * width_scale))
+
+    return raw.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
 
 def render_daily_story_image(image_bytes, comment):
@@ -4589,7 +4645,9 @@ def render_daily_story_image(image_bytes, comment):
         )
         left = max(0, (bg.width - canvas_w) // 2)
         top = max(0, (bg.height - canvas_h) // 2)
-        bg = bg.crop((left, top, left + canvas_w, top + canvas_h)).filter(ImageFilter.GaussianBlur(30))
+        bg = bg.crop((left, top, left + canvas_w, top + canvas_h)).filter(
+            ImageFilter.GaussianBlur(30)
+        )
         overlay = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 54))
         canvas = Image.alpha_composite(bg.convert("RGBA"), overlay)
 
@@ -4598,33 +4656,84 @@ def render_daily_story_image(image_bytes, comment):
         x = (canvas_w - fg.width) // 2
         y = max(170, (canvas_h - fg.height) // 2 - 10)
 
-        shadow = Image.new("RGBA", (fg.width + 40, fg.height + 40), (0, 0, 0, 0))
+        shadow = Image.new(
+            "RGBA",
+            (fg.width + 40, fg.height + 40),
+            (0, 0, 0, 0),
+        )
         sd = ImageDraw.Draw(shadow)
-        sd.rounded_rectangle((20, 20, fg.width + 20, fg.height + 20), radius=28, fill=(0, 0, 0, 95))
+        sd.rounded_rectangle(
+            (20, 20, fg.width + 20, fg.height + 20),
+            radius=28,
+            fill=(0, 0, 0, 95),
+        )
         shadow = shadow.filter(ImageFilter.GaussianBlur(16))
         canvas.alpha_composite(shadow, (x - 20, y - 20))
         canvas.alpha_composite(fg.convert("RGBA"), (x, y))
 
-        text = str(comment or "").strip()
+        text = re.sub(r"\s+", " ", str(comment or "")).strip()
         if text:
-            draw = ImageDraw.Draw(canvas)
             font = _story_font(68, True)
-            lines = _wrap_story_text(draw, text, font, 900)
-            if lines:
-                line_h = 82
-                box_h = 42 + len(lines) * line_h
-                box_y = canvas_h - box_h - 120
-                draw.rounded_rectangle((70, box_y, 1010, canvas_h - 90), radius=34, fill=(0, 0, 0, 180))
-                ty = box_y + 24
-                for line in lines:
-                    draw.text((105, ty), line, font=font, fill=(255, 255, 255, 255))
-                    ty += line_h
+            lines = _wrap_story_text(text, max_chars=28)
+
+            text_layers = []
+            for line in lines:
+                layer = _render_story_text_line(
+                    line,
+                    font,
+                    target_height=64,
+                    max_width=820,
+                )
+                if layer is not None:
+                    text_layers.append(layer)
+
+            if text_layers:
+                line_gap = 24
+                max_text_w = max(layer.width for layer in text_layers)
+                total_text_h = (
+                    sum(layer.height for layer in text_layers)
+                    + line_gap * max(0, len(text_layers) - 1)
+                )
+
+                pad_x = 58
+                pad_y = 42
+                box_w = min(940, max(560, max_text_w + pad_x * 2))
+                box_h = total_text_h + pad_y * 2
+                box_x = (canvas_w - box_w) // 2
+                box_y = canvas_h - box_h - 105
+
+                box_layer = Image.new(
+                    "RGBA",
+                    (box_w, box_h),
+                    (0, 0, 0, 0),
+                )
+                box_draw = ImageDraw.Draw(box_layer)
+                box_draw.rounded_rectangle(
+                    (0, 0, box_w - 1, box_h - 1),
+                    radius=38,
+                    fill=(0, 0, 0, 205),
+                )
+
+                ty = pad_y
+                for layer in text_layers:
+                    tx = (box_w - layer.width) // 2
+                    box_layer.alpha_composite(layer, (tx, ty))
+                    ty += layer.height + line_gap
+
+                canvas.alpha_composite(box_layer, (box_x, box_y))
 
         output = BytesIO()
-        canvas.convert("RGB").save(output, format="JPEG", quality=92, optimize=True)
+        canvas.convert("RGB").save(
+            output,
+            format="JPEG",
+            quality=92,
+            optimize=True,
+        )
         return output.getvalue(), ""
+
     except Exception as error:
         return None, "Could not compose Daily Auto Story image: " + str(error)
+
 
 
 def upload_daily_story_bytes_to_cloudinary(story_id, media_bytes):
