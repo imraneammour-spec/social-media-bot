@@ -4508,14 +4508,44 @@ Post caption:
 
 
 def _story_font(size, bold=True):
+    """
+    Load a real scalable TrueType font for Story overlays.
+
+    Railway can fail to resolve "DejaVuSans-Bold.ttf" by basename only.
+    Pillow then falls back to its tiny bitmap default font, which makes the
+    Story caption almost unreadable. Prefer absolute Linux font paths first,
+    then try normal font names as a local-development fallback.
+    """
     if not PIL_AVAILABLE:
         return None
-    names = ["DejaVuSans-Bold.ttf", "DejaVuSans.ttf"] if bold else ["DejaVuSans.ttf", "DejaVuSans-Bold.ttf"]
-    for name in names:
+
+    if bold:
+        candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+            "DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+            "DejaVuSans.ttf",
+        ]
+    else:
+        candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+            "DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+            "DejaVuSans-Bold.ttf",
+        ]
+
+    for font_path in candidates:
         try:
-            return ImageFont.truetype(name, size)
+            return ImageFont.truetype(font_path, int(size))
         except Exception:
-            pass
+            continue
+
+    # Last-resort fallback. This is intentionally kept only so Story creation
+    # does not crash if the host image unexpectedly has no TrueType fonts.
     try:
         return ImageFont.load_default()
     except Exception:
@@ -4578,10 +4608,10 @@ def render_daily_story_image(image_bytes, comment):
         text = str(comment or "").strip()
         if text:
             draw = ImageDraw.Draw(canvas)
-            font = _story_font(54, True)
+            font = _story_font(68, True)
             lines = _wrap_story_text(draw, text, font, 900)
             if lines:
-                line_h = 66
+                line_h = 82
                 box_h = 42 + len(lines) * line_h
                 box_y = canvas_h - box_h - 120
                 draw.rounded_rectangle((70, box_y, 1010, canvas_h - 90), radius=34, fill=(0, 0, 0, 180))
