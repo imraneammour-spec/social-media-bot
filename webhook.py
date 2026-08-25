@@ -3726,6 +3726,10 @@ def load_dashboard_drafts():
 @app.route("/api/approve-draft", methods=["POST"])
 def approve_dashboard_draft():
 
+    return {
+        "error": "Post auto-publishing is disabled. Use the Post Assistant, then publish manually in Instagram."
+    }, 410
+
     images = request.files.getlist("images")
     caption = str(request.form.get("caption", "")).strip()
     cta = str(request.form.get("cta", "")).strip()
@@ -5982,6 +5986,14 @@ def wait_for_instagram_container(creation_id, attempts=10, delay_seconds=2):
 
 
 def publish_instagram_draft(draft, public_base_url):
+
+    # Posts are intentionally manual-publish only. Keep this guard at the
+    # lowest level so an accidental internal call cannot publish a Post.
+    del draft, public_base_url
+    return None, (
+        "Post auto-publishing is disabled. Use the Post Assistant, then "
+        "publish manually in Instagram."
+    )
 
     # Keep the old argument for compatibility, but do not use Railway
     # as Instagram's media host. Meta's crawler can be blocked by the
