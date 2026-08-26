@@ -13,6 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from .models import InstagramAccount, InstagramCredential
+from .ownership import resolve_owned_instagram_account
 
 
 ACTIVE_KEY_ID_ENV = "INSTAGRAM_CREDENTIAL_ACTIVE_KEY_ID"
@@ -183,3 +184,42 @@ def load_decrypted_access_token(
         credential.encryption_key_id,
         keyring,
     )
+
+
+def store_encrypted_credential_for_user(
+    session: Session,
+    *,
+    user_id: object,
+    account_id: object,
+    access_token: str,
+    keyring: CredentialKeyring,
+) -> InstagramCredential:
+    """Store a credential only after server-side account ownership resolution."""
+
+    account = resolve_owned_instagram_account(
+        session,
+        user_id=user_id,
+        account_id=account_id,
+    )
+    if account is None:
+        raise CredentialNotFoundError("Credential is unavailable.")
+    return store_encrypted_credential(session, account, access_token, keyring)
+
+
+def load_decrypted_access_token_for_user(
+    session: Session,
+    *,
+    user_id: object,
+    account_id: object,
+    keyring: CredentialKeyring,
+) -> str:
+    """Decrypt only an account that was resolved as owned by the supplied user."""
+
+    account = resolve_owned_instagram_account(
+        session,
+        user_id=user_id,
+        account_id=account_id,
+    )
+    if account is None:
+        raise CredentialNotFoundError("Credential is unavailable.")
+    return load_decrypted_access_token(session, account, keyring)

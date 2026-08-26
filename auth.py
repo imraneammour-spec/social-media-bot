@@ -19,7 +19,8 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from database.models import InstagramAccount, User
+from database.models import User
+from database.ownership import resolve_owned_instagram_account_by_external_id
 from database.runtime import create_session_factory
 
 
@@ -151,16 +152,14 @@ def current_user_has_legacy_workspace_access() -> bool:
         return False
     try:
         with state.session_factory() as db_session:
-            account_id = db_session.scalar(
-                select(InstagramAccount.id).where(
-                    InstagramAccount.user_id == user.id,
-                    InstagramAccount.instagram_user_id
-                    == state.legacy_instagram_user_id,
-                )
+            account = resolve_owned_instagram_account_by_external_id(
+                db_session,
+                user_id=user.id,
+                instagram_user_id=state.legacy_instagram_user_id,
             )
     except SQLAlchemyError:
         return False
-    return account_id is not None
+    return account is not None
 
 
 def rotate_authenticated_session(user: User) -> None:

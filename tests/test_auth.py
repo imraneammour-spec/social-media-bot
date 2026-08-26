@@ -94,6 +94,31 @@ class AuthenticationCoreTest(unittest.TestCase):
             self.assertTrue(current_user_has_legacy_workspace_access())
             self.assertEqual(set(session), {"user_id"})
 
+    def test_user_with_another_account_cannot_access_legacy_workspace(self):
+        self._create_owner()
+        with self.Session.begin() as db_session:
+            another_user = User(
+                email="another-owner@example.test",
+                password_hash=generate_password_hash("correct horse battery staple"),
+            )
+            db_session.add(another_user)
+            db_session.flush()
+            db_session.add(
+                InstagramAccount(
+                    user_id=another_user.id,
+                    instagram_user_id="another-account-id",
+                )
+            )
+            another_user_id = another_user.id
+
+        client = self.app.test_client()
+        with client.session_transaction() as browser_session:
+            browser_session["user_id"] = str(another_user_id)
+            browser_session["_csrf_token"] = "other-account-csrf-token-with-32-byte-minimum"
+
+        self.assertEqual(client.get("/dashboard").status_code, 302)
+        self.assertEqual(client.post("/api/test-mutation").status_code, 403)
+
     def test_invalid_session_user_id_is_cleared(self):
         with self.app.test_request_context("/"):
             session["user_id"] = "not-a-uuid"
