@@ -26,6 +26,11 @@ from database.ownership import (
     resolve_owned_instagram_account_by_external_id,
 )
 from database.runtime import create_session_factory
+from instagram_oauth import (
+    OAuthConfigurationError,
+    issue_instagram_oauth_state,
+    oauth_configuration_from_environment,
+)
 
 
 CSRF_SESSION_KEY = "_csrf_token"
@@ -329,6 +334,25 @@ def register_auth_routes(app) -> None:
             return "Invalid form token.", 400
         clear_authenticated_session()
         return redirect(url_for("login"))
+
+    @app.post("/connect/instagram")
+    @login_required
+    def start_instagram_connection():
+        if not validate_csrf_token(request_csrf_token()):
+            return "Invalid form token.", 400
+        user = get_current_user()
+        if user is None:
+            return _unauthenticated_response()
+        if current_user_has_legacy_workspace_access():
+            return "Instagram connection is not available for this account.", 403
+        try:
+            configuration = oauth_configuration_from_environment(
+                production=bool(current_app.config.get("SESSION_COOKIE_SECURE")),
+            )
+        except OAuthConfigurationError:
+            return "Instagram connection configuration is unavailable.", 503
+        state = issue_instagram_oauth_state(user.id)
+        return redirect(configuration.authorization_url(state))
 
     @app.get("/onboarding")
     @login_required
