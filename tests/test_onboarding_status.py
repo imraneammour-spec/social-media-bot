@@ -98,7 +98,7 @@ class OnboardingStatusTest(unittest.TestCase):
             browser_session["user_id"] = str(user_id)
         return client.get(f"/onboarding{suffix}")
 
-    def test_new_user_sees_no_account_state_and_disabled_connect_placeholder(self):
+    def test_new_user_sees_no_account_state_and_csrf_protected_connect_form(self):
         user_id = self._create_user("new@example.test")
 
         response = self._onboarding(user_id)
@@ -106,8 +106,12 @@ class OnboardingStatusTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"No Instagram account connected", response.data)
         self.assertIn(b"Connect Instagram", response.data)
-        self.assertIn(b"disabled", response.data)
-        self.assertIn(b"coming in the next connection phase", response.data)
+        self.assertIn(b'method="post" action="/connect/instagram"', response.data)
+        self.assertIn(b'name="csrf_token"', response.data)
+        self.assertNotIn(b"disabled", response.data)
+        self.assertNotIn(b"user_id", response.data)
+        self.assertNotIn(b"account_id", response.data)
+        self.assertNotIn(b"instagram_user_id", response.data)
 
     def test_onboarding_shows_only_owned_sanitized_accounts(self):
         owner_id = self._create_user("owner@example.test")

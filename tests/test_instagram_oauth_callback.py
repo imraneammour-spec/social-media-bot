@@ -15,11 +15,15 @@ from auth import configure_auth, install_auth_route_guard, register_auth_routes
 from database.models import Base, InstagramAccount, InstagramCredential, User
 from instagram_oauth import (
     INSTAGRAM_OAUTH_CODE_EXCHANGE_URL,
+    INSTAGRAM_OAUTH_ACCOUNT_DISCOVERY_URL,
     INSTAGRAM_OAUTH_LONG_LIVED_TOKEN_URL,
     INSTAGRAM_OAUTH_REQUEST_TIMEOUT_SECONDS,
     INSTAGRAM_OAUTH_STATE_SESSION_KEY,
     OAuthExchangeError,
+    OAuthDiscoveryError,
+    InstagramOAuthTokenResult,
     complete_instagram_token_exchange,
+    discover_instagram_account,
     oauth_configuration_from_environment,
 )
 
@@ -102,17 +106,20 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
         def exchange_after_state_is_consumed(code, configuration):
             self.assertEqual(code, authorization_code)
             self.assertNotIn(INSTAGRAM_OAUTH_STATE_SESSION_KEY, session)
-            return None
+            return InstagramOAuthTokenResult(long_token, None, None)
 
         with patch.dict("os.environ", self._oauth_environment(), clear=False), patch(
             "auth.complete_instagram_token_exchange", side_effect=exchange_after_state_is_consumed
-        ) as exchange:
+        ) as exchange, patch(
+            "auth.discover_instagram_account",
+            side_effect=OAuthDiscoveryError("Instagram account discovery could not be completed."),
+        ):
             response = client.get(
                 "/connect/instagram/callback",
                 query_string={"state": state, "code": authorization_code},
             )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 502)
         exchange.assert_called_once()
         rendered = response.get_data(as_text=True) + response.headers.get("Location", "")
         for sensitive_value in (authorization_code, short_token, long_token, app_secret):
@@ -154,9 +161,13 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
 
         replay_client = self._authenticated_client()
         state = self._issue_state(replay_client)
+        token_result = InstagramOAuthTokenResult("long-token-must-not-leak", None, None)
         with patch.dict("os.environ", self._oauth_environment(), clear=False), patch(
-            "auth.complete_instagram_token_exchange", return_value=None
-        ) as exchange:
+            "auth.complete_instagram_token_exchange", return_value=token_result
+        ) as exchange, patch(
+            "auth.discover_instagram_account",
+            side_effect=OAuthDiscoveryError("Instagram account discovery could not be completed."),
+        ):
             first = replay_client.get(
                 "/connect/instagram/callback",
                 query_string={"state": state, "code": authorization_code},
@@ -165,7 +176,7 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
                 "/connect/instagram/callback",
                 query_string={"state": state, "code": authorization_code},
             )
-        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.status_code, 502)
         self.assertEqual(replay.status_code, 400)
         self.assertEqual(exchange.call_count, 1)
         self._assert_no_database_writes()
@@ -205,14 +216,25 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
         short_token = "short-token-must-not-leak"
         long_token = "long-token-must-not-leak"
         short_response = _ProviderResponse(payload={"access_token": short_token})
-        long_response = _ProviderResponse(payload={"access_token": long_token})
+        long_response = _ProviderResponse(
+            payload={
+                "access_token": long_token,
+                "expires_in": 3600,
+                "scopes": ["instagram_business_basic"],
+            }
+        )
 
         with patch.dict(os.environ, environment, clear=False), patch(
             "instagram_oauth.requests.post", return_value=short_response
         ) as post, patch(
             "instagram_oauth.requests.get", return_value=long_response
         ) as get:
-            self.assertIsNone(complete_instagram_token_exchange(authorization_code, configuration))
+            result = complete_instagram_token_exchange(authorization_code, configuration)
+
+        self.assertEqual(result.long_lived_access_token, long_token)
+        self.assertEqual(result.expires_in, 3600)
+        self.assertEqual(result.scopes, ("instagram_business_basic",))
+        self.assertNotIn(long_token, repr(result))
 
         self.assertTrue(INSTAGRAM_OAUTH_CODE_EXCHANGE_URL.startswith("https://"))
         self.assertTrue(INSTAGRAM_OAUTH_LONG_LIVED_TOKEN_URL.startswith("https://"))
@@ -238,6 +260,53 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
         )
         self.assertNotIn(long_token, str(configuration))
 
+    def test_discovery_uses_https_bearer_auth_minimal_fields_and_sanitizes_failures(self):
+        long_token = "long-token-must-not-leak"
+        external_id = "17841438617458005"
+        token_result = InstagramOAuthTokenResult(long_token, None, None)
+        with patch(
+            "instagram_oauth.requests.get",
+            return_value=_ProviderResponse(payload={"id": external_id, "username": "discovered_account"}),
+        ) as get:
+            discovery = discover_instagram_account(token_result)
+
+        self.assertEqual(discovery.instagram_user_id, external_id)
+        self.assertEqual(discovery.username, "discovered_account")
+        self.assertTrue(INSTAGRAM_OAUTH_ACCOUNT_DISCOVERY_URL.startswith("https://"))
+        get.assert_called_once_with(
+            INSTAGRAM_OAUTH_ACCOUNT_DISCOVERY_URL,
+            headers={"Authorization": f"Bearer {long_token}"},
+            params={"fields": "id,username"},
+            timeout=INSTAGRAM_OAUTH_REQUEST_TIMEOUT_SECONDS,
+        )
+        self.assertNotIn(long_token, repr(discovery))
+
+        sensitive_url = f"https://graph.instagram.com/me?access_token={long_token}"
+        for failure in (
+            _ProviderResponse(ok=False, payload={"error": "provider-error-must-not-leak"}),
+            _ProviderResponse(payload=ValueError("provider-error-must-not-leak")),
+            requests.Timeout(sensitive_url),
+        ):
+            with patch(
+                "instagram_oauth.requests.get",
+                side_effect=failure if isinstance(failure, requests.RequestException) else None,
+                return_value=None if isinstance(failure, requests.RequestException) else failure,
+            ):
+                with self.assertRaises(OAuthDiscoveryError) as error:
+                    discover_instagram_account(token_result)
+            self.assertEqual(str(error.exception), "Instagram account discovery could not be completed.")
+            self.assertNotIn(long_token, str(error.exception))
+            self.assertNotIn(sensitive_url, str(error.exception))
+
+        for malformed_id in ("", "not-a-numeric-instagram-id"):
+            with patch(
+                "instagram_oauth.requests.get",
+                return_value=_ProviderResponse(payload={"id": malformed_id}),
+            ):
+                with self.assertRaises(OAuthDiscoveryError) as error:
+                    discover_instagram_account(token_result)
+            self.assertEqual(str(error.exception), "Instagram account discovery could not be completed.")
+
     def test_successful_real_exchange_never_exposes_tokens_or_secret_to_callback_client(self):
         client = self._authenticated_client()
         state = self._issue_state(client)
@@ -252,13 +321,16 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
         ), patch(
             "instagram_oauth.requests.get",
             return_value=_ProviderResponse(payload={"access_token": long_token}),
+        ), patch(
+            "auth.discover_instagram_account",
+            side_effect=OAuthDiscoveryError("Instagram account discovery could not be completed."),
         ), patch("builtins.print") as printed:
             response = client.get(
                 "/connect/instagram/callback",
                 query_string={"state": state, "code": authorization_code},
             )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 502)
         rendered = response.get_data(as_text=True) + response.headers.get("Location", "")
         for sensitive_value in (authorization_code, short_token, long_token, app_secret):
             self.assertNotIn(sensitive_value, rendered)

@@ -29,8 +29,11 @@
         {% else %}
             <section aria-label="Instagram account status">
                 <h2>No Instagram account connected</h2>
-                <p>Connect Instagram will become available in the next connection phase.</p>
-                <button type="button" disabled aria-disabled="true">Connect Instagram — coming in the next connection phase</button>
+                <p>Connect your Instagram professional account to continue.</p>
+                <form method="post" action="{{ url_for('start_instagram_connection') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit">Connect Instagram</button>
+                </form>
             </section>
         {% endif %}
         <form method="post" action="{{ url_for('logout') }}">

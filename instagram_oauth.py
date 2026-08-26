@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import os
+import re
 import secrets
 import time
 import uuid
@@ -21,11 +22,14 @@ INSTAGRAM_OAUTH_REDIRECT_URI_ENV = "INSTAGRAM_OAUTH_REDIRECT_URI"
 INSTAGRAM_OAUTH_AUTHORIZE_URL = "https://www.instagram.com/oauth/authorize"
 INSTAGRAM_OAUTH_CODE_EXCHANGE_URL = "https://api.instagram.com/oauth/access_token"
 INSTAGRAM_OAUTH_LONG_LIVED_TOKEN_URL = "https://graph.instagram.com/access_token"
+INSTAGRAM_OAUTH_ACCOUNT_DISCOVERY_URL = "https://graph.instagram.com/me"
 INSTAGRAM_OAUTH_SCOPE = ("instagram_business_basic",)
 INSTAGRAM_OAUTH_STATE_SESSION_KEY = "_instagram_oauth_state"
 INSTAGRAM_OAUTH_STATE_TTL_SECONDS = 600
 INSTAGRAM_OAUTH_STATE_BYTES = 32
 INSTAGRAM_OAUTH_REQUEST_TIMEOUT_SECONDS = 15
+INSTAGRAM_OAUTH_MAX_EXPIRES_IN_SECONDS = 60 * 60 * 24 * 366 * 10
+INSTAGRAM_OAUTH_EXTERNAL_ID_PATTERN = re.compile(r"^[0-9]{1,64}$")
 
 
 class OAuthConfigurationError(ValueError):
@@ -38,6 +42,27 @@ class OAuthStateError(ValueError):
 
 class OAuthExchangeError(ValueError):
     """Raised without provider content when an OAuth exchange fails."""
+
+
+class OAuthDiscoveryError(ValueError):
+    """Raised without provider or account details when discovery fails."""
+
+
+@dataclass(frozen=True, repr=False)
+class InstagramOAuthTokenResult:
+    """Internal-only result from the server-side Meta token exchanges."""
+
+    long_lived_access_token: str
+    expires_in: int | None
+    scopes: tuple[str, ...] | None
+
+
+@dataclass(frozen=True, repr=False)
+class InstagramAccountDiscovery:
+    """Internal-only minimal account identity returned by Meta discovery."""
+
+    instagram_user_id: str
+    username: str | None
 
 
 @dataclass(frozen=True)
@@ -121,6 +146,10 @@ def _exchange_error() -> OAuthExchangeError:
     return OAuthExchangeError("Instagram authorization could not be completed.")
 
 
+def _discovery_error() -> OAuthDiscoveryError:
+    return OAuthDiscoveryError("Instagram account discovery could not be completed.")
+
+
 def _access_token_from_response(response: object) -> str:
     """Extract only a nonempty access token without surfacing provider details."""
 
@@ -136,11 +165,56 @@ def _access_token_from_response(response: object) -> str:
     return access_token
 
 
+def normalized_expires_in(value: object) -> int | None:
+    """Accept only a bounded positive integer expiry from an untrusted provider."""
+
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if value <= 0 or value > INSTAGRAM_OAUTH_MAX_EXPIRES_IN_SECONDS:
+        return None
+    return value
+
+
+def _validated_scopes(payload: object) -> tuple[str, ...] | None:
+    if not isinstance(payload, dict):
+        return None
+    scopes = payload.get("scopes")
+    if not isinstance(scopes, list) or not scopes or len(scopes) > 64:
+        return None
+    normalized: list[str] = []
+    for scope in scopes:
+        if (
+            not isinstance(scope, str)
+            or not scope
+            or len(scope) > 128
+            or not scope.isascii()
+            or not all(character.islower() or character.isdigit() or character == "_" for character in scope)
+        ):
+            return None
+        normalized.append(scope)
+    return tuple(normalized)
+
+
+def _token_result_from_response(response: object) -> InstagramOAuthTokenResult:
+    token = _access_token_from_response(response)
+    try:
+        payload = response.json()  # type: ignore[union-attr]
+    except (AttributeError, TypeError, ValueError):
+        raise _exchange_error() from None
+    if not isinstance(payload, dict):
+        raise _exchange_error()
+    return InstagramOAuthTokenResult(
+        long_lived_access_token=token,
+        expires_in=normalized_expires_in(payload.get("expires_in")),
+        scopes=_validated_scopes(payload),
+    )
+
+
 def complete_instagram_token_exchange(
     authorization_code: object,
     configuration: InstagramOAuthConfiguration,
-) -> None:
-    """Perform both Meta token exchanges and immediately discard their tokens.
+) -> InstagramOAuthTokenResult:
+    """Perform both Meta token exchanges and return an internal-only result.
 
     The long-lived exchange is Meta's documented GET endpoint. Its sensitive
     parameters are therefore confined to this outbound HTTPS request and are
@@ -172,11 +246,50 @@ def complete_instagram_token_exchange(
             },
             timeout=INSTAGRAM_OAUTH_REQUEST_TIMEOUT_SECONDS,
         )
-        _access_token_from_response(long_lived_response)
+        return _token_result_from_response(long_lived_response)
     except (OAuthConfigurationError, OAuthExchangeError):
         raise _exchange_error() from None
     except (requests.RequestException, AttributeError, TypeError, ValueError):
         raise _exchange_error() from None
+
+
+def discover_instagram_account(token_result: InstagramOAuthTokenResult) -> InstagramAccountDiscovery:
+    """Discover only the authorized account's external ID and optional username."""
+
+    token = getattr(token_result, "long_lived_access_token", None)
+    if not isinstance(token, str) or not token:
+        raise _discovery_error()
+    try:
+        response = requests.get(
+            INSTAGRAM_OAUTH_ACCOUNT_DISCOVERY_URL,
+            headers={"Authorization": f"Bearer {token}"},
+            params={"fields": "id,username"},
+            timeout=INSTAGRAM_OAUTH_REQUEST_TIMEOUT_SECONDS,
+        )
+        if not bool(getattr(response, "ok", False)):
+            raise _discovery_error()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise _discovery_error()
+        instagram_user_id = payload.get("id")
+        if (
+            not isinstance(instagram_user_id, str)
+            or not INSTAGRAM_OAUTH_EXTERNAL_ID_PATTERN.fullmatch(instagram_user_id)
+        ):
+            raise _discovery_error()
+        username = payload.get("username")
+        if not isinstance(username, str):
+            username = None
+        else:
+            username = username.strip() or None
+        return InstagramAccountDiscovery(
+            instagram_user_id=instagram_user_id,
+            username=username,
+        )
+    except OAuthDiscoveryError:
+        raise
+    except (requests.RequestException, AttributeError, TypeError, ValueError):
+        raise _discovery_error() from None
 
 
 def _normalized_user_id(user_id: object) -> str:

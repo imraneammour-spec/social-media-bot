@@ -20,6 +20,11 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from database.credentials import CredentialConfigurationError, credential_keyring_from_environment
+from database.instagram_connection import (
+    InstagramConnectionError,
+    persist_discovered_instagram_connection,
+)
 from database.models import InstagramAccount, User
 from database.ownership import (
     list_owned_instagram_accounts,
@@ -28,10 +33,12 @@ from database.ownership import (
 from database.runtime import create_session_factory
 from instagram_oauth import (
     OAuthConfigurationError,
+    OAuthDiscoveryError,
     OAuthExchangeError,
     OAuthStateError,
     complete_instagram_token_exchange,
     consume_instagram_oauth_state,
+    discover_instagram_account,
     issue_instagram_oauth_state,
     oauth_configuration_from_environment,
 )
@@ -378,12 +385,25 @@ def register_auth_routes(app) -> None:
             configuration = oauth_configuration_from_environment(
                 production=bool(current_app.config.get("SESSION_COOKIE_SECURE")),
             )
-            complete_instagram_token_exchange(authorization_code, configuration)
-        except OAuthConfigurationError:
+            token_result = complete_instagram_token_exchange(authorization_code, configuration)
+            discovery = discover_instagram_account(token_result)
+            keyring = credential_keyring_from_environment()
+            state = _auth_state()
+            if state.session_factory is None:
+                return _unavailable_response()
+            persist_discovered_instagram_connection(
+                state.session_factory,
+                user_id=user.id,
+                legacy_instagram_user_id=state.legacy_instagram_user_id,
+                discovery=discovery,
+                token_result=token_result,
+                keyring=keyring,
+            )
+        except (OAuthConfigurationError, CredentialConfigurationError):
             return "Instagram connection configuration is unavailable.", 503
-        except OAuthExchangeError:
-            return "Instagram authorization could not be completed.", 502
-        return "Instagram authorization exchange succeeded. Your account is not connected yet.", 200
+        except (OAuthExchangeError, OAuthDiscoveryError, InstagramConnectionError):
+            return "Instagram connection could not be completed.", 502
+        return redirect(url_for("onboarding"))
 
     @app.get("/onboarding")
     @login_required
