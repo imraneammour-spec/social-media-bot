@@ -38,24 +38,30 @@ class WebhookAuthenticationIntegrationTest(unittest.TestCase):
             "FLASK_SECRET_KEY": "integration-test-secret",
             "VERIFY_TOKEN": "integration-verify-token",
             "META_APP_SECRET": "",
+            "APP_ENV": "test",
+            "ALLOW_UNSIGNED_WEBHOOKS": "1",
             "INSTAGRAM_ACCESS_TOKEN": "",
             "GEMINI_API_KEY": "",
         }
-        module_name = "phase3a_webhook_integration"
-        spec = importlib.util.spec_from_file_location(module_name, MODULE_PATH)
-        self.module = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = self.module
-        with patch.dict(os.environ, self.environment, clear=False), patch(
-            "threading.Thread", _NoopThread
-        ):
-            spec.loader.exec_module(self.module)
+        self.module_name = "phase3b_webhook_integration"
+        self.module = self._load_webhook_module(self.environment, self.module_name)
         self.session_factory = self.module.app.extensions["phase3a_auth"].session_factory
         Base.metadata.create_all(self.session_factory.kw["bind"])
         self.client = self.module.app.test_client()
 
+    def _load_webhook_module(self, environment, module_name):
+        spec = importlib.util.spec_from_file_location(module_name, MODULE_PATH)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        with patch.dict(os.environ, environment, clear=False), patch(
+            "threading.Thread", _NoopThread
+        ):
+            spec.loader.exec_module(module)
+        return module
+
     def tearDown(self):
         self.session_factory.kw["bind"].dispose()
-        sys.modules.pop("phase3a_webhook_integration", None)
+        sys.modules.pop(self.module_name, None)
         self.temp_dir.cleanup()
 
     def _create_legacy_owner(self):
@@ -107,22 +113,116 @@ class WebhookAuthenticationIntegrationTest(unittest.TestCase):
 
     def test_real_app_rejects_bad_meta_signature_when_secret_is_configured(self):
         self.module.app.config["META_APP_SECRET"] = "webhook-signing-test-secret"
-        body = b'{"object":"instagram"}'
+        body = b'{ "object": "instagram", "entry": [] }'
 
-        rejected = self.client.post(
-            "/webhook", data=body, content_type="application/json",
-            headers={"X-Hub-Signature-256": "sha256=bad"},
-        )
+        with patch.object(self.module.threading, "Thread") as rejected_thread, patch(
+            "builtins.print"
+        ) as printed:
+            rejected = self.client.post(
+                "/webhook", data=body, content_type="application/json",
+                headers={"X-Hub-Signature-256": "sha256=bad"},
+            )
         signature = hmac.new(
             b"webhook-signing-test-secret", body, hashlib.sha256
         ).hexdigest()
-        accepted = self.client.post(
-            "/webhook", data=body, content_type="application/json",
-            headers={"X-Hub-Signature-256": f"sha256={signature}"},
-        )
+        with patch.object(self.module.threading, "Thread") as accepted_thread:
+            accepted = self.client.post(
+                "/webhook", data=body, content_type="application/json",
+                headers={"X-Hub-Signature-256": f"sha256={signature}"},
+            )
 
         self.assertEqual(rejected.status_code, 403)
         self.assertEqual(accepted.status_code, 200)
+        rejected_thread.assert_not_called()
+        accepted_thread.assert_called_once()
+        rendered_logs = " ".join(
+            str(argument)
+            for call in printed.call_args_list
+            for argument in call.args
+        )
+        self.assertNotIn("webhook-signing-test-secret", rendered_logs)
+        self.assertNotIn("sha256=bad", rendered_logs)
+        self.assertNotIn(body.decode("utf-8"), rendered_logs)
+
+    def test_production_webhook_fails_closed_without_meta_app_secret(self):
+        production_environment = dict(self.environment)
+        production_environment.update(
+            {
+                "APP_ENV": "production",
+                "META_APP_SECRET": "",
+                "ALLOW_UNSIGNED_WEBHOOKS": "1",
+            }
+        )
+        module_name = "phase3b_webhook_production_missing_secret"
+        module = self._load_webhook_module(production_environment, module_name)
+        try:
+            with patch.object(module.threading, "Thread") as thread:
+                response = module.app.test_client().post(
+                    "/webhook", data=b'{"object":"instagram"}', content_type="application/json"
+                )
+
+            self.assertEqual(response.status_code, 503)
+            self.assertNotIn("secret", response.get_data(as_text=True).lower())
+            thread.assert_not_called()
+        finally:
+            module.app.extensions["phase3a_auth"].session_factory.kw["bind"].dispose()
+            sys.modules.pop(module_name, None)
+
+    def test_missing_signature_is_rejected_in_production_before_processing(self):
+        production_environment = dict(self.environment)
+        production_environment.update(
+            {
+                "APP_ENV": "production",
+                "META_APP_SECRET": "webhook-signing-test-secret",
+                "ALLOW_UNSIGNED_WEBHOOKS": "1",
+            }
+        )
+        module_name = "phase3b_webhook_production_missing_signature"
+        module = self._load_webhook_module(production_environment, module_name)
+        try:
+            with patch.object(module.threading, "Thread") as thread:
+                response = module.app.test_client().post(
+                    "/webhook", data=b'{"object":"instagram"}', content_type="application/json"
+                )
+
+            self.assertEqual(response.status_code, 403)
+            self.assertNotIn("webhook-signing-test-secret", response.get_data(as_text=True))
+            thread.assert_not_called()
+        finally:
+            module.app.extensions["phase3a_auth"].session_factory.kw["bind"].dispose()
+            sys.modules.pop(module_name, None)
+
+    def test_explicit_test_bypass_accepts_unsigned_json_only_outside_production(self):
+        body = b'{ "object": "instagram", "entry": [] }'
+
+        with patch.object(self.module.threading, "Thread") as thread:
+            response = self.client.post("/webhook", data=body, content_type="application/json")
+
+        self.assertEqual(response.status_code, 200)
+        thread.assert_called_once()
+
+    def test_development_bypass_requires_its_explicit_environment_flag(self):
+        development_environment = dict(self.environment)
+        development_environment.update(
+            {
+                "APP_ENV": "development",
+                "META_APP_SECRET": "",
+                "ALLOW_UNSIGNED_WEBHOOKS": "0",
+            }
+        )
+        module_name = "phase3b_webhook_development_without_bypass"
+        module = self._load_webhook_module(development_environment, module_name)
+        try:
+            with patch.object(module.threading, "Thread") as thread:
+                response = module.app.test_client().post(
+                    "/webhook", data=b'{"object":"instagram"}', content_type="application/json"
+                )
+
+            self.assertEqual(response.status_code, 503)
+            thread.assert_not_called()
+        finally:
+            module.app.extensions["phase3a_auth"].session_factory.kw["bind"].dispose()
+            sys.modules.pop(module_name, None)
 
 
 if __name__ == "__main__":

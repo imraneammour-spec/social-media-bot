@@ -121,6 +121,16 @@ APP_ENVIRONMENT = os.getenv("APP_ENV", os.getenv("FLASK_ENV", "")).strip().lower
 IS_PRODUCTION = APP_ENVIRONMENT in {"production", "prod"} or bool(
     os.getenv("RAILWAY_ENVIRONMENT_NAME", "").strip()
 )
+ALLOW_UNSIGNED_WEBHOOKS = os.getenv("ALLOW_UNSIGNED_WEBHOOKS", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+WEBHOOK_UNSIGNED_COMPATIBILITY = bool(
+    not IS_PRODUCTION
+    and APP_ENVIRONMENT in {"development", "dev", "test", "testing"}
+    and ALLOW_UNSIGNED_WEBHOOKS
+)
 configure_auth(
     app,
     database_url=DATABASE_URL,
@@ -129,6 +139,7 @@ configure_auth(
     production=IS_PRODUCTION,
 )
 app.config["META_APP_SECRET"] = META_APP_SECRET
+app.config["WEBHOOK_UNSIGNED_COMPATIBILITY"] = WEBHOOK_UNSIGNED_COMPATIBILITY
 register_auth_routes(app)
 install_auth_route_guard(app)
 
@@ -3582,6 +3593,9 @@ def process_webhook_background(
 def receive_webhook():
 
     signature_valid = verify_meta_signature()
+    if signature_valid is None:
+        if not app.config.get("WEBHOOK_UNSIGNED_COMPATIBILITY", False):
+            return "Webhook signature verification is required.", 503
     if signature_valid is False:
         return "Invalid webhook signature.", 403
 
