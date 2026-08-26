@@ -28,6 +28,10 @@ from database.ownership import (
 from database.runtime import create_session_factory
 from instagram_oauth import (
     OAuthConfigurationError,
+    OAuthExchangeError,
+    OAuthStateError,
+    complete_instagram_token_exchange,
+    consume_instagram_oauth_state,
     issue_instagram_oauth_state,
     oauth_configuration_from_environment,
 )
@@ -353,6 +357,33 @@ def register_auth_routes(app) -> None:
             return "Instagram connection configuration is unavailable.", 503
         state = issue_instagram_oauth_state(user.id)
         return redirect(configuration.authorization_url(state))
+
+    @app.get("/connect/instagram/callback")
+    @login_required
+    def complete_instagram_connection():
+        user = get_current_user()
+        if user is None:
+            return _unauthenticated_response()
+        try:
+            consume_instagram_oauth_state(request.args.get("state"), user.id)
+        except OAuthStateError:
+            return "Instagram authorization could not be completed.", 400
+
+        if any(request.args.get(name) for name in ("error", "error_reason", "error_description")):
+            return "Instagram authorization could not be completed.", 400
+        authorization_code = request.args.get("code")
+        if not isinstance(authorization_code, str) or not authorization_code:
+            return "Instagram authorization could not be completed.", 400
+        try:
+            configuration = oauth_configuration_from_environment(
+                production=bool(current_app.config.get("SESSION_COOKIE_SECURE")),
+            )
+            complete_instagram_token_exchange(authorization_code, configuration)
+        except OAuthConfigurationError:
+            return "Instagram connection configuration is unavailable.", 503
+        except OAuthExchangeError:
+            return "Instagram authorization could not be completed.", 502
+        return "Instagram authorization exchange succeeded. Your account is not connected yet.", 200
 
     @app.get("/onboarding")
     @login_required

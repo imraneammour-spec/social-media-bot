@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Mapping
 from urllib.parse import urlencode, urlsplit
 
+import requests
 from flask import session
 
 
@@ -18,10 +19,13 @@ INSTAGRAM_OAUTH_APP_ID_ENV = "INSTAGRAM_OAUTH_APP_ID"
 META_APP_SECRET_ENV = "META_APP_SECRET"
 INSTAGRAM_OAUTH_REDIRECT_URI_ENV = "INSTAGRAM_OAUTH_REDIRECT_URI"
 INSTAGRAM_OAUTH_AUTHORIZE_URL = "https://www.instagram.com/oauth/authorize"
+INSTAGRAM_OAUTH_CODE_EXCHANGE_URL = "https://api.instagram.com/oauth/access_token"
+INSTAGRAM_OAUTH_LONG_LIVED_TOKEN_URL = "https://graph.instagram.com/access_token"
 INSTAGRAM_OAUTH_SCOPE = ("instagram_business_basic",)
 INSTAGRAM_OAUTH_STATE_SESSION_KEY = "_instagram_oauth_state"
 INSTAGRAM_OAUTH_STATE_TTL_SECONDS = 600
 INSTAGRAM_OAUTH_STATE_BYTES = 32
+INSTAGRAM_OAUTH_REQUEST_TIMEOUT_SECONDS = 15
 
 
 class OAuthConfigurationError(ValueError):
@@ -30,6 +34,10 @@ class OAuthConfigurationError(ValueError):
 
 class OAuthStateError(ValueError):
     """Raised without state details when authorization cannot be verified."""
+
+
+class OAuthExchangeError(ValueError):
+    """Raised without provider content when an OAuth exchange fails."""
 
 
 @dataclass(frozen=True)
@@ -100,6 +108,75 @@ def oauth_configuration_from_environment(
         app_id=app_id,
         redirect_uri=redirect_uri,
     )
+
+
+def _app_secret_from_environment(environ: Mapping[str, str] | None = None) -> str:
+    """Load the app secret only while a trusted exchange is in progress."""
+
+    source = os.environ if environ is None else environ
+    return _required(source, META_APP_SECRET_ENV)
+
+
+def _exchange_error() -> OAuthExchangeError:
+    return OAuthExchangeError("Instagram authorization could not be completed.")
+
+
+def _access_token_from_response(response: object) -> str:
+    """Extract only a nonempty access token without surfacing provider details."""
+
+    if not bool(getattr(response, "ok", False)):
+        raise _exchange_error()
+    try:
+        payload = response.json()  # type: ignore[union-attr]
+    except (AttributeError, TypeError, ValueError):
+        raise _exchange_error() from None
+    access_token = payload.get("access_token") if isinstance(payload, dict) else None
+    if not isinstance(access_token, str) or not access_token:
+        raise _exchange_error()
+    return access_token
+
+
+def complete_instagram_token_exchange(
+    authorization_code: object,
+    configuration: InstagramOAuthConfiguration,
+) -> None:
+    """Perform both Meta token exchanges and immediately discard their tokens.
+
+    The long-lived exchange is Meta's documented GET endpoint. Its sensitive
+    parameters are therefore confined to this outbound HTTPS request and are
+    never logged, returned, persisted, or included in a browser response.
+    """
+
+    if not isinstance(authorization_code, str) or not authorization_code:
+        raise _exchange_error()
+    try:
+        app_secret = _app_secret_from_environment()
+        short_lived_response = requests.post(
+            INSTAGRAM_OAUTH_CODE_EXCHANGE_URL,
+            data={
+                "client_id": configuration.app_id,
+                "client_secret": app_secret,
+                "grant_type": "authorization_code",
+                "redirect_uri": configuration.redirect_uri,
+                "code": authorization_code,
+            },
+            timeout=INSTAGRAM_OAUTH_REQUEST_TIMEOUT_SECONDS,
+        )
+        short_lived_token = _access_token_from_response(short_lived_response)
+        long_lived_response = requests.get(
+            INSTAGRAM_OAUTH_LONG_LIVED_TOKEN_URL,
+            params={
+                "grant_type": "ig_exchange_token",
+                "client_secret": app_secret,
+                "access_token": short_lived_token,
+            },
+            timeout=INSTAGRAM_OAUTH_REQUEST_TIMEOUT_SECONDS,
+        )
+        _access_token_from_response(long_lived_response)
+    except (OAuthConfigurationError, OAuthExchangeError):
+        raise _exchange_error() from None
+    except (requests.RequestException, AttributeError, TypeError, ValueError):
+        raise _exchange_error() from None
 
 
 def _normalized_user_id(user_id: object) -> str:
