@@ -8,6 +8,7 @@ import secrets
 import threading
 import time
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import wraps
@@ -19,8 +20,11 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from database.models import User
-from database.ownership import resolve_owned_instagram_account_by_external_id
+from database.models import InstagramAccount, User
+from database.ownership import (
+    list_owned_instagram_accounts,
+    resolve_owned_instagram_account_by_external_id,
+)
 from database.runtime import create_session_factory
 
 
@@ -28,6 +32,8 @@ CSRF_SESSION_KEY = "_csrf_token"
 USER_SESSION_KEY = "user_id"
 CSRF_TOKEN_BYTES = 32
 SESSION_LIFETIME_HOURS = 8
+READY_CONNECTION_STATUSES = {"connected"}
+RECONNECT_CONNECTION_STATUSES = {"disconnected", "error", "reconnect_required"}
 
 F = TypeVar("F", bound=Callable)
 
@@ -162,6 +168,40 @@ def current_user_has_legacy_workspace_access() -> bool:
     return account is not None
 
 
+def build_onboarding_account_statuses(
+    accounts: Iterable[InstagramAccount],
+    *,
+    legacy_instagram_user_id: str,
+) -> list[dict[str, str]]:
+    """Create a finite, credential-free status model for owned accounts only."""
+
+    legacy_id = str(legacy_instagram_user_id or "")
+    statuses = []
+    for account in accounts:
+        username = str(account.username or "").strip() or "Instagram account"
+        connection_status = str(account.connection_status or "").strip().lower()
+        has_connection_error = bool(str(account.last_connection_error_code or "").strip())
+        is_legacy_environment_managed = bool(
+            legacy_id
+            and connection_status == "environment_managed"
+            and hmac.compare_digest(str(account.instagram_user_id), legacy_id)
+        )
+        if connection_status in RECONNECT_CONNECTION_STATUSES or has_connection_error:
+            label = "Reconnect required"
+            detail = "This account needs reconnection before it can be used."
+        elif is_legacy_environment_managed:
+            label = "Legacy workspace managed by server configuration"
+            detail = "This is the existing server-managed Instagram workspace."
+        elif connection_status in READY_CONNECTION_STATUSES:
+            label = "Connected and ready"
+            detail = "This account is ready for the next connection phase."
+        else:
+            label = "Connection setup incomplete"
+            detail = "Connection setup will continue in the next connection phase."
+        statuses.append({"username": username, "label": label, "detail": detail})
+    return statuses
+
+
 def rotate_authenticated_session(user: User) -> None:
     """Replace session state on login to prevent fixation and rotate CSRF state."""
 
@@ -293,8 +333,23 @@ def register_auth_routes(app) -> None:
     @app.get("/onboarding")
     @login_required
     def onboarding():
+        user = get_current_user()
+        state = _auth_state()
+        if user is None or state.session_factory is None:
+            return _unavailable_response()
+        try:
+            with state.session_factory() as db_session:
+                accounts = list_owned_instagram_accounts(db_session, user_id=user.id)
+        except SQLAlchemyError:
+            return _unavailable_response()
         return render_template(
-            "onboarding.html", current_user=get_current_user(), csrf_token=csrf_token()
+            "onboarding.html",
+            current_user=user,
+            csrf_token=csrf_token(),
+            account_statuses=build_onboarding_account_statuses(
+                accounts,
+                legacy_instagram_user_id=state.legacy_instagram_user_id,
+            ),
         )
 
 

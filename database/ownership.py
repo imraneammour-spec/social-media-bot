@@ -59,3 +59,22 @@ def resolve_owned_instagram_account_by_external_id(
             InstagramAccount.instagram_user_id == external_id,
         )
     )
+
+
+def list_owned_instagram_accounts(
+    session: Session,
+    *,
+    user_id: object,
+) -> list[InstagramAccount]:
+    """Return only a user's accounts in deterministic creation order."""
+
+    normalized_user_id = _as_uuid(user_id)
+    if normalized_user_id is None:
+        return []
+    return list(
+        session.scalars(
+            select(InstagramAccount)
+            .where(InstagramAccount.user_id == normalized_user_id)
+            .order_by(InstagramAccount.created_at.asc(), InstagramAccount.id.asc())
+        )
+    )

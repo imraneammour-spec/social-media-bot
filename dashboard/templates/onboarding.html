@@ -14,8 +14,25 @@
 </head>
 <body>
     <main>
-        <h1>Workspace access is not connected</h1>
-        <p>{{ current_user.display_name }}: this account does not have an Instagram workspace yet. Account connection will be available in a future phase.</p>
+        <h1>Instagram workspace status</h1>
+        <p>{{ current_user.display_name }}, your Instagram connection status is shown below.</p>
+        {% if account_statuses %}
+            <section aria-label="Instagram account status">
+                {% for account in account_statuses %}
+                    <article>
+                        <h2>{{ account.username }}</h2>
+                        <p><strong>{{ account.label }}</strong></p>
+                        <p>{{ account.detail }}</p>
+                    </article>
+                {% endfor %}
+            </section>
+        {% else %}
+            <section aria-label="Instagram account status">
+                <h2>No Instagram account connected</h2>
+                <p>Connect Instagram will become available in the next connection phase.</p>
+                <button type="button" disabled aria-disabled="true">Connect Instagram — coming in the next connection phase</button>
+            </section>
+        {% endif %}
         <form method="post" action="{{ url_for('logout') }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button type="submit">Sign out</button>
