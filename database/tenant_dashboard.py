@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import hmac
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -28,6 +31,11 @@ REQUIRED_ENGAGEMENT_SCOPES = {
     "instagram_business_manage_messages",
 }
 RECONNECT_STATUSES = {"disconnected", "error", "reconnect_required"}
+LEAD_STATUSES = ("new", "contacted", "qualified", "won", "lost")
+LEAD_VIEWS = ("active", "archived", "all")
+LEAD_ACTION_REFERENCE_VERSION = "v1"
+LEAD_ACTION_REFERENCE_TTL_SECONDS = 900
+LEAD_ACTION_PURPOSES = {"lead-status", "lead-note", "lead-archive"}
 
 
 @dataclass(frozen=True)
@@ -45,9 +53,17 @@ class TenantAccount:
 
 @dataclass(frozen=True)
 class TenantLead:
+    """Trusted-only lead data; identifiers are converted to opaque references by routes."""
+
+    prompt_request_id: uuid.UUID
     username: str
     requested_at: str
     prompt_state: str
+    base_stage: str
+    base_stage_label: str
+    archived: bool
+    archived_label: str
+    internal_note: str | None
     public_prompt_id: str | None
 
 
@@ -58,6 +74,129 @@ def _timestamp(value: datetime | None) -> str | None:
 def _username(value: object) -> str:
     name = str(value or "").strip()
     return name if name else "Instagram user"
+
+
+def _uuid(value: object) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(str(value))
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _lead_status_label(value: object) -> str:
+    labels = {
+        "new": "New",
+        "contacted": "Contacted",
+        "qualified": "Qualified",
+        "won": "Won",
+        "lost": "Lost",
+    }
+    return labels.get(str(value or "").strip().lower(), "New")
+
+
+def _lead_status(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in LEAD_STATUSES else "new"
+
+
+def lead_filters(view: object = None, stage: object = None) -> tuple[str, str | None]:
+    """Normalize lead filters without accepting values as query syntax."""
+
+    normalized_view = str(view or "active").strip().lower()
+    if normalized_view not in LEAD_VIEWS:
+        normalized_view = "active"
+    normalized_stage = str(stage or "").strip().lower()
+    return normalized_view, normalized_stage if normalized_stage in LEAD_STATUSES else None
+
+
+def _lead_action_payload(
+    user_id: object,
+    instagram_account_id: object,
+    prompt_request_id: object,
+    purpose: str,
+    expires_at: int,
+) -> str:
+    return (
+        f"{LEAD_ACTION_REFERENCE_VERSION}|tenant-lead|{purpose}|{user_id}|"
+        f"{instagram_account_id}|{prompt_request_id}|{expires_at}"
+    )
+
+
+def lead_action_reference_for_prompt_request(
+    user_id: object,
+    instagram_account_id: object,
+    prompt_request_id: object,
+    purpose: str,
+    *,
+    secret_key: object,
+    now: int | None = None,
+) -> str:
+    """Create a non-revealing, purpose-bound action reference for one lead."""
+
+    if purpose not in LEAD_ACTION_PURPOSES:
+        return ""
+    current = int(time.time() if now is None else now)
+    expires_at = current + LEAD_ACTION_REFERENCE_TTL_SECONDS
+    payload = _lead_action_payload(
+        user_id, instagram_account_id, prompt_request_id, purpose, expires_at
+    )
+    signature = hmac.new(
+        str(secret_key).encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+    ).digest()
+    encoded = base64.urlsafe_b64encode(signature).rstrip(b"=").decode("ascii")
+    return f"{LEAD_ACTION_REFERENCE_VERSION}.{expires_at}.{encoded}"
+
+
+def resolve_tenant_lead_action_reference(
+    session: Session,
+    *,
+    user_id: object,
+    instagram_account_id: object,
+    reference: object,
+    purpose: str,
+    secret_key: object,
+    now: int | None = None,
+) -> InstagramPromptRequest | None:
+    """Resolve an action only within the already-selected owned account.
+
+    The wire reference deliberately contains no identifier. Candidate leads are
+    scoped by the selected account before their expected HMAC is compared.
+    """
+
+    account_id = _uuid(instagram_account_id)
+    if account_id is None or purpose not in LEAD_ACTION_PURPOSES or not isinstance(reference, str):
+        return None
+    parts = reference.split(".")
+    if len(parts) != 3 or parts[0] != LEAD_ACTION_REFERENCE_VERSION or not parts[1].isdigit():
+        return None
+    current = int(time.time() if now is None else now)
+    expires_at = int(parts[1])
+    if expires_at < current or expires_at > current + LEAD_ACTION_REFERENCE_TTL_SECONDS:
+        return None
+    candidate_ids = session.scalars(
+        select(InstagramPromptRequest.id).where(
+            InstagramPromptRequest.instagram_account_id == account_id
+        )
+    )
+    for request_id in candidate_ids:
+        expected = lead_action_reference_for_prompt_request(
+            user_id,
+            account_id,
+            request_id,
+            purpose,
+            secret_key=secret_key,
+            now=expires_at - LEAD_ACTION_REFERENCE_TTL_SECONDS,
+        )
+        if hmac.compare_digest(expected, reference):
+            return session.scalar(
+                select(InstagramPromptRequest)
+                .where(
+                    InstagramPromptRequest.id == request_id,
+                    InstagramPromptRequest.instagram_account_id == account_id,
+                )
+                .with_for_update()
+            )
+    return None
 
 
 def _connection(account: InstagramAccount) -> tuple[str, str, bool, bool]:
@@ -140,13 +279,28 @@ def overview(session: Session, *, instagram_account_id: uuid.UUID) -> dict[str, 
     }
 
 
-def leads(session: Session, *, instagram_account_id: uuid.UUID) -> list[TenantLead]:
+def leads(
+    session: Session,
+    *,
+    instagram_account_id: uuid.UUID,
+    view: object = None,
+    stage: object = None,
+) -> list[TenantLead]:
     """Return sanitized lead records for exactly one owned account."""
 
+    selected_view, selected_stage = lead_filters(view, stage)
+    query = select(InstagramPromptRequest).where(
+        InstagramPromptRequest.instagram_account_id == instagram_account_id
+    )
+    if selected_view == "active":
+        query = query.where(InstagramPromptRequest.lead_archived_at.is_(None))
+    elif selected_view == "archived":
+        query = query.where(InstagramPromptRequest.lead_archived_at.is_not(None))
+    if selected_stage is not None:
+        query = query.where(InstagramPromptRequest.lead_status == selected_stage)
     requests = list(
         session.scalars(
-            select(InstagramPromptRequest)
-            .where(InstagramPromptRequest.instagram_account_id == instagram_account_id)
+            query
             .order_by(InstagramPromptRequest.created_at.desc(), InstagramPromptRequest.id.desc())
             .limit(100)
         )
@@ -163,9 +317,15 @@ def leads(session: Session, *, instagram_account_id: uuid.UUID) -> list[TenantLe
     } if media_ids else {}
     return [
         TenantLead(
+            prompt_request_id=request.id,
             username=_username(request.username),
             requested_at=_timestamp(request.created_at) or "",
             prompt_state="Prompts prepared" if request.media_id in prompt_posts else "Request received",
+            base_stage=_lead_status(request.lead_status),
+            base_stage_label=_lead_status_label(request.lead_status),
+            archived=request.lead_archived_at is not None,
+            archived_label="Archived" if request.lead_archived_at is not None else "Active",
+            internal_note=request.internal_note or None,
             public_prompt_id=prompt_posts.get(request.media_id),
         )
         for request in requests

@@ -38,6 +38,11 @@ class DatabaseFoundationTest(unittest.TestCase):
         "instagram_smart_reply_activity",
         "instagram_oauth_followup_jobs",
     }
+    PHASE5B_PROMPT_REQUEST_COLUMNS = {
+        "lead_status",
+        "internal_note",
+        "lead_archived_at",
+    }
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.engine = create_engine(f"sqlite:///{Path(self.temp_dir.name) / 'foundation.db'}")
@@ -265,7 +270,7 @@ class DatabaseFoundationTest(unittest.TestCase):
         self.assertEqual(phase_two_state["connection_status"], "environment_managed")
         self.assertEqual(credential_count, 0)
 
-        upgrade = self._run_alembic("upgrade", "head", root=root, environment=environment)
+        upgrade = self._run_alembic("upgrade", "20260827_02", root=root, environment=environment)
         self.assertEqual(upgrade.returncode, 0, upgrade.stderr)
         account_columns = self._table_columns(
             environment["DATABASE_URL"], "instagram_accounts"
@@ -309,7 +314,7 @@ class DatabaseFoundationTest(unittest.TestCase):
         self.assertEqual(self._alembic_revision(environment["DATABASE_URL"]), "20260825_01")
 
         reupgrade = self._run_alembic(
-            "upgrade", "head", root=root, environment=environment
+            "upgrade", "20260827_02", root=root, environment=environment
         )
         self.assertEqual(reupgrade.returncode, 0, reupgrade.stderr)
         account_columns = self._table_columns(
@@ -330,6 +335,86 @@ class DatabaseFoundationTest(unittest.TestCase):
         self.assertEqual(reupgraded_state["provider"], "instagram")
         self.assertEqual(credential_count, 0)
         self.assertEqual(self._alembic_revision(environment["DATABASE_URL"]), "20260827_02")
+
+    def test_alembic_lead_management_schema_is_reversible_and_defaults_existing_rows(self):
+        database_path = Path(self.temp_dir.name) / "alembic-lead-management.db"
+        environment = os.environ.copy()
+        environment["DATABASE_URL"] = f"sqlite:///{database_path.as_posix()}"
+        root = Path(__file__).resolve().parents[1]
+        phase_four_upgrade = self._run_alembic(
+            "upgrade", "20260827_02", root=root, environment=environment
+        )
+        self.assertEqual(phase_four_upgrade.returncode, 0, phase_four_upgrade.stderr)
+
+        user_id = "33333333333333333333333333333333"
+        account_id = "44444444444444444444444444444444"
+        request_id = "55555555555555555555555555555555"
+        engine = create_engine(environment["DATABASE_URL"])
+        try:
+            with engine.begin() as connection:
+                connection.execute(text(
+                    "INSERT INTO users (id, email, status, created_at, updated_at) "
+                    "VALUES (:id, :email, 'active', :created_at, :updated_at)"
+                ), {"id": user_id, "email": "lead-legacy@example.test", "created_at": "2026-08-27", "updated_at": "2026-08-27"})
+                connection.execute(text(
+                    "INSERT INTO instagram_accounts "
+                    "(id, user_id, instagram_user_id, connection_status, created_at, updated_at) "
+                    "VALUES (:id, :user_id, :instagram_user_id, 'connected', :created_at, :updated_at)"
+                ), {"id": account_id, "user_id": user_id, "instagram_user_id": "17841438617458991", "created_at": "2026-08-27", "updated_at": "2026-08-27"})
+                connection.execute(text(
+                    "INSERT INTO instagram_prompt_requests "
+                    "(id, instagram_account_id, media_id, comment_id, recipient_id, page_url, created_at, updated_at) "
+                    "VALUES (:id, :account_id, 'media', 'comment', 'recipient', 'https://example.test/p/o/legacy', :created_at, :updated_at)"
+                ), {"id": request_id, "account_id": account_id, "created_at": "2026-08-27", "updated_at": "2026-08-27"})
+        finally:
+            engine.dispose()
+
+        upgrade = self._run_alembic("upgrade", "head", root=root, environment=environment)
+        self.assertEqual(upgrade.returncode, 0, upgrade.stderr)
+        self.assertEqual(self._alembic_revision(environment["DATABASE_URL"]), "20260827_03")
+        columns = self._table_columns(environment["DATABASE_URL"], "instagram_prompt_requests")
+        self.assertTrue(self.PHASE5B_PROMPT_REQUEST_COLUMNS.issubset(columns))
+        engine = create_engine(environment["DATABASE_URL"])
+        try:
+            with engine.connect() as connection:
+                lead = connection.execute(text(
+                    "SELECT lead_status, internal_note, lead_archived_at "
+                    "FROM instagram_prompt_requests WHERE id = :id"
+                ), {"id": request_id}).mappings().one()
+                indexes = inspect(connection).get_indexes("instagram_prompt_requests")
+        finally:
+            engine.dispose()
+        self.assertEqual(lead["lead_status"], "new")
+        self.assertIsNone(lead["internal_note"])
+        self.assertIsNone(lead["lead_archived_at"])
+        self.assertIn(
+            ["instagram_account_id", "lead_archived_at", "lead_status", "created_at"],
+            [index["column_names"] for index in indexes],
+        )
+
+        downgrade = self._run_alembic(
+            "downgrade", "20260827_02", root=root, environment=environment
+        )
+        self.assertEqual(downgrade.returncode, 0, downgrade.stderr)
+        self.assertEqual(self._alembic_revision(environment["DATABASE_URL"]), "20260827_02")
+        columns = self._table_columns(environment["DATABASE_URL"], "instagram_prompt_requests")
+        self.assertFalse(self.PHASE5B_PROMPT_REQUEST_COLUMNS.intersection(columns))
+
+        reupgrade = self._run_alembic("upgrade", "head", root=root, environment=environment)
+        self.assertEqual(reupgrade.returncode, 0, reupgrade.stderr)
+        self.assertEqual(self._alembic_revision(environment["DATABASE_URL"]), "20260827_03")
+        engine = create_engine(environment["DATABASE_URL"])
+        try:
+            with engine.connect() as connection:
+                lead = connection.execute(text(
+                    "SELECT lead_status, internal_note, lead_archived_at "
+                    "FROM instagram_prompt_requests WHERE id = :id"
+                ), {"id": request_id}).mappings().one()
+        finally:
+            engine.dispose()
+        self.assertEqual(lead["lead_status"], "new")
+        self.assertIsNone(lead["internal_note"])
+        self.assertIsNone(lead["lead_archived_at"])
 
     def test_bootstrap_is_idempotent_and_does_not_create_a_credential(self):
         with self.Session.begin() as session:

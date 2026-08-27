@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from functools import wraps
 
 from flask import Blueprint, current_app, jsonify, make_response, redirect, render_template, request, url_for
@@ -10,16 +11,27 @@ from sqlalchemy.exc import SQLAlchemyError
 from auth import (
     action_reference_for_account,
     authentication_available,
+    csrf_token,
     current_user_has_legacy_workspace_access,
     get_current_user,
+    request_csrf_token,
     resolve_owned_account_action_reference,
+    validate_csrf_token,
 )
 from database import tenant_dashboard as tenant_data
+
+
+# Kept as a module-level boundary so server-side callers and focused tests use
+# the exact same opaque lead-reference format.
+lead_action_reference_for_prompt_request = tenant_data.lead_action_reference_for_prompt_request
 
 
 ACCOUNT_REFERENCE_PURPOSE = "tenant-dashboard-select"
 ACCOUNT_REFERENCE_ARGUMENT = "account"
 ACCOUNT_UNAVAILABLE_MESSAGE = "Selected account is unavailable."
+LEAD_UNAVAILABLE_MESSAGE = "Lead is unavailable."
+LEAD_UPDATE_ERROR_MESSAGE = "Lead update could not be completed."
+MAX_INTERNAL_NOTE_LENGTH = 2000
 
 
 def _auth_state():
@@ -107,6 +119,14 @@ def _safe_account_unavailable():
     return _cache_control(jsonify(error=ACCOUNT_UNAVAILABLE_MESSAGE)), 404
 
 
+def _safe_lead_unavailable():
+    return _cache_control(jsonify(error=LEAD_UNAVAILABLE_MESSAGE)), 404
+
+
+def _safe_lead_update_error():
+    return _cache_control(jsonify(error=LEAD_UPDATE_ERROR_MESSAGE)), 400
+
+
 def _render_page(template_name, *, user, accounts, selected, **context):
     return _cache_control(
         render_template(
@@ -116,6 +136,7 @@ def _render_page(template_name, *, user, accounts, selected, **context):
             selected_account=next(
                 item for item in _account_payload(user, accounts, selected) if item["is_selected"]
             ),
+            csrf_token=csrf_token(),
             **context,
         )
     )
@@ -135,15 +156,95 @@ def _require_tenant(view):
     return wrapped
 
 
-def _query(selected, query):
+def _query(selected, query, **kwargs):
     session_factory = getattr(_auth_state(), "session_factory", None)
     if session_factory is None:
         return None
     try:
         with session_factory() as session:
-            return query(session, instagram_account_id=selected.instagram_account_id)
+            return query(session, instagram_account_id=selected.instagram_account_id, **kwargs)
     except SQLAlchemyError:
         return None
+
+
+def _lead_filters():
+    return tenant_data.lead_filters(request.args.get("view"), request.args.get("stage"))
+
+
+def _lead_payload(user, selected, rows):
+    payload = []
+    for row in rows:
+        payload.append(
+            {
+                "username": row.username,
+                "requested_at": row.requested_at,
+                "prompt_state": row.prompt_state,
+                "base_stage": row.base_stage,
+                "base_stage_label": row.base_stage_label,
+                "archived": row.archived,
+                "archived_label": row.archived_label,
+                "internal_note": row.internal_note,
+                "prompt_url": f"/p/o/{row.public_prompt_id}" if row.public_prompt_id else None,
+                "status_action": tenant_data.lead_action_reference_for_prompt_request(
+                    user.id,
+                    selected.instagram_account_id,
+                    row.prompt_request_id,
+                    "lead-status",
+                    secret_key=current_app.secret_key,
+                ),
+                "note_action": tenant_data.lead_action_reference_for_prompt_request(
+                    user.id,
+                    selected.instagram_account_id,
+                    row.prompt_request_id,
+                    "lead-note",
+                    secret_key=current_app.secret_key,
+                ),
+                "archive_action": tenant_data.lead_action_reference_for_prompt_request(
+                    user.id,
+                    selected.instagram_account_id,
+                    row.prompt_request_id,
+                    "lead-archive",
+                    secret_key=current_app.secret_key,
+                ),
+            }
+        )
+    return payload
+
+
+def _lead_redirect():
+    view, stage = _lead_filters()
+    return redirect(
+        url_for(
+            "tenant_dashboard.app_leads",
+            account=request.args.get(ACCOUNT_REFERENCE_ARGUMENT),
+            view=view,
+            stage=stage,
+        ),
+        code=303,
+    )
+
+
+def _mutate_lead(user, selected, purpose, mutate):
+    state = _auth_state()
+    session_factory = getattr(state, "session_factory", None)
+    if session_factory is None:
+        return _safe_lead_unavailable()
+    try:
+        with session_factory.begin() as session:
+            lead = tenant_data.resolve_tenant_lead_action_reference(
+                session,
+                user_id=user.id,
+                instagram_account_id=selected.instagram_account_id,
+                reference=request.form.get("lead_action"),
+                purpose=purpose,
+                secret_key=current_app.secret_key,
+            )
+            if lead is None:
+                return _safe_lead_unavailable()
+            mutate(lead)
+    except SQLAlchemyError:
+        return _safe_lead_unavailable()
+    return _lead_redirect()
 
 
 def register_tenant_dashboard(app) -> None:
@@ -171,19 +272,20 @@ def register_tenant_dashboard(app) -> None:
     @dashboard.get("/leads")
     @_require_tenant
     def app_leads(user, accounts, selected):
-        rows = _query(selected, tenant_data.leads)
+        view, stage = _lead_filters()
+        rows = _query(selected, tenant_data.leads, view=view, stage=stage)
         if rows is None:
             return _safe_account_unavailable()
-        leads = [
-            {
-                "username": row.username,
-                "requested_at": row.requested_at,
-                "prompt_state": row.prompt_state,
-                "prompt_url": f"/p/o/{row.public_prompt_id}" if row.public_prompt_id else None,
-            }
-            for row in rows
-        ]
-        return _render_page("app_leads.html", user=user, accounts=accounts, selected=selected, leads=leads)
+        return _render_page(
+            "app_leads.html",
+            user=user,
+            accounts=accounts,
+            selected=selected,
+            leads=_lead_payload(user, selected, rows),
+            selected_view=view,
+            selected_stage=stage,
+            lead_statuses=tenant_data.LEAD_STATUSES,
+        )
 
     @dashboard.get("/activity")
     @_require_tenant
@@ -217,18 +319,14 @@ def register_tenant_dashboard(app) -> None:
     @dashboard.get("/api/leads")
     @_require_tenant
     def app_api_leads(user, accounts, selected):
-        rows = _query(selected, tenant_data.leads)
+        view, stage = _lead_filters()
+        rows = _query(selected, tenant_data.leads, view=view, stage=stage)
         if rows is None:
             return _safe_account_unavailable()
-        return jsonify(leads=[
-            {
-                "username": row.username,
-                "requested_at": row.requested_at,
-                "prompt_state": row.prompt_state,
-                "prompt_url": f"/p/o/{row.public_prompt_id}" if row.public_prompt_id else None,
-            }
-            for row in rows
-        ])
+        return jsonify(
+            leads=_lead_payload(user, selected, rows),
+            filters={"view": view, "stage": stage},
+        )
 
     @dashboard.get("/api/activity")
     @_require_tenant
@@ -245,5 +343,51 @@ def register_tenant_dashboard(app) -> None:
         if rows is None:
             return _safe_account_unavailable()
         return jsonify(followups=rows)
+
+    @dashboard.post("/leads/status")
+    @_require_tenant
+    def app_lead_status(user, accounts, selected):
+        if not validate_csrf_token(request_csrf_token()):
+            return _safe_lead_update_error()
+        status = str(request.form.get("lead_status") or "").strip().lower()
+        if status not in tenant_data.LEAD_STATUSES:
+            return _safe_lead_update_error()
+        return _mutate_lead(
+            user,
+            selected,
+            "lead-status",
+            lambda lead: setattr(lead, "lead_status", status),
+        )
+
+    @dashboard.post("/leads/note")
+    @_require_tenant
+    def app_lead_note(user, accounts, selected):
+        if not validate_csrf_token(request_csrf_token()):
+            return _safe_lead_update_error()
+        note = str(request.form.get("internal_note") or "").strip()
+        if len(note) > MAX_INTERNAL_NOTE_LENGTH:
+            return _safe_lead_update_error()
+        return _mutate_lead(
+            user,
+            selected,
+            "lead-note",
+            lambda lead: setattr(lead, "internal_note", note or None),
+        )
+
+    @dashboard.post("/leads/archive")
+    @_require_tenant
+    def app_lead_archive(user, accounts, selected):
+        if not validate_csrf_token(request_csrf_token()):
+            return _safe_lead_update_error()
+        operation = str(request.form.get("operation") or "").strip().lower()
+        if operation not in {"archive", "unarchive"}:
+            return _safe_lead_update_error()
+        archived_at = datetime.now(timezone.utc) if operation == "archive" else None
+        return _mutate_lead(
+            user,
+            selected,
+            "lead-archive",
+            lambda lead: setattr(lead, "lead_archived_at", archived_at),
+        )
 
     app.register_blueprint(dashboard)

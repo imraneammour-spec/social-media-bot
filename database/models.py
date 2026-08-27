@@ -150,7 +150,16 @@ class InstagramPendingAccess(TimestampMixin, Base):
 
 class InstagramPromptRequest(TimestampMixin, Base):
     __tablename__ = "instagram_prompt_requests"
-    __table_args__ = (Index("ix_prompt_requests_account_media_recipient", "instagram_account_id", "media_id", "recipient_id"),)
+    __table_args__ = (
+        Index("ix_prompt_requests_account_media_recipient", "instagram_account_id", "media_id", "recipient_id"),
+        Index(
+            "ix_prompt_requests_account_lead_state_created",
+            "instagram_account_id",
+            "lead_archived_at",
+            "lead_status",
+            "created_at",
+        ),
+    )
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     instagram_account_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("instagram_accounts.id", ondelete="CASCADE"), nullable=False)
     media_id: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -158,6 +167,11 @@ class InstagramPromptRequest(TimestampMixin, Base):
     recipient_id: Mapped[str] = mapped_column(String(255), nullable=False)
     username: Mapped[str | None] = mapped_column(String(255))
     page_url: Mapped[str] = mapped_column(Text, nullable=False)
+    lead_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="new", server_default="new"
+    )
+    internal_note: Mapped[str | None] = mapped_column(Text)
+    lead_archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class InstagramSmartReplyActivity(TimestampMixin, Base):
