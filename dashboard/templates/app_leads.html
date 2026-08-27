@@ -1,0 +1,6 @@
+{% extends "app_base.html" %}
+{% block title %}Leads{% endblock %}
+{% block heading %}Leads{% endblock %}
+{% block content %}
+{% for lead in leads %}<article class="card"><h2>{{ lead.username }}</h2><p>{{ lead.prompt_state }}</p><p class="muted">{{ lead.requested_at }}</p>{% if lead.prompt_url %}<a href="{{ lead.prompt_url }}">View prepared prompts</a>{% endif %}</article>{% else %}<p class="muted">No prompt requests yet.</p>{% endfor %}
+{% endblock %}

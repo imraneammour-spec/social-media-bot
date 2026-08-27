@@ -1,0 +1,12 @@
+{% extends "app_base.html" %}
+{% block title %}Overview{% endblock %}
+{% block heading %}Workspace overview{% endblock %}
+{% block content %}
+<section class="grid" aria-label="Account activity summary">
+    <dl class="card"><dt>Leads</dt><dd>{{ overview.lead_count }}</dd></dl>
+    <dl class="card"><dt>Activity</dt><dd>{{ overview.activity_count }}</dd></dl>
+    <dl class="card"><dt>Waiting access</dt><dd>{{ overview.pending_access_count }}</dd></dl>
+    <dl class="card"><dt>Follow-ups</dt><dd>{{ overview.followup_count }}</dd></dl>
+</section>
+<section class="card"><strong>{{ selected_account.connection_label }}</strong><p class="muted">{{ selected_account.connection_detail }}</p><p>{{ selected_account.activation_label }}</p></section>
+{% endblock %}

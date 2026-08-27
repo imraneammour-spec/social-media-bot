@@ -1,0 +1,319 @@
+import inspect
+import tempfile
+import unittest
+import uuid
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from flask import Flask
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from auth import (
+    action_reference_for_account,
+    configure_auth,
+    install_auth_route_guard,
+    register_auth_routes,
+)
+from database.models import (
+    Base,
+    InstagramAccount,
+    InstagramCredential,
+    InstagramEngagementEvent,
+    InstagramOAuthFollowupJob,
+    InstagramPromptPost,
+    InstagramPromptRequest,
+    InstagramSmartReplyActivity,
+    User,
+)
+from tenant_dashboard import register_tenant_dashboard
+
+
+class TenantDashboardTest(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.database_url = f"sqlite+pysqlite:///{Path(self.tempdir.name) / 'tenant-dashboard.db'}"
+        self.engine = create_engine(self.database_url)
+        Base.metadata.create_all(self.engine)
+        self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
+        template_dir = Path(__file__).resolve().parents[1] / "dashboard" / "templates"
+        self.app = Flask(__name__, template_folder=str(template_dir))
+        self.app.config["TESTING"] = True
+        configure_auth(
+            self.app,
+            database_url=self.database_url,
+            secret_key="tenant-dashboard-test-secret",
+            legacy_instagram_user_id="90000000000000001",
+            production=False,
+        )
+        self.app.add_url_rule("/dashboard", "dashboard", lambda: "legacy dashboard")
+        self.app.add_url_rule("/api/legacy", "legacy_api", lambda: {"legacy": True})
+        register_auth_routes(self.app)
+        install_auth_route_guard(self.app)
+        register_tenant_dashboard(self.app)
+        self._seed()
+        self.client = self.app.test_client()
+
+    def tearDown(self):
+        factory = self.app.extensions["phase3a_auth"].session_factory
+        if factory is not None:
+            factory.kw["bind"].dispose()
+        self.engine.dispose()
+        self.tempdir.cleanup()
+
+    def _seed(self):
+        now = datetime.now(timezone.utc)
+        with self.Session.begin() as session:
+            self.owner_a = User(email="owner-a@example.invalid", display_name="Owner A")
+            self.owner_b = User(email="owner-b@example.invalid", display_name="Owner B")
+            self.legacy_owner = User(email="legacy@example.invalid", display_name="Legacy Owner")
+            session.add_all([self.owner_a, self.owner_b, self.legacy_owner])
+            session.flush()
+            self.account_a1 = InstagramAccount(
+                user_id=self.owner_a.id,
+                instagram_user_id="10000000000000001",
+                username="alpha_first",
+                connection_status="connected",
+                created_at=now - timedelta(minutes=2),
+            )
+            self.account_a2 = InstagramAccount(
+                user_id=self.owner_a.id,
+                instagram_user_id="10000000000000002",
+                username="alpha_second",
+                connection_status="connected",
+                created_at=now - timedelta(minutes=1),
+            )
+            self.account_b = InstagramAccount(
+                user_id=self.owner_b.id,
+                instagram_user_id="20000000000000001",
+                username="bravo_private",
+                connection_status="connected",
+            )
+            self.legacy_account = InstagramAccount(
+                user_id=self.legacy_owner.id,
+                instagram_user_id="90000000000000001",
+                username="legacy_private",
+                connection_status="environment_managed",
+            )
+            session.add_all([self.account_a1, self.account_a2, self.account_b, self.legacy_account])
+            session.flush()
+            session.add_all([
+                InstagramCredential(
+                    instagram_account_id=self.account_a1.id,
+                    token_ciphertext="ciphertext-a-secret",
+                    encryption_key_id="KEY_2026_01",
+                    scopes=["instagram_business_basic"],
+                    token_status="valid",
+                ),
+                InstagramCredential(
+                    instagram_account_id=self.account_a2.id,
+                    token_ciphertext="ciphertext-a2-secret",
+                    encryption_key_id="KEY_2026_01",
+                    scopes=[
+                        "instagram_business_basic",
+                        "instagram_business_manage_comments",
+                        "instagram_business_manage_messages",
+                    ],
+                    token_status="valid",
+                ),
+                InstagramCredential(
+                    instagram_account_id=self.account_b.id,
+                    token_ciphertext="ciphertext-b-secret",
+                    encryption_key_id="KEY_2026_02",
+                    scopes=["instagram_business_basic"],
+                    token_status="valid",
+                ),
+            ])
+            session.add_all([
+                InstagramPromptPost(
+                    instagram_account_id=self.account_a1.id,
+                    media_id="media-a-secret",
+                    public_id="opaque-prompt-a",
+                    prompts=[{"text": "A prompt"}],
+                ),
+                InstagramPromptPost(
+                    instagram_account_id=self.account_b.id,
+                    media_id="media-b-secret",
+                    public_id="opaque-prompt-b",
+                    prompts=[{"text": "B prompt"}],
+                ),
+                InstagramPromptRequest(
+                    instagram_account_id=self.account_a1.id,
+                    media_id="media-a-secret",
+                    comment_id="comment-a-secret",
+                    recipient_id="recipient-shared-secret",
+                    username="lead_alpha",
+                    page_url="https://internal.example.invalid/a",
+                ),
+                InstagramPromptRequest(
+                    instagram_account_id=self.account_b.id,
+                    media_id="media-b-secret",
+                    comment_id="comment-b-secret",
+                    recipient_id="recipient-shared-secret",
+                    username="lead_bravo",
+                    page_url="https://internal.example.invalid/b",
+                ),
+                InstagramSmartReplyActivity(
+                    instagram_account_id=self.account_a1.id,
+                    comment_id="activity-a-secret",
+                    recipient_id="recipient-shared-secret",
+                    username="lead_alpha",
+                    reply_text="private reply content must not render",
+                ),
+                InstagramSmartReplyActivity(
+                    instagram_account_id=self.account_b.id,
+                    comment_id="activity-b-secret",
+                    recipient_id="recipient-shared-secret",
+                    username="lead_bravo",
+                    reply_text="bravo private reply content",
+                ),
+                InstagramEngagementEvent(
+                    instagram_account_id=self.account_a1.id,
+                    provider_event_id="provider-event-a-secret",
+                    event_type="message",
+                    state="done",
+                ),
+                InstagramEngagementEvent(
+                    instagram_account_id=self.account_b.id,
+                    provider_event_id="provider-event-b-secret",
+                    event_type="comment",
+                    state="failed",
+                ),
+                InstagramOAuthFollowupJob(
+                    instagram_account_id=self.account_a1.id,
+                    source_message_id="source-message-a-secret",
+                    recipient_id="recipient-shared-secret",
+                    page_url="https://internal.example.invalid/a",
+                    state="pending",
+                    run_at=now + timedelta(hours=6),
+                    lease_token="lease-a-secret",
+                ),
+                InstagramOAuthFollowupJob(
+                    instagram_account_id=self.account_b.id,
+                    source_message_id="source-message-b-secret",
+                    recipient_id="recipient-shared-secret",
+                    page_url="https://internal.example.invalid/b",
+                    state="failed",
+                    run_at=now,
+                    last_error_code="provider-internal-secret",
+                ),
+            ])
+
+    def _login_as(self, user):
+        with self.client.session_transaction() as session:
+            session["user_id"] = str(user.id)
+            session["_csrf_token"] = "csrf-test-token"
+
+    def _reference(self, user, account, *, now=None):
+        return action_reference_for_account(
+            user.id,
+            account.id,
+            "tenant-dashboard-select",
+            secret_key=self.app.secret_key,
+            now=now,
+        )
+
+    def test_unauthenticated_and_legacy_requests_stay_outside_tenant_dashboard(self):
+        response = self.client.get("/app")
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login", response.headers["Location"])
+
+        self._login_as(self.legacy_owner)
+        response = self.client.get("/app")
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.headers["Location"].endswith("/dashboard"))
+
+        with self.Session.begin() as session:
+            no_account_user = User(email="no-account@example.invalid", display_name="No Account")
+            session.add(no_account_user)
+            session.flush()
+        self._login_as(no_account_user)
+        response = self.client.get("/app")
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.headers["Location"].endswith("/onboarding"))
+
+    def test_default_switching_and_activation_status_are_owned_and_deterministic(self):
+        self._login_as(self.owner_a)
+        response = self.client.get("/app/api/accounts")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual([item["username"] for item in payload["accounts"]], ["alpha_first", "alpha_second"])
+        self.assertEqual(payload["accounts"][0]["activation_label"], "Activation not ready")
+        self.assertEqual(payload["accounts"][1]["activation_label"], "Activation ready")
+        self.assertTrue(payload["accounts"][0]["is_selected"])
+
+        selected = self._reference(self.owner_a, self.account_a2)
+        response = self.client.get(f"/app/api/overview?account={selected}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["account"]["username"], "alpha_second")
+
+    def test_selection_failures_are_generic_and_do_not_cross_tenants(self):
+        self._login_as(self.owner_a)
+        references = [
+            "malformed",
+            self._reference(self.owner_b, self.account_b),
+            self._reference(self.owner_a, InstagramAccount(id=uuid.uuid4()), now=0),
+            self._reference(self.owner_a, InstagramAccount(id=uuid.uuid4())),
+        ]
+        responses = [self.client.get(f"/app/api/overview?account={reference}") for reference in references]
+        self.assertEqual([response.status_code for response in responses], [404, 404, 404, 404])
+        self.assertEqual({response.get_json()["error"] for response in responses}, {"Selected account is unavailable."})
+
+    def test_account_scoped_feeds_and_html_never_leak_private_data(self):
+        self._login_as(self.owner_a)
+        html_responses = []
+        for path in ("/app", "/app/accounts", "/app/leads", "/app/activity", "/app/followups"):
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["Cache-Control"], "no-store")
+            html_responses.append(response)
+
+        responses = {
+            "overview": self.client.get("/app/api/overview"),
+            "leads": self.client.get("/app/api/leads"),
+            "activity": self.client.get("/app/api/activity"),
+            "followups": self.client.get("/app/api/followups"),
+        }
+        for response in responses.values():
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertEqual([item["username"] for item in responses["leads"].get_json()["leads"]], ["lead_alpha"])
+        self.assertIn("Reply sent", {item["type"] for item in responses["activity"].get_json()["activity"]})
+        self.assertEqual(responses["followups"].get_json()["followups"][0]["status"], "Scheduled")
+        self.assertEqual(responses["leads"].get_json()["leads"][0]["prompt_url"], "/p/o/opaque-prompt-a")
+
+        rendered = "\n".join(response.get_data(as_text=True) for response in responses.values())
+        rendered += "\n".join(response.get_data(as_text=True) for response in html_responses)
+        forbidden = [
+            str(self.account_a1.id), str(self.account_a2.id), str(self.account_b.id),
+            "10000000000000001", "20000000000000001", "bravo_private", "lead_bravo",
+            "ciphertext-a-secret", "KEY_2026_01", "recipient-shared-secret",
+            "media-a-secret", "comment-a-secret", "source-message-a-secret",
+            "lease-a-secret", "provider-event-a-secret", "provider-internal-secret",
+            "private reply content must not render", "https://internal.example.invalid/a",
+        ]
+        for value in forbidden:
+            self.assertNotIn(value, rendered)
+
+    def test_oauth_tenant_remains_blocked_from_legacy_workspace(self):
+        self._login_as(self.owner_a)
+        self.assertEqual(self.client.get("/dashboard").status_code, 302)
+        self.assertEqual(self.client.get("/api/legacy").status_code, 403)
+
+    def test_tenant_dashboard_modules_do_not_use_legacy_runtime_or_credentials(self):
+        import database.tenant_dashboard as tenant_data
+        import tenant_dashboard as tenant_routes
+
+        source = inspect.getsource(tenant_data) + inspect.getsource(tenant_routes)
+        for forbidden in (
+            "INSTAGRAM_ACCESS_TOKEN",
+            "INSTAGRAM_USER_ID",
+            "load_decrypted",
+            "decrypt_",
+            "token_ciphertext",
+            "requests.",
+            "load_json",
+            "save_json",
+            "webhook",
+        ):
+            self.assertNotIn(forbidden, source)

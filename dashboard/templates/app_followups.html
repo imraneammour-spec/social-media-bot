@@ -1,0 +1,6 @@
+{% extends "app_base.html" %}
+{% block title %}Follow-ups{% endblock %}
+{% block heading %}Follow-ups{% endblock %}
+{% block content %}
+{% for followup in followups %}<article class="card"><h2>{{ followup.status }}</h2><p class="muted">Scheduled: {{ followup.scheduled_at }}</p>{% if followup.completed_at %}<p class="muted">Updated: {{ followup.completed_at }}</p>{% endif %}</article>{% else %}<p class="muted">No follow-ups yet.</p>{% endfor %}
+{% endblock %}

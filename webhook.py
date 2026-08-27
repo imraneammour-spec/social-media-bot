@@ -64,6 +64,7 @@ from auth import (
     verify_meta_signature,
     webhook_signature_verification_active,
 )
+from tenant_dashboard import register_tenant_dashboard
 
 from google import genai
 from google.genai import types
@@ -176,6 +177,7 @@ app.config["META_APP_SECRET"] = META_APP_SECRET
 app.config["WEBHOOK_UNSIGNED_COMPATIBILITY"] = WEBHOOK_UNSIGNED_COMPATIBILITY
 register_auth_routes(app)
 install_auth_route_guard(app)
+register_tenant_dashboard(app)
 
 # The command is explicit (``flask --app webhook bootstrap-owner``) and lazy:
 # registering it neither connects to PostgreSQL nor changes Phase 0 JSON state.

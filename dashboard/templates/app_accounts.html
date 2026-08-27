@@ -1,0 +1,13 @@
+{% extends "app_base.html" %}
+{% block title %}Accounts{% endblock %}
+{% block heading %}Accounts{% endblock %}
+{% block content %}
+<section class="account-list" aria-label="Owned Instagram accounts">
+{% for account in accounts %}
+    <article class="card {% if account.is_selected %}active{% endif %}">
+        <h2><a href="{{ url_for('tenant_dashboard.app_accounts', account=account.selection_ref) }}">{{ account.username }}</a></h2>
+        <p>{{ account.connection_label }}</p><p class="muted">{{ account.connection_detail }}</p><p>{{ account.activation_label }}</p>
+    </article>
+{% endfor %}
+</section>
+{% endblock %}

@@ -1,0 +1,6 @@
+{% extends "app_base.html" %}
+{% block title %}Activity{% endblock %}
+{% block heading %}Activity{% endblock %}
+{% block content %}
+{% for item in activity %}<article class="card"><h2>{{ item.type }}</h2><p>{{ item.state }}</p>{% if item.username %}<p>{{ item.username }}</p>{% endif %}<p class="muted">{{ item.occurred_at }}</p></article>{% else %}<p class="muted">No activity yet.</p>{% endfor %}
+{% endblock %}
