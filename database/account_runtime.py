@@ -33,6 +33,10 @@ class RuntimeCredentialUnavailableError(ValueError):
     """A generic, credential-safe runtime resolution failure."""
 
 
+class RuntimeAccountRouteUnavailableError(ValueError):
+    """A generic, token-free webhook account routing failure."""
+
+
 @dataclass(frozen=True)
 class InstagramAccountRuntime:
     """Minimal trusted-only context for one immediate Graph API operation."""
@@ -49,8 +53,20 @@ class InstagramAccountRuntime:
         return self._access_token
 
 
+@dataclass(frozen=True)
+class InstagramAccountRoute:
+    """Token-free immutable routing metadata for a verified webhook entry."""
+
+    instagram_account_id: uuid.UUID
+    connection_mode: str
+
+
 def _unavailable() -> RuntimeCredentialUnavailableError:
     return RuntimeCredentialUnavailableError("Instagram runtime credential is unavailable.")
+
+
+def _route_unavailable() -> RuntimeAccountRouteUnavailableError:
+    return RuntimeAccountRouteUnavailableError("Instagram account route is unavailable.")
 
 
 def _normalized_external_id(value: object) -> str | None:
@@ -89,6 +105,73 @@ def _usable_oauth_credential(
         and bool(credential.encryption_key_id)
         and not _is_expired(credential.expires_at, now)
     )
+
+
+def _usable_oauth_account(account: InstagramAccount, *, now: datetime) -> bool:
+    """Return lifecycle-only eligibility without touching credential storage."""
+
+    return bool(
+        account.provider == "instagram"
+        and account.connection_status == OAUTH_CONNECTION_STATUS
+        and not str(account.last_connection_error_code or "").strip()
+        and not _is_expired(account.token_expires_at, now)
+    )
+
+
+def resolve_instagram_account_route(
+    session: Session,
+    *,
+    instagram_user_id: object,
+    legacy_instagram_user_id: object,
+    now: datetime | None = None,
+) -> InstagramAccountRoute:
+    """Classify one verified webhook account without loading any credential.
+
+    This is deliberately narrower than ``resolve_instagram_account_runtime``:
+    it performs no credential query, decryption, keyring lookup, or token
+    handling.  OAuth webhook entries are only classified in Phase 4B; their
+    Graph operations remain disabled.
+    """
+
+    external_id = _normalized_external_id(instagram_user_id)
+    legacy_id = _normalized_external_id(legacy_instagram_user_id)
+    current_time = now or datetime.now(timezone.utc)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=timezone.utc)
+    else:
+        current_time = current_time.astimezone(timezone.utc)
+    if external_id is None or legacy_id is None:
+        raise _route_unavailable()
+
+    try:
+        account = session.scalar(
+            select(InstagramAccount).where(InstagramAccount.instagram_user_id == external_id)
+        )
+        if account is None:
+            raise _route_unavailable()
+
+        is_exact_legacy_account = bool(
+            hmac.compare_digest(external_id, legacy_id)
+            and hmac.compare_digest(str(account.instagram_user_id), legacy_id)
+        )
+        if is_exact_legacy_account:
+            if account.connection_status != LEGACY_CONNECTION_STATUS:
+                raise _route_unavailable()
+            return InstagramAccountRoute(
+                instagram_account_id=account.id,
+                connection_mode="legacy_environment",
+            )
+
+        if not _usable_oauth_account(account, now=current_time):
+            raise _route_unavailable()
+        return InstagramAccountRoute(
+            instagram_account_id=account.id,
+            connection_mode="oauth",
+        )
+    except RuntimeAccountRouteUnavailableError:
+        raise
+    except (SQLAlchemyError, AttributeError, TypeError, ValueError):
+        raise _route_unavailable() from None
 
 
 def resolve_instagram_account_runtime(

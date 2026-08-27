@@ -109,6 +109,99 @@ class AccountRuntimeResolverTest(unittest.TestCase):
         self.assertIsNone(raised.exception.__cause__)
         return str(raised.exception)
 
+    def _resolve_route(self, external_id, **kwargs):
+        from database.account_runtime import resolve_instagram_account_route
+
+        with self.Session() as session:
+            return resolve_instagram_account_route(
+                session,
+                instagram_user_id=external_id,
+                legacy_instagram_user_id=self.legacy_external_id,
+                **kwargs,
+            )
+
+    def test_token_free_route_classifies_legacy_and_connected_oauth_without_credential_access(self):
+        with patch(
+            "database.account_runtime.credential_keyring_from_environment",
+            side_effect=AssertionError("routing must not load a keyring"),
+        ), patch(
+            "database.account_runtime.decrypt_access_token",
+            side_effect=AssertionError("routing must not decrypt a credential"),
+        ):
+            legacy = self._resolve_route(self.legacy_external_id)
+            oauth = self._resolve_route("17841438617458902")
+
+        self.assertEqual(legacy.instagram_account_id, self.legacy_account_id)
+        self.assertEqual(legacy.connection_mode, "legacy_environment")
+        self.assertEqual(oauth.instagram_account_id, self.account_a_id)
+        self.assertEqual(oauth.connection_mode, "oauth")
+        rendered = repr(oauth)
+        for secret in (self.token_a, self.key, "KEY_2026_01"):
+            self.assertNotIn(secret, rendered)
+
+    def test_token_free_route_uses_only_account_lifecycle_not_credential_metadata(self):
+        with self.Session.begin() as session:
+            credential = session.scalar(
+                select(InstagramCredential).where(
+                    InstagramCredential.instagram_account_id == self.account_a_id
+                )
+            )
+            credential.token_status = "revoked"
+            credential.token_ciphertext = None
+            credential.encryption_key_id = None
+
+        route = self._resolve_route("17841438617458902")
+
+        self.assertEqual(route.connection_mode, "oauth")
+        self.assertEqual(route.instagram_account_id, self.account_a_id)
+
+    def test_token_free_route_rejects_nonready_oauth_lifecycle_states(self):
+        for status in ("disconnected", "reconnect_required", "error", "pending", "environment_managed"):
+            with self.subTest(status=status):
+                with self.Session.begin() as session:
+                    account = session.get(InstagramAccount, self.account_a_id)
+                    account.connection_status = status
+                from database.account_runtime import RuntimeAccountRouteUnavailableError
+
+                with self.Session() as session:
+                    with self.assertRaises(RuntimeAccountRouteUnavailableError):
+                        from database.account_runtime import resolve_instagram_account_route
+
+                        resolve_instagram_account_route(
+                            session,
+                            instagram_user_id="17841438617458902",
+                            legacy_instagram_user_id=self.legacy_external_id,
+                        )
+        with self.Session.begin() as session:
+            account = session.get(InstagramAccount, self.account_a_id)
+            account.connection_status = "connected"
+
+    def test_token_free_route_rejects_errored_expired_or_wrong_provider_accounts(self):
+        from database.account_runtime import RuntimeAccountRouteUnavailableError
+
+        mutations = (
+            ("last_connection_error_code", "token_invalid"),
+            ("token_expires_at", datetime.now(timezone.utc) - timedelta(seconds=1)),
+            ("provider", "another_provider"),
+        )
+        for field, value in mutations:
+            with self.subTest(field=field):
+                with self.Session.begin() as session:
+                    account = session.get(InstagramAccount, self.account_a_id)
+                    setattr(account, field, value)
+                with self.Session() as session:
+                    with self.assertRaises(RuntimeAccountRouteUnavailableError):
+                        from database.account_runtime import resolve_instagram_account_route
+
+                        resolve_instagram_account_route(
+                            session,
+                            instagram_user_id="17841438617458902",
+                            legacy_instagram_user_id=self.legacy_external_id,
+                        )
+                with self.Session.begin() as session:
+                    account = session.get(InstagramAccount, self.account_a_id)
+                    setattr(account, field, None if field != "provider" else "instagram")
+
     def test_connected_oauth_accounts_resolve_only_their_own_decrypted_token(self):
         context_a = self._resolve("17841438617458902")
         context_b = self._resolve("17841438617458903")

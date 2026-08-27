@@ -21,6 +21,10 @@ from werkzeug.utils import secure_filename
 
 from database.cli import register_database_commands
 from database.config import database_url_from_environment
+from database.account_runtime import (
+    RuntimeAccountRouteUnavailableError,
+    resolve_instagram_account_route,
+)
 from auth import (
     configure_auth,
     csrf_token,
@@ -3526,60 +3530,105 @@ def process_message_event(event):
 # BACKGROUND PROCESSOR
 # ==================================================
 
+WEBHOOK_EXTERNAL_ID_PATTERN = re.compile(r"^[0-9]{1,64}$")
+
+
+def _webhook_entry_external_id(entry):
+    """Return a canonical, numeric envelope ID without accepting fallbacks."""
+
+    if not isinstance(entry, dict):
+        return None
+    external_id = entry.get("id")
+    if not isinstance(external_id, str):
+        return None
+    external_id = external_id.strip()
+    return external_id if WEBHOOK_EXTERNAL_ID_PATTERN.fullmatch(external_id) else None
+
+
+def _resolve_webhook_entry_route(entry_external_id):
+    """Resolve one entry through a fresh database session, without credentials."""
+
+    auth_state = app.extensions.get("phase3a_auth")
+    session_factory = getattr(auth_state, "session_factory", None)
+    if session_factory is None:
+        raise RuntimeAccountRouteUnavailableError("Instagram account route is unavailable.")
+    with session_factory() as db_session:
+        return resolve_instagram_account_route(
+            db_session,
+            instagram_user_id=entry_external_id,
+            legacy_instagram_user_id=INSTAGRAM_USER_ID,
+        )
+
+
+def _messaging_event_matches_entry(event, entry_external_id):
+    """Require a supplied messaging recipient to agree with its envelope ID."""
+
+    if not isinstance(event, dict):
+        return False
+    if "recipient" not in event:
+        return True
+    recipient = event.get("recipient")
+    if not isinstance(recipient, dict):
+        return False
+    recipient_id = recipient.get("id")
+    if not isinstance(recipient_id, str):
+        return False
+    recipient_id = recipient_id.strip()
+    return bool(
+        WEBHOOK_EXTERNAL_ID_PATTERN.fullmatch(recipient_id)
+        and hmac.compare_digest(recipient_id, entry_external_id)
+    )
+
+
+def _process_legacy_webhook_entry(entry, entry_external_id, public_base_url):
+    """Invoke unchanged legacy handlers only after exact route classification."""
+
+    changes = entry.get("changes", [])
+    if isinstance(changes, list):
+        for change in changes:
+            if not isinstance(change, dict):
+                continue
+            if change.get("field") != "comments":
+                continue
+            value = change.get("value", {})
+            if isinstance(value, dict):
+                process_comment(value, public_base_url)
+
+    messaging_events = entry.get("messaging", [])
+    if isinstance(messaging_events, list):
+        for event in messaging_events:
+            if _messaging_event_matches_entry(event, entry_external_id):
+                process_message_event(event)
+
+
 def process_webhook_background(
     data,
     public_base_url
 ):
+    """Dispatch each signed entry independently, with no cross-tenant fallback."""
 
-    try:
+    entries = data.get("entry", []) if isinstance(data, dict) else []
+    if not isinstance(entries, list):
+        return
 
-        entries = data.get(
-            "entry",
-            []
-        )
+    for entry in entries:
+        entry_external_id = _webhook_entry_external_id(entry)
+        if entry_external_id is None:
+            print("WEBHOOK ROUTING: entry skipped (invalid envelope).")
+            continue
+        try:
+            route = _resolve_webhook_entry_route(entry_external_id)
+        except Exception:
+            print("WEBHOOK ROUTING: entry skipped (route unavailable).")
+            continue
 
-        for entry in entries:
-
-            changes = entry.get(
-                "changes",
-                []
-            )
-
-            for change in changes:
-
-                field = change.get(
-                    "field"
-                )
-
-                value = change.get(
-                    "value",
-                    {}
-                )
-
-                if field == "comments":
-
-                    process_comment(
-                        value,
-                        public_base_url
-                    )
-
-            messaging_events = entry.get(
-                "messaging",
-                []
-            )
-
-            for event in messaging_events:
-
-                process_message_event(
-                    event
-                )
-
-    except Exception as error:
-
-        print(
-            "BACKGROUND ERROR:",
-            error
-        )
+        if route.connection_mode != "legacy_environment":
+            print("WEBHOOK ROUTING: OAuth entry deferred.")
+            continue
+        try:
+            _process_legacy_webhook_entry(entry, entry_external_id, public_base_url)
+        except Exception:
+            print("WEBHOOK ROUTING: entry skipped (legacy processing failed).")
 
 
 # ==================================================
