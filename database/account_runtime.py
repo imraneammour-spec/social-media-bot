@@ -256,3 +256,42 @@ def resolve_instagram_account_runtime(
         ValueError,
     ):
         raise _unavailable() from None
+
+
+def resolve_oauth_instagram_account_runtime(
+    session: Session,
+    *,
+    instagram_account_id: object,
+    instagram_user_id: object,
+    keyring: CredentialKeyring | None = None,
+    now: datetime | None = None,
+) -> InstagramAccountRuntime:
+    """Resolve only a connected OAuth account; legacy credentials are impossible."""
+
+    external_id = _normalized_external_id(instagram_user_id)
+    try:
+        account_id = uuid.UUID(str(instagram_account_id))
+    except (TypeError, ValueError, AttributeError):
+        raise _unavailable() from None
+    current_time = now or datetime.now(timezone.utc)
+    if external_id is None:
+        raise _unavailable()
+    try:
+        account = session.scalar(select(InstagramAccount).where(
+            InstagramAccount.id == account_id,
+            InstagramAccount.instagram_user_id == external_id,
+        ))
+        credential = session.scalar(select(InstagramCredential).where(
+            InstagramCredential.instagram_account_id == account_id
+        )) if account is not None else None
+        if account is None or not _usable_oauth_credential(account, credential, now=current_time):
+            raise _unavailable()
+        active_keyring = keyring if keyring is not None else credential_keyring_from_environment()
+        token = decrypt_access_token(credential.token_ciphertext, credential.encryption_key_id, active_keyring)
+        if not token:
+            raise _unavailable()
+        return InstagramAccountRuntime(account.id, external_id, "oauth", token)
+    except RuntimeCredentialUnavailableError:
+        raise
+    except (CredentialConfigurationError, CredentialDecryptionError, CredentialNotFoundError, SQLAlchemyError, AttributeError, TypeError, ValueError):
+        raise _unavailable() from None

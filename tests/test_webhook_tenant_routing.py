@@ -165,6 +165,16 @@ class WebhookTenantRoutingTest(unittest.TestCase):
         graph_get.assert_not_called()
         graph_post.assert_not_called()
 
+    def test_connected_oauth_entry_dispatches_only_to_the_oauth_handler(self):
+        payload = {"entry": [{"id": "17841438617458902", "changes": [{"field": "comments", "value": {"id": "oauth"}}]}]}
+        with patch.object(self.module, "process_oauth_webhook_entry") as oauth_handler, patch.object(
+            self.module, "process_comment"
+        ) as legacy_handler:
+            self.module.process_webhook_background(payload, "http://localhost")
+
+        oauth_handler.assert_called_once()
+        legacy_handler.assert_not_called()
+
     def test_unknown_malformed_and_nonlegacy_environment_accounts_skip_without_legacy_fallback(self):
         payload = {
             "entry": [

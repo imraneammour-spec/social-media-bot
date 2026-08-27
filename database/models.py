@@ -104,6 +104,73 @@ class InstagramCredential(TimestampMixin, Base):
     instagram_account: Mapped[InstagramAccount] = relationship(back_populates="credentials")
 
 
+class InstagramEngagementEvent(TimestampMixin, Base):
+    """Durable OAuth-only webhook claim; legacy JSON dedupe remains unchanged."""
+
+    __tablename__ = "instagram_engagement_events"
+    __table_args__ = (
+        UniqueConstraint("instagram_account_id", "provider_event_id", "event_type", name="uq_engagement_event_account_provider_type"),
+        Index("ix_engagement_events_account_state", "instagram_account_id", "state"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    instagram_account_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("instagram_accounts.id", ondelete="CASCADE"), nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    state: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="processing", server_default="processing"
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class InstagramPromptPost(TimestampMixin, Base):
+    """OAuth prompt content, scoped to one connected Instagram account."""
+
+    __tablename__ = "instagram_prompt_posts"
+    __table_args__ = (
+        UniqueConstraint("instagram_account_id", "media_id", name="uq_prompt_post_account_media"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    instagram_account_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("instagram_accounts.id", ondelete="CASCADE"), nullable=False, index=True)
+    media_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    public_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    prompts: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False)
+    permalink: Mapped[str | None] = mapped_column(Text)
+    cover_url: Mapped[str | None] = mapped_column(Text)
+
+
+class InstagramPendingAccess(TimestampMixin, Base):
+    __tablename__ = "instagram_pending_access"
+    __table_args__ = (UniqueConstraint("instagram_account_id", "recipient_id", name="uq_pending_access_account_recipient"),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    instagram_account_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("instagram_accounts.id", ondelete="CASCADE"), nullable=False, index=True)
+    recipient_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    page_url: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class InstagramPromptRequest(TimestampMixin, Base):
+    __tablename__ = "instagram_prompt_requests"
+    __table_args__ = (Index("ix_prompt_requests_account_media_recipient", "instagram_account_id", "media_id", "recipient_id"),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    instagram_account_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("instagram_accounts.id", ondelete="CASCADE"), nullable=False)
+    media_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    comment_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    recipient_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    username: Mapped[str | None] = mapped_column(String(255))
+    page_url: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class InstagramSmartReplyActivity(TimestampMixin, Base):
+    __tablename__ = "instagram_smart_reply_activity"
+    __table_args__ = (Index("ix_smart_reply_activity_account_created", "instagram_account_id", "created_at"),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    instagram_account_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("instagram_accounts.id", ondelete="CASCADE"), nullable=False)
+    comment_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    recipient_id: Mapped[str | None] = mapped_column(String(255))
+    username: Mapped[str | None] = mapped_column(String(255))
+    reply_text: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class MigrationRun(TimestampMixin, Base):
     """Auditable record for a future JSON-to-PostgreSQL migration, not data itself."""
 

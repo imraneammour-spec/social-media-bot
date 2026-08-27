@@ -25,6 +25,26 @@ from database.account_runtime import (
     RuntimeAccountRouteUnavailableError,
     resolve_instagram_account_route,
 )
+from database.oauth_engagement import (
+    claim_oauth_event,
+    complete_oauth_event,
+    get_oauth_pending_access,
+    get_oauth_prompt_post,
+    get_oauth_prompt_post_by_public_id,
+    oauth_prompt_post,
+    oauth_request_on_cooldown,
+    oauth_smart_reply_allowed,
+    pop_oauth_pending_access,
+    record_oauth_request,
+    record_oauth_smart_reply,
+    save_oauth_pending_access,
+)
+from database.oauth_graph import (
+    lookup_oauth_media,
+    send_oauth_private_access_reply,
+    send_oauth_prompt_access_button,
+    send_oauth_public_comment_reply,
+)
 from auth import (
     configure_auth,
     csrf_token,
@@ -2168,6 +2188,36 @@ def post_preview(
 # PROMPT PAGE
 # ==================================================
 
+@app.route("/p/o/<public_id>", methods=["GET"])
+def oauth_prompt_page(public_id):
+    """Neutral, opaque OAuth prompt page; legacy /p/<media_id> stays untouched."""
+    session_factory = _oauth_session_factory()
+    if session_factory is None:
+        return Response("Prompt page is unavailable.", status=404, mimetype="text/plain")
+    try:
+        with session_factory() as db_session:
+            post = get_oauth_prompt_post_by_public_id(db_session, public_id)
+            prompts = list(post.prompts) if post is not None and isinstance(post.prompts, list) else []
+    except Exception:
+        return Response("Prompt page is unavailable.", status=404, mimetype="text/plain")
+    if post is None:
+        return Response("Prompt page is unavailable.", status=404, mimetype="text/plain")
+    items = []
+    for number, prompt in enumerate(prompts, start=1):
+        text = prompt.get("text", "") if isinstance(prompt, dict) else str(prompt or "")
+        text = str(text).strip()
+        if text:
+            items.append(f"<article><h2>Prompt {number}</h2><pre>{html.escape(text)}</pre></article>")
+    body = "".join(items) or "<p>No prompts are available.</p>"
+    return Response(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Prompts</title>"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<style>body{font-family:system-ui;max-width:760px;margin:3rem auto;padding:0 1rem}article{border:1px solid #ddd;padding:1rem;margin:1rem 0;border-radius:.5rem}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style>"
+        "</head><body><h1>Prompts</h1>" + body + "</body></html>",
+        mimetype="text/html",
+    )
+
+
 @app.route(
     "/p/<media_id>",
     methods=["GET"]
@@ -3601,6 +3651,215 @@ def _process_legacy_webhook_entry(entry, entry_external_id, public_base_url):
                 process_message_event(event)
 
 
+def _oauth_session_factory():
+    """Return the configured database factory without a legacy fallback."""
+    auth_state = app.extensions.get("phase3a_auth")
+    return getattr(auth_state, "session_factory", None)
+
+
+def _oauth_words(value):
+    return re.findall(r"\b\w+\b", str(value or "").lower())
+
+
+def generate_oauth_smart_reply(comment_text):
+    """Generate a tenant-neutral reply; no legacy account identity is supplied."""
+    source_text = str(comment_text or "").strip()
+    if not source_text or GEMINI_CLIENT is None:
+        return ""
+    instructions = f"""
+Write one short, friendly reply to an Instagram comment for a professional account.
+Use the comment's language where practical. Do not mention automation, account
+names, credentials, or private information. Do not use links or hashtags.
+Return only the reply text, under {SMART_REPLY_MAX_LENGTH} characters.
+
+Comment: {source_text}
+"""
+    try:
+        response = GEMINI_CLIENT.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=instructions,
+            config=types.GenerateContentConfig(temperature=0.7),
+        )
+        reply = re.sub(r"\s+", " ", str(response.text or "")).strip().strip('"\'')
+        return reply[:SMART_REPLY_MAX_LENGTH].rstrip()
+    except Exception:
+        print("OAUTH ENGAGEMENT: smart reply unavailable.")
+        return ""
+
+
+def extract_oauth_prompts(media):
+    """Extract only visible prompts with a generic, account-neutral Gemini prompt."""
+    if GEMINI_CLIENT is None or not isinstance(media, dict):
+        return []
+    urls = []
+    for item in [media, *((media.get("children") or {}).get("data") or [])]:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("media_url") or item.get("thumbnail_url")
+        if isinstance(url, str) and url.startswith("https://"):
+            urls.append(url)
+    if not urls:
+        return []
+    contents = ["""Extract only complete AI image or video generation prompts visibly written in these Instagram images. Ignore usernames, watermarks, captions, UI labels, calls to action, and decorative text. Do not invent text. Return JSON only: {\"prompts\":[{\"source_index\":1,\"text\":\"...\"}]}."""]
+    try:
+        for url in urls[:10]:
+            response = requests.get(url, timeout=15)
+            if response.ok and response.content:
+                contents.append(types.Part.from_bytes(data=response.content, mime_type=response.headers.get("Content-Type", "image/jpeg")))
+        if len(contents) == 1:
+            return []
+        response = GEMINI_CLIENT.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=contents,
+            config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0),
+        )
+        return parse_gemini_json(str(response.text or ""))
+    except Exception:
+        print("OAUTH ENGAGEMENT: prompt extraction unavailable.")
+        return []
+
+
+def _oauth_complete(session_factory, account_id, provider_event_id, event_type, *, failed=False):
+    with session_factory.begin() as db_session:
+        complete_oauth_event(db_session, account_id, provider_event_id, event_type, failed=failed)
+
+
+def _oauth_prompt_post_for_comment(session_factory, account_id, external_id, media_id):
+    with session_factory() as db_session:
+        cached = get_oauth_prompt_post(db_session, account_id, media_id)
+        if cached is not None:
+            return cached.public_id
+    media = lookup_oauth_media(
+        session_factory,
+        instagram_account_id=account_id,
+        instagram_user_id=external_id,
+        media_id=media_id,
+    )
+    prompts = extract_oauth_prompts(media)
+    if not prompts:
+        return None
+    with session_factory.begin() as db_session:
+        record = oauth_prompt_post(
+            db_session,
+            account_id,
+            media_id,
+            prompts,
+            permalink=str(media.get("permalink") or ""),
+            cover_url=str(media.get("media_url") or media.get("thumbnail_url") or ""),
+        )
+        return record.public_id
+
+
+def _process_oauth_comment(value, route, entry_external_id, public_base_url, session_factory):
+    comment_id = str(value.get("id") or "").strip()
+    comment_text = str(value.get("text") or "").strip()
+    commenter = value.get("from") if isinstance(value.get("from"), dict) else {}
+    commenter_id = str(commenter.get("id") or "").strip()
+    username = str(commenter.get("username") or "").strip()
+    media = value.get("media") if isinstance(value.get("media"), dict) else {}
+    media_id = str(media.get("id") or "").strip()
+    if not comment_id or not comment_text or not commenter_id or commenter_id == entry_external_id:
+        return
+    with session_factory.begin() as db_session:
+        if not claim_oauth_event(db_session, route.instagram_account_id, comment_id, "comment"):
+            return
+    is_prompt_request = any(word in TRIGGER_WORDS for word in _oauth_words(comment_text))
+    try:
+        if not is_prompt_request:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+            with session_factory() as db_session:
+                allowed = oauth_smart_reply_allowed(db_session, route.instagram_account_id, cutoff=cutoff, limit=SMART_REPLY_MAX_PER_HOUR)
+            if not allowed:
+                _oauth_complete(session_factory, route.instagram_account_id, comment_id, "comment")
+                return
+            reply = generate_oauth_smart_reply(comment_text)
+            if not reply:
+                _oauth_complete(session_factory, route.instagram_account_id, comment_id, "comment")
+                return
+            if not send_oauth_public_comment_reply(session_factory, instagram_account_id=route.instagram_account_id, instagram_user_id=entry_external_id, comment_id=comment_id, message=reply):
+                raise RuntimeError("oauth comment delivery unavailable")
+            with session_factory.begin() as db_session:
+                record_oauth_smart_reply(db_session, route.instagram_account_id, comment_id, commenter_id, username, reply)
+                complete_oauth_event(db_session, route.instagram_account_id, comment_id, "comment")
+            return
+
+        if not media_id:
+            raise RuntimeError("oauth prompt media unavailable")
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=REQUEST_COOLDOWN_MINUTES)
+        with session_factory() as db_session:
+            cooling_down = oauth_request_on_cooldown(db_session, route.instagram_account_id, media_id, commenter_id, cutoff=cutoff)
+        if cooling_down:
+            _oauth_complete(session_factory, route.instagram_account_id, comment_id, "comment")
+            return
+        public_id = _oauth_prompt_post_for_comment(session_factory, route.instagram_account_id, entry_external_id, media_id)
+        if not public_id:
+            raise RuntimeError("oauth prompt extraction unavailable")
+        page_url = f"{public_base_url.rstrip('/')}/p/o/{public_id}"
+        if not send_oauth_public_comment_reply(session_factory, instagram_account_id=route.instagram_account_id, instagram_user_id=entry_external_id, comment_id=comment_id, message="Your prompts are ready. Check your messages."):
+            raise RuntimeError("oauth public reply unavailable")
+        recipient_id = send_oauth_private_access_reply(session_factory, instagram_account_id=route.instagram_account_id, instagram_user_id=entry_external_id, comment_id=comment_id)
+        if not recipient_id:
+            raise RuntimeError("oauth private reply unavailable")
+        with session_factory.begin() as db_session:
+            save_oauth_pending_access(db_session, route.instagram_account_id, recipient_id, page_url)
+            record_oauth_request(db_session, route.instagram_account_id, media_id, comment_id, recipient_id, username, page_url)
+            complete_oauth_event(db_session, route.instagram_account_id, comment_id, "comment")
+    except Exception:
+        _oauth_complete(session_factory, route.instagram_account_id, comment_id, "comment", failed=True)
+        print("OAUTH ENGAGEMENT: comment processing unavailable.")
+
+
+def _process_oauth_message(event, route, entry_external_id, session_factory):
+    message = event.get("message") if isinstance(event, dict) else None
+    sender = event.get("sender") if isinstance(event, dict) else None
+    if not isinstance(message, dict) or not isinstance(sender, dict) or message.get("is_echo"):
+        return
+    message_id = str(message.get("mid") or "").strip()
+    sender_id = str(sender.get("id") or "").strip()
+    if not message_id or not sender_id:
+        return
+    with session_factory.begin() as db_session:
+        if not claim_oauth_event(db_session, route.instagram_account_id, message_id, "message"):
+            return
+    quick = message.get("quick_reply") if isinstance(message.get("quick_reply"), dict) else {}
+    words = _oauth_words(message.get("text"))
+    wants_access = "access" in words or "send" in words or str(quick.get("payload") or "").strip().upper() == "VIEW_AI_PROMPTS"
+    if not wants_access:
+        _oauth_complete(session_factory, route.instagram_account_id, message_id, "message")
+        return
+    try:
+        with session_factory() as db_session:
+            page_url = get_oauth_pending_access(db_session, route.instagram_account_id, sender_id)
+        if not page_url:
+            _oauth_complete(session_factory, route.instagram_account_id, message_id, "message")
+            return
+        if not send_oauth_prompt_access_button(session_factory, instagram_account_id=route.instagram_account_id, instagram_user_id=entry_external_id, recipient_id=sender_id, page_url=page_url):
+            raise RuntimeError("oauth prompt access unavailable")
+        with session_factory.begin() as db_session:
+            pop_oauth_pending_access(db_session, route.instagram_account_id, sender_id)
+            complete_oauth_event(db_session, route.instagram_account_id, message_id, "message")
+    except Exception:
+        _oauth_complete(session_factory, route.instagram_account_id, message_id, "message", failed=True)
+        print("OAUTH ENGAGEMENT: message processing unavailable.")
+
+
+def process_oauth_webhook_entry(entry, route, entry_external_id, public_base_url):
+    """Handle OAuth events only; no legacy handler, JSON store, or token fallback."""
+    session_factory = _oauth_session_factory()
+    if session_factory is None or not isinstance(entry, dict):
+        return
+    changes = entry.get("changes", [])
+    if isinstance(changes, list):
+        for change in changes:
+            if isinstance(change, dict) and change.get("field") == "comments" and isinstance(change.get("value"), dict):
+                _process_oauth_comment(change["value"], route, entry_external_id, public_base_url, session_factory)
+    messaging_events = entry.get("messaging", [])
+    if isinstance(messaging_events, list):
+        for event in messaging_events:
+            if _messaging_event_matches_entry(event, entry_external_id):
+                _process_oauth_message(event, route, entry_external_id, session_factory)
+
+
 def process_webhook_background(
     data,
     public_base_url
@@ -3622,8 +3881,11 @@ def process_webhook_background(
             print("WEBHOOK ROUTING: entry skipped (route unavailable).")
             continue
 
-        if route.connection_mode != "legacy_environment":
-            print("WEBHOOK ROUTING: OAuth entry deferred.")
+        if route.connection_mode == "oauth":
+            try:
+                process_oauth_webhook_entry(entry, route, entry_external_id, public_base_url)
+            except Exception:
+                print("WEBHOOK ROUTING: OAuth entry skipped (engagement unavailable).")
             continue
         try:
             _process_legacy_webhook_entry(entry, entry_external_id, public_base_url)

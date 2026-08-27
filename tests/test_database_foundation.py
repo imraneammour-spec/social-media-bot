@@ -30,6 +30,13 @@ class DatabaseFoundationTest(unittest.TestCase):
         "revoked_at",
         "last_error_code",
     }
+    PHASE4C_TABLES = {
+        "instagram_engagement_events",
+        "instagram_prompt_posts",
+        "instagram_pending_access",
+        "instagram_prompt_requests",
+        "instagram_smart_reply_activity",
+    }
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.engine = create_engine(f"sqlite:///{Path(self.temp_dir.name) / 'foundation.db'}")
@@ -49,6 +56,15 @@ class DatabaseFoundationTest(unittest.TestCase):
                     column["name"]
                     for column in inspect(connection).get_columns(table_name)
                 }
+        finally:
+            engine.dispose()
+
+    @staticmethod
+    def _table_names(database_url: str) -> set[str]:
+        engine = create_engine(database_url)
+        try:
+            with engine.connect() as connection:
+                return set(inspect(connection).get_table_names())
         finally:
             engine.dispose()
 
@@ -258,6 +274,7 @@ class DatabaseFoundationTest(unittest.TestCase):
         )
         self.assertTrue(self.PHASE3B_ACCOUNT_COLUMNS.issubset(account_columns))
         self.assertTrue(self.PHASE3B_CREDENTIAL_COLUMNS.issubset(credential_columns))
+        self.assertTrue(self.PHASE4C_TABLES.issubset(self._table_names(environment["DATABASE_URL"])))
         upgraded_state, credential_count = self._legacy_phase_two_state(
             environment["DATABASE_URL"], include_provider=True
         )
@@ -266,7 +283,7 @@ class DatabaseFoundationTest(unittest.TestCase):
         self.assertEqual(upgraded_state["connection_status"], "environment_managed")
         self.assertEqual(upgraded_state["provider"], "instagram")
         self.assertEqual(credential_count, 0)
-        self.assertEqual(self._alembic_revision(environment["DATABASE_URL"]), "20260825_02")
+        self.assertEqual(self._alembic_revision(environment["DATABASE_URL"]), "20260827_01")
 
         downgrade = self._run_alembic(
             "downgrade", "20260825_01", root=root, environment=environment
@@ -280,6 +297,7 @@ class DatabaseFoundationTest(unittest.TestCase):
         )
         self.assertFalse(self.PHASE3B_ACCOUNT_COLUMNS.intersection(account_columns))
         self.assertFalse(self.PHASE3B_CREDENTIAL_COLUMNS.intersection(credential_columns))
+        self.assertFalse(self.PHASE4C_TABLES.intersection(self._table_names(environment["DATABASE_URL"])))
         downgraded_state, credential_count = self._legacy_phase_two_state(
             environment["DATABASE_URL"], include_provider=False
         )
@@ -301,6 +319,7 @@ class DatabaseFoundationTest(unittest.TestCase):
         )
         self.assertTrue(self.PHASE3B_ACCOUNT_COLUMNS.issubset(account_columns))
         self.assertTrue(self.PHASE3B_CREDENTIAL_COLUMNS.issubset(credential_columns))
+        self.assertTrue(self.PHASE4C_TABLES.issubset(self._table_names(environment["DATABASE_URL"])))
         reupgraded_state, credential_count = self._legacy_phase_two_state(
             environment["DATABASE_URL"], include_provider=True
         )
@@ -309,7 +328,7 @@ class DatabaseFoundationTest(unittest.TestCase):
         self.assertEqual(reupgraded_state["connection_status"], "environment_managed")
         self.assertEqual(reupgraded_state["provider"], "instagram")
         self.assertEqual(credential_count, 0)
-        self.assertEqual(self._alembic_revision(environment["DATABASE_URL"]), "20260825_02")
+        self.assertEqual(self._alembic_revision(environment["DATABASE_URL"]), "20260827_01")
 
     def test_bootstrap_is_idempotent_and_does_not_create_a_credential(self):
         with self.Session.begin() as session:
