@@ -4,9 +4,11 @@ import unittest
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from flask import Flask
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 
 from auth import (
@@ -317,3 +319,161 @@ class TenantDashboardTest(unittest.TestCase):
             "webhook",
         ):
             self.assertNotIn(forbidden, source)
+
+    def _add_polish_records(self):
+        """Create a fixed, account-A-only dataset for Phase 5C behaviors."""
+
+        now = datetime.now(timezone.utc)
+        with self.Session.begin() as session:
+            existing = session.scalar(
+                select(InstagramPromptRequest).where(
+                    InstagramPromptRequest.username == "lead_alpha"
+                )
+            )
+            existing.created_at = now - timedelta(days=2)
+            statuses = ("new", "contacted", "qualified", "won", "lost")
+            for index in range(26):
+                session.add(
+                    InstagramPromptRequest(
+                        instagram_account_id=self.account_a1.id,
+                        media_id=f"phase5c-media-{index}",
+                        comment_id=f"phase5c-comment-{index}",
+                        recipient_id=f"phase5c-recipient-{index}",
+                        username=f"search_me_{index:02d}",
+                        page_url="https://example.invalid/phase5c",
+                        lead_status=statuses[index % len(statuses)],
+                        created_at=now - timedelta(minutes=index),
+                    )
+                )
+            session.add(
+                InstagramPromptRequest(
+                    instagram_account_id=self.account_a1.id,
+                    media_id="phase5c-archived-media",
+                    comment_id="phase5c-archived-comment",
+                    recipient_id="phase5c-archived-recipient",
+                    username="archived_alpha",
+                    page_url="https://example.invalid/phase5c-archived",
+                    lead_status="qualified",
+                    lead_archived_at=now,
+                    created_at=now - timedelta(hours=1),
+                )
+            )
+            for state in ("sent", "cancelled", "failed"):
+                session.add(
+                    InstagramOAuthFollowupJob(
+                        instagram_account_id=self.account_a1.id,
+                        source_message_id=f"phase5c-source-{state}",
+                        recipient_id=f"phase5c-followup-{state}",
+                        page_url="https://example.invalid/phase5c-followup",
+                        state=state,
+                        run_at=now,
+                    )
+                )
+
+    def test_overview_aggregates_and_recent_activity_stay_with_selected_account(self):
+        self._add_polish_records()
+        self._login_as(self.owner_a)
+
+        response = self.client.get("/app/api/overview")
+        self.assertEqual(response.status_code, 200)
+        overview = response.get_json()["overview"]
+        self.assertIn("lead_stage_counts", overview)
+        self.assertEqual(
+            overview["lead_stage_counts"],
+            {"new": 7, "contacted": 5, "qualified": 5, "won": 5, "lost": 5},
+        )
+        self.assertEqual(overview["archived_lead_count"], 1)
+        self.assertEqual(
+            overview["followup_state_counts"],
+            {"scheduled": 1, "sending": 0, "sent": 1, "cancelled": 1, "unavailable": 1},
+        )
+        self.assertTrue(overview["recent_activity"])
+        self.assertNotIn("lead_bravo", str(overview))
+
+        selected_a2 = self._reference(self.owner_a, self.account_a2)
+        account_two = self.client.get(f"/app/api/overview?account={selected_a2}").get_json()["overview"]
+        self.assertEqual(account_two["lead_count"], 0)
+        self.assertEqual(account_two["followup_count"], 0)
+
+    def test_leads_search_sort_filters_and_pagination_are_bounded_and_account_scoped(self):
+        self._add_polish_records()
+        self._login_as(self.owner_a)
+        account = self._reference(self.owner_a, self.account_a1)
+
+        first_page = self.client.get(
+            f"/app/api/leads?account={account}&q=search_me&sort=newest&page=1"
+        ).get_json()
+        self.assertIn("pagination", first_page)
+        self.assertEqual(len(first_page["leads"]), 25)
+        self.assertEqual(first_page["pagination"], {"page": 1, "has_previous": False, "has_next": True})
+        self.assertEqual(first_page["leads"][0]["username"], "search_me_00")
+
+        second_page = self.client.get(
+            f"/app/api/leads?account={account}&q=search_me&sort=newest&page=2"
+        ).get_json()
+        self.assertEqual(len(second_page["leads"]), 1)
+        self.assertEqual(second_page["pagination"], {"page": 2, "has_previous": True, "has_next": False})
+
+        oldest = self.client.get(
+            f"/app/api/leads?account={account}&sort=oldest&page=1"
+        ).get_json()
+        self.assertEqual(oldest["leads"][0]["username"], "lead_alpha")
+
+        qualified = self.client.get(
+            f"/app/api/leads?account={account}&stage=qualified&view=active"
+        ).get_json()
+        self.assertEqual([lead["base_stage"] for lead in qualified["leads"]], ["qualified"] * 5)
+
+        invalid = self.client.get(
+            f"/app/api/leads?account={account}&sort=provider-id&page=-900&q={'x' * 500}"
+        ).get_json()
+        self.assertEqual(invalid["filters"], {"view": "active", "stage": None, "q": "x" * 80, "sort": "newest"})
+        self.assertEqual(invalid["pagination"]["page"], 1)
+        self.assertEqual(invalid["leads"], [])
+
+        bounded_page = self.client.get(
+            f"/app/api/leads?account={account}&page=999999"
+        ).get_json()
+        self.assertEqual(bounded_page["pagination"]["page"], 1000)
+        self.assertEqual(bounded_page["leads"], [])
+
+        page = self.client.get(
+            f"/app/leads?account={account}&q=search_me&sort=oldest&page=1"
+        ).get_data(as_text=True)
+        self.assertIn("q=search_me", page)
+        self.assertIn("sort=oldest", page)
+        self.assertIn('aria-current="page"', page)
+
+    def test_polished_pages_show_owned_accounts_and_sanitized_empty_activation_states(self):
+        self._login_as(self.owner_a)
+        account_a2 = self._reference(self.owner_a, self.account_a2)
+
+        accounts = self.client.get("/app/accounts").get_data(as_text=True)
+        self.assertIn("alpha_first", accounts)
+        self.assertIn("alpha_second", accounts)
+        self.assertNotIn("bravo_private", accounts)
+        self.assertIn("Instagram engagement automation is not yet activated.", accounts)
+
+        for path, message in (
+            (f"/app/leads?account={account_a2}", "No leads yet."),
+            (f"/app/activity?account={account_a2}", "No activity yet."),
+            (f"/app/followups?account={account_a2}", "No follow-ups yet."),
+        ):
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(message, response.get_data(as_text=True))
+
+    def test_database_failure_returns_one_generic_workspace_message(self):
+        self._login_as(self.owner_a)
+        auth_state = self.app.extensions["phase3a_auth"]
+
+        with patch.object(
+            auth_state,
+            "session_factory",
+            side_effect=SQLAlchemyError("private database details"),
+        ):
+            response = self.client.get("/app")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_data(as_text=True), "Workspace temporarily unavailable.")
+        self.assertNotIn("private database details", response.get_data(as_text=True))

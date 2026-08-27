@@ -10,7 +10,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .models import (
@@ -33,6 +33,10 @@ REQUIRED_ENGAGEMENT_SCOPES = {
 RECONNECT_STATUSES = {"disconnected", "error", "reconnect_required"}
 LEAD_STATUSES = ("new", "contacted", "qualified", "won", "lost")
 LEAD_VIEWS = ("active", "archived", "all")
+LEAD_SORTS = ("newest", "oldest")
+LEADS_PER_PAGE = 25
+MAX_LEAD_PAGE = 1000
+MAX_LEAD_SEARCH_LENGTH = 80
 LEAD_ACTION_REFERENCE_VERSION = "v1"
 LEAD_ACTION_REFERENCE_TTL_SECONDS = 900
 LEAD_ACTION_PURPOSES = {"lead-status", "lead-note", "lead-archive"}
@@ -67,6 +71,16 @@ class TenantLead:
     public_prompt_id: str | None
 
 
+@dataclass(frozen=True)
+class TenantLeadPage:
+    """A bounded, account-scoped page of sanitized leads."""
+
+    leads: list[TenantLead]
+    page: int
+    has_previous: bool
+    has_next: bool
+
+
 def _timestamp(value: datetime | None) -> str | None:
     return value.isoformat() if isinstance(value, datetime) else None
 
@@ -99,14 +113,35 @@ def _lead_status(value: object) -> str:
     return normalized if normalized in LEAD_STATUSES else "new"
 
 
-def lead_filters(view: object = None, stage: object = None) -> tuple[str, str | None]:
+def lead_filters(
+    view: object = None,
+    stage: object = None,
+    search: object = None,
+    sort: object = None,
+    page: object = None,
+) -> tuple[str, str | None, str, str, int]:
     """Normalize lead filters without accepting values as query syntax."""
 
     normalized_view = str(view or "active").strip().lower()
     if normalized_view not in LEAD_VIEWS:
         normalized_view = "active"
     normalized_stage = str(stage or "").strip().lower()
-    return normalized_view, normalized_stage if normalized_stage in LEAD_STATUSES else None
+    normalized_search = str(search or "").strip()[:MAX_LEAD_SEARCH_LENGTH]
+    normalized_sort = str(sort or "newest").strip().lower()
+    if normalized_sort not in LEAD_SORTS:
+        normalized_sort = "newest"
+    try:
+        normalized_page = int(str(page or "1").strip())
+    except (TypeError, ValueError):
+        normalized_page = 1
+    normalized_page = min(max(normalized_page, 1), MAX_LEAD_PAGE)
+    return (
+        normalized_view,
+        normalized_stage if normalized_stage in LEAD_STATUSES else None,
+        normalized_search,
+        normalized_sort,
+        normalized_page,
+    )
 
 
 def _lead_action_payload(
@@ -264,18 +299,69 @@ def overview(session: Session, *, instagram_account_id: uuid.UUID) -> dict[str, 
     """Return only aggregate, account-scoped tenant counts."""
 
     def count(model) -> int:
-        return len(
-            session.scalars(
-                select(model.id).where(model.instagram_account_id == instagram_account_id)
-            ).all()
+        return int(
+            session.scalar(
+                select(func.count())
+                .select_from(model)
+                .where(model.instagram_account_id == instagram_account_id)
+            )
+            or 0
         )
+
+    lead_stage_counts = {status: 0 for status in LEAD_STATUSES}
+    for status, total in session.execute(
+        select(InstagramPromptRequest.lead_status, func.count())
+        .where(
+            InstagramPromptRequest.instagram_account_id == instagram_account_id,
+            InstagramPromptRequest.lead_archived_at.is_(None),
+        )
+        .group_by(InstagramPromptRequest.lead_status)
+    ):
+        normalized_status = _lead_status(status)
+        if str(status or "").strip().lower() in LEAD_STATUSES:
+            lead_stage_counts[normalized_status] = int(total)
+
+    followup_state_counts = {
+        "scheduled": 0,
+        "sending": 0,
+        "sent": 0,
+        "cancelled": 0,
+        "unavailable": 0,
+    }
+    followup_labels = {
+        "pending": "scheduled",
+        "processing": "sending",
+        "sent": "sent",
+        "cancelled": "cancelled",
+    }
+    for state, total in session.execute(
+        select(InstagramOAuthFollowupJob.state, func.count())
+        .where(InstagramOAuthFollowupJob.instagram_account_id == instagram_account_id)
+        .group_by(InstagramOAuthFollowupJob.state)
+    ):
+        label = followup_labels.get(str(state or "").strip().lower(), "unavailable")
+        followup_state_counts[label] += int(total)
 
     return {
         "lead_count": count(InstagramPromptRequest),
+        "lead_stage_counts": lead_stage_counts,
+        "archived_lead_count": int(
+            session.scalar(
+                select(func.count())
+                .select_from(InstagramPromptRequest)
+                .where(
+                    InstagramPromptRequest.instagram_account_id == instagram_account_id,
+                    InstagramPromptRequest.lead_archived_at.is_not(None),
+                )
+            )
+            or 0
+        ),
         "activity_count": count(InstagramSmartReplyActivity) + count(InstagramEngagementEvent),
         "pending_access_count": count(InstagramPendingAccess),
         "prompt_post_count": count(InstagramPromptPost),
         "followup_count": count(InstagramOAuthFollowupJob),
+        "followup_state_counts": followup_state_counts,
+        "recent_activity": activity(session, instagram_account_id=instagram_account_id, limit=5),
     }
 
 
@@ -285,10 +371,15 @@ def leads(
     instagram_account_id: uuid.UUID,
     view: object = None,
     stage: object = None,
-) -> list[TenantLead]:
+    search: object = None,
+    sort: object = None,
+    page: object = None,
+) -> TenantLeadPage:
     """Return sanitized lead records for exactly one owned account."""
 
-    selected_view, selected_stage = lead_filters(view, stage)
+    selected_view, selected_stage, selected_search, selected_sort, selected_page = lead_filters(
+        view, stage, search, sort, page
+    )
     query = select(InstagramPromptRequest).where(
         InstagramPromptRequest.instagram_account_id == instagram_account_id
     )
@@ -298,13 +389,28 @@ def leads(
         query = query.where(InstagramPromptRequest.lead_archived_at.is_not(None))
     if selected_stage is not None:
         query = query.where(InstagramPromptRequest.lead_status == selected_stage)
+    if selected_search:
+        escaped_search = (
+            selected_search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        query = query.where(
+            InstagramPromptRequest.username.ilike(f"%{escaped_search}%", escape="\\")
+        )
+    ordering = (
+        (InstagramPromptRequest.created_at.asc(), InstagramPromptRequest.id.asc())
+        if selected_sort == "oldest"
+        else (InstagramPromptRequest.created_at.desc(), InstagramPromptRequest.id.desc())
+    )
     requests = list(
         session.scalars(
             query
-            .order_by(InstagramPromptRequest.created_at.desc(), InstagramPromptRequest.id.desc())
-            .limit(100)
+            .order_by(*ordering)
+            .offset((selected_page - 1) * LEADS_PER_PAGE)
+            .limit(LEADS_PER_PAGE + 1)
         )
     )
+    has_next = len(requests) > LEADS_PER_PAGE
+    requests = requests[:LEADS_PER_PAGE]
     media_ids = [request.media_id for request in requests]
     prompt_posts = {
         post.media_id: post.public_id
@@ -315,24 +421,31 @@ def leads(
             )
         )
     } if media_ids else {}
-    return [
-        TenantLead(
-            prompt_request_id=request.id,
-            username=_username(request.username),
-            requested_at=_timestamp(request.created_at) or "",
-            prompt_state="Prompts prepared" if request.media_id in prompt_posts else "Request received",
-            base_stage=_lead_status(request.lead_status),
-            base_stage_label=_lead_status_label(request.lead_status),
-            archived=request.lead_archived_at is not None,
-            archived_label="Archived" if request.lead_archived_at is not None else "Active",
-            internal_note=request.internal_note or None,
-            public_prompt_id=prompt_posts.get(request.media_id),
-        )
-        for request in requests
-    ]
+    return TenantLeadPage(
+        leads=[
+            TenantLead(
+                prompt_request_id=request.id,
+                username=_username(request.username),
+                requested_at=_timestamp(request.created_at) or "",
+                prompt_state="Prompts prepared" if request.media_id in prompt_posts else "Request received",
+                base_stage=_lead_status(request.lead_status),
+                base_stage_label=_lead_status_label(request.lead_status),
+                archived=request.lead_archived_at is not None,
+                archived_label="Archived" if request.lead_archived_at is not None else "Active",
+                internal_note=request.internal_note or None,
+                public_prompt_id=prompt_posts.get(request.media_id),
+            )
+            for request in requests
+        ],
+        page=selected_page,
+        has_previous=selected_page > 1,
+        has_next=has_next,
+    )
 
 
-def activity(session: Session, *, instagram_account_id: uuid.UUID) -> list[dict[str, str]]:
+def activity(
+    session: Session, *, instagram_account_id: uuid.UUID, limit: int = 100
+) -> list[dict[str, str]]:
     """Build a generic activity feed without provider IDs or message content."""
 
     records: list[dict[str, str]] = []
@@ -340,7 +453,7 @@ def activity(session: Session, *, instagram_account_id: uuid.UUID) -> list[dict[
         select(InstagramPromptRequest)
         .where(InstagramPromptRequest.instagram_account_id == instagram_account_id)
         .order_by(InstagramPromptRequest.created_at.desc())
-        .limit(100)
+        .limit(limit)
     ):
         records.append({
             "occurred_at": _timestamp(request.created_at) or "",
@@ -352,7 +465,7 @@ def activity(session: Session, *, instagram_account_id: uuid.UUID) -> list[dict[
         select(InstagramSmartReplyActivity)
         .where(InstagramSmartReplyActivity.instagram_account_id == instagram_account_id)
         .order_by(InstagramSmartReplyActivity.created_at.desc())
-        .limit(100)
+        .limit(limit)
     ):
         records.append({
             "occurred_at": _timestamp(reply.created_at) or "",
@@ -366,7 +479,7 @@ def activity(session: Session, *, instagram_account_id: uuid.UUID) -> list[dict[
         select(InstagramEngagementEvent)
         .where(InstagramEngagementEvent.instagram_account_id == instagram_account_id)
         .order_by(InstagramEngagementEvent.created_at.desc())
-        .limit(100)
+        .limit(limit)
     ):
         records.append({
             "occurred_at": _timestamp(event.created_at) or "",
@@ -374,7 +487,7 @@ def activity(session: Session, *, instagram_account_id: uuid.UUID) -> list[dict[
             "state": state_labels.get(event.state, "Unavailable"),
             "username": "",
         })
-    return sorted(records, key=lambda record: record["occurred_at"], reverse=True)[:100]
+    return sorted(records, key=lambda record: record["occurred_at"], reverse=True)[:limit]
 
 
 def followups(session: Session, *, instagram_account_id: uuid.UUID) -> list[dict[str, str | None]]:

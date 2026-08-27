@@ -6,7 +6,11 @@
 {% for account in accounts %}
     <article class="card {% if account.is_selected %}active{% endif %}">
         <h2><a href="{{ url_for('tenant_dashboard.app_accounts', account=account.selection_ref) }}">{{ account.username }}</a></h2>
-        <p>{{ account.connection_label }}</p><p class="muted">{{ account.connection_detail }}</p><p>{{ account.activation_label }}</p>
+        {% if account.is_selected %}<p><strong>Selected account</strong></p>{% endif %}
+        <p><strong>Connection health:</strong> {{ account.connection_label }}</p>
+        <p class="muted">{{ account.connection_detail }}</p>
+        <p><strong>{{ account.activation_label }}</strong></p>
+        <p class="muted">{{ account.activation_detail }}</p>
     </article>
 {% endfor %}
 </section>

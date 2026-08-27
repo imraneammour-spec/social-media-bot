@@ -17,11 +17,21 @@
             {% for status in lead_statuses %}<option value="{{ status }}" {% if selected_stage == status %}selected{% endif %}>{{ status|capitalize }}</option>{% endfor %}
         </select>
     </label>
+    <label>Search username
+        <input type="search" name="q" maxlength="80" value="{{ selected_search }}">
+    </label>
+    <label>Sort
+        <select name="sort">
+            <option value="newest" {% if selected_sort == 'newest' %}selected{% endif %}>Newest</option>
+            <option value="oldest" {% if selected_sort == 'oldest' %}selected{% endif %}>Oldest</option>
+        </select>
+    </label>
     <button type="submit">Apply filters</button>
 </form>
 {% for lead in leads %}
 <article class="card">
     <h2>{{ lead.username }}</h2>
+    <details><summary>Lead details</summary><p>Requested at {{ lead.requested_at }}.</p>{% if lead.internal_note %}<p>Internal note saved.</p>{% endif %}</details>
     <p>{{ lead.prompt_state }} · {{ lead.base_stage_label }} · {{ lead.archived_label }}</p>
     <p class="muted">{{ lead.requested_at }}</p>
     {% if lead.prompt_url %}<p><a href="{{ lead.prompt_url }}">View prepared prompts</a></p>{% endif %}
@@ -44,5 +54,10 @@
         <button type="submit">{{ 'Unarchive lead' if lead.archived else 'Archive lead' }}</button>
     </form>
 </article>
-{% else %}<p class="muted">No prompt requests yet.</p>{% endfor %}
+{% else %}<p class="muted">No leads yet.</p>{% endfor %}
+<nav aria-label="Lead pagination">
+    {% if lead_page.has_previous %}<a href="{{ url_for('tenant_dashboard.app_leads', account=selected_account.selection_ref, view=selected_view, stage=selected_stage, q=selected_search or None, sort=selected_sort, page=lead_page.page - 1) }}">Previous</a>{% endif %}
+    <span>Page {{ lead_page.page }}</span>
+    {% if lead_page.has_next %}<a href="{{ url_for('tenant_dashboard.app_leads', account=selected_account.selection_ref, view=selected_view, stage=selected_stage, q=selected_search or None, sort=selected_sort, page=lead_page.page + 1) }}">Next</a>{% endif %}
+</nav>
 {% endblock %}

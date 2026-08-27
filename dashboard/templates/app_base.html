@@ -8,6 +8,9 @@
         :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; background:#0b0b0e; color:#f5f5f7; }
         body { margin:0; padding:24px; } main { max-width:960px; margin:auto; }
         nav, .account-list { display:flex; flex-wrap:wrap; gap:10px; margin:16px 0 24px; }
+        .workspace-nav a, .account-switcher a { padding:8px 10px; border-radius:8px; text-decoration:none; }
+        .workspace-nav a[aria-current="page"], .account-switcher a[aria-current="true"] { background:#283458; color:#fff; }
+        .account-switcher { align-items:center; border:1px solid #30303a; border-radius:10px; padding:8px; }
         a { color:#b9c7ff; } .card { background:#16161b; border:1px solid #30303a; border-radius:12px; padding:16px; margin:12px 0; }
         .active { border-color:#839dff; } .muted { color:#c4c6d0; } .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
         dt { color:#c4c6d0; } dd { margin:6px 0 0; font-size:1.25rem; }
@@ -17,12 +20,18 @@
     <main>
         <h1>{% block heading %}Instagram workspace{% endblock %}</h1>
         <p class="muted">{{ current_user.display_name }}, viewing {{ selected_account.username }}.</p>
-        <nav aria-label="Workspace sections">
-            <a href="{{ url_for('tenant_dashboard.app_overview', account=selected_account.selection_ref) }}">Overview</a>
-            <a href="{{ url_for('tenant_dashboard.app_accounts', account=selected_account.selection_ref) }}">Accounts</a>
-            <a href="{{ url_for('tenant_dashboard.app_leads', account=selected_account.selection_ref) }}">Leads</a>
-            <a href="{{ url_for('tenant_dashboard.app_activity', account=selected_account.selection_ref) }}">Activity</a>
-            <a href="{{ url_for('tenant_dashboard.app_followups', account=selected_account.selection_ref) }}">Follow-ups</a>
+        <nav class="account-switcher" aria-label="Choose an owned Instagram account">
+            <span class="muted">Account:</span>
+            {% for account in accounts %}
+                <a href="{{ url_for('tenant_dashboard.app_overview', account=account.selection_ref) }}" {% if account.is_selected %}aria-current="true"{% endif %}>{{ account.username }}</a>
+            {% endfor %}
+        </nav>
+        <nav class="workspace-nav" aria-label="Workspace sections">
+            <a href="{{ url_for('tenant_dashboard.app_overview', account=selected_account.selection_ref) }}" {% if active_page == 'overview' %}aria-current="page"{% endif %}>Overview</a>
+            <a href="{{ url_for('tenant_dashboard.app_leads', account=selected_account.selection_ref) }}" {% if active_page == 'leads' %}aria-current="page"{% endif %}>Leads</a>
+            <a href="{{ url_for('tenant_dashboard.app_activity', account=selected_account.selection_ref) }}" {% if active_page == 'activity' %}aria-current="page"{% endif %}>Activity</a>
+            <a href="{{ url_for('tenant_dashboard.app_followups', account=selected_account.selection_ref) }}" {% if active_page == 'followups' %}aria-current="page"{% endif %}>Follow-ups</a>
+            <a href="{{ url_for('tenant_dashboard.app_accounts', account=selected_account.selection_ref) }}" {% if active_page == 'accounts' %}aria-current="page"{% endif %}>Accounts</a>
         </nav>
         {% block content %}{% endblock %}
     </main>

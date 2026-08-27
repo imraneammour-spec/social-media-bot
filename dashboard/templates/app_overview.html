@@ -4,9 +4,19 @@
 {% block content %}
 <section class="grid" aria-label="Account activity summary">
     <dl class="card"><dt>Leads</dt><dd>{{ overview.lead_count }}</dd></dl>
+    <dl class="card"><dt>Archived leads</dt><dd>{{ overview.archived_lead_count }}</dd></dl>
     <dl class="card"><dt>Activity</dt><dd>{{ overview.activity_count }}</dd></dl>
     <dl class="card"><dt>Waiting access</dt><dd>{{ overview.pending_access_count }}</dd></dl>
     <dl class="card"><dt>Follow-ups</dt><dd>{{ overview.followup_count }}</dd></dl>
 </section>
-<section class="card"><strong>{{ selected_account.connection_label }}</strong><p class="muted">{{ selected_account.connection_detail }}</p><p>{{ selected_account.activation_label }}</p></section>
+<section class="card">
+    <h2>Lead pipeline</h2>
+    <p>New {{ overview.lead_stage_counts.new }} · Contacted {{ overview.lead_stage_counts.contacted }} · Qualified {{ overview.lead_stage_counts.qualified }} · Won {{ overview.lead_stage_counts.won }} · Lost {{ overview.lead_stage_counts.lost }}</p>
+</section>
+<section class="card">
+    <h2>Follow-up delivery</h2>
+    <p>Scheduled {{ overview.followup_state_counts.scheduled }} · Sending {{ overview.followup_state_counts.sending }} · Sent {{ overview.followup_state_counts.sent }} · Cancelled {{ overview.followup_state_counts.cancelled }} · Delivery unavailable {{ overview.followup_state_counts.unavailable }}</p>
+</section>
+<section class="card"><strong>{{ selected_account.connection_label }}</strong><p class="muted">{{ selected_account.connection_detail }}</p><p>{{ selected_account.activation_label }}</p><p class="muted">{{ selected_account.activation_detail }}</p></section>
+<section class="card"><h2>Recent activity</h2>{% for item in overview.recent_activity %}<p>{{ item.type }} · {{ item.state }}{% if item.username %} · {{ item.username }}{% endif %}</p>{% else %}<p class="muted">No activity yet.</p>{% endfor %}</section>
 {% endblock %}
