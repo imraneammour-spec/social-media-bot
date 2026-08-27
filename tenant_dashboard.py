@@ -111,11 +111,7 @@ def _account_payload(user, accounts, selected):
             "connection_label": account.connection_label,
             "connection_detail": account.connection_detail,
             "activation_label": account.activation_label,
-            "activation_detail": (
-                "Instagram engagement automation is not yet activated."
-                if account.activation_label == "Activation not ready"
-                else "Required connection checks are complete."
-            ),
+            "activation_detail": account.activation_detail,
             "is_selected": account.instagram_account_id == selected.instagram_account_id,
             "can_reconnect": account.can_reconnect,
             "can_disconnect": account.can_disconnect,

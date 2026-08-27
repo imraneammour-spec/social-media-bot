@@ -14,6 +14,7 @@ from typing import Any, Callable
 import requests
 
 from .account_runtime import RuntimeCredentialUnavailableError, resolve_oauth_instagram_account_runtime
+from .oauth_capability import assess_oauth_engagement_capability
 
 
 API_VERSION = "v25.0"
@@ -35,6 +36,34 @@ def _account_id(value: object) -> uuid.UUID:
         raise _unavailable() from None
 
 
+def oauth_engagement_capability_state(
+    session_factory: Callable[[], Any], *, instagram_account_id: object, instagram_user_id: object,
+) -> str:
+    """Assess readiness without decrypting a credential or sending a Graph request."""
+
+    account_id = _account_id(instagram_account_id)
+    try:
+        with session_factory() as session:
+            return assess_oauth_engagement_capability(
+                session,
+                instagram_account_id=account_id,
+                instagram_user_id=instagram_user_id,
+            ).state
+    except Exception:
+        return "temporarily_unavailable"
+
+
+def _require_active_oauth_engagement(
+    session_factory: Callable[[], Any], *, instagram_account_id: object, instagram_user_id: object,
+) -> None:
+    if oauth_engagement_capability_state(
+        session_factory,
+        instagram_account_id=instagram_account_id,
+        instagram_user_id=instagram_user_id,
+    ) != "active":
+        raise _unavailable()
+
+
 def _request_with_runtime(
     session_factory: Callable[[], Any], *, instagram_account_id: object,
     instagram_user_id: object, method: str, path: str, json_body: dict[str, object] | None = None,
@@ -45,6 +74,11 @@ def _request_with_runtime(
     if not isinstance(path, str) or not path.startswith("/") or "?" in path:
         raise _unavailable()
     try:
+        _require_active_oauth_engagement(
+            session_factory,
+            instagram_account_id=account_id,
+            instagram_user_id=instagram_user_id,
+        )
         with session_factory() as session:
             runtime = resolve_oauth_instagram_account_runtime(
                 session,
@@ -136,6 +170,13 @@ def send_oauth_delayed_followup(
     recipient = str(recipient_id or "").strip()
     if not external_id or not recipient:
         return "retryable_pre_dispatch"
+    capability = oauth_engagement_capability_state(
+        session_factory,
+        instagram_account_id=account_id,
+        instagram_user_id=external_id,
+    )
+    if capability != "active":
+        return "retryable_pre_dispatch" if capability == "temporarily_unavailable" else "capability_unavailable"
     try:
         with session_factory() as session:
             runtime = resolve_oauth_instagram_account_runtime(

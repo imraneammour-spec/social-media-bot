@@ -18,6 +18,12 @@ FOLLOWUP_COOLDOWN = timedelta(days=7)
 LEASE_DURATION = timedelta(minutes=15)
 MAX_ATTEMPTS = 3
 RETRYABLE_ERROR_CODES = {"credential_unavailable", "database_unavailable"}
+TERMINAL_ERROR_CODES = {
+    "ambiguous_graph_failure",
+    "capability_unavailable",
+    "lease_expired",
+    "provider_rejected",
+}
 
 
 @dataclass(frozen=True)
@@ -173,7 +179,7 @@ def finalize_oauth_followup_failure(session: Session, job_id: object, lease_toke
     job.attempt_count += 1
     job.lease_token = None
     job.lease_expires_at = None
-    job.last_error_code = code if code in RETRYABLE_ERROR_CODES | {"provider_rejected", "ambiguous_graph_failure", "lease_expired"} else "followup_unavailable"
+    job.last_error_code = code if code in RETRYABLE_ERROR_CODES | TERMINAL_ERROR_CODES else "followup_unavailable"
     if retryable and job.last_error_code in RETRYABLE_ERROR_CODES and job.attempt_count < MAX_ATTEMPTS:
         job.state = "pending"
         job.run_at = current + timedelta(minutes=2 ** job.attempt_count)

@@ -97,9 +97,9 @@ class OAuthEngagementModelTest(unittest.TestCase):
         response.json.return_value = {"id": "reply"}
         first = InstagramAccountRuntime(self.account_a_id, "17841438617458001", "oauth", "token-a")
         second = InstagramAccountRuntime(self.account_b_id, "17841438617458002", "oauth", "token-b")
-        with patch.object(oauth_graph, "resolve_oauth_instagram_account_runtime", side_effect=[first, second]), patch.object(
-            oauth_graph.requests, "request", return_value=response
-        ) as graph_request:
+        with patch.object(oauth_graph, "oauth_engagement_capability_state", return_value="active"), patch.object(
+            oauth_graph, "resolve_oauth_instagram_account_runtime", side_effect=[first, second]
+        ), patch.object(oauth_graph.requests, "request", return_value=response) as graph_request:
             self.assertTrue(oauth_graph.send_oauth_public_comment_reply(lambda: self.Session(), instagram_account_id=self.account_a_id, instagram_user_id="17841438617458001", comment_id="a-comment", message="hello"))
             self.assertTrue(oauth_graph.send_oauth_public_comment_reply(lambda: self.Session(), instagram_account_id=self.account_b_id, instagram_user_id="17841438617458002", comment_id="b-comment", message="hello"))
         self.assertEqual(graph_request.call_args_list[0].kwargs["headers"]["Authorization"], "Bearer token-a")
@@ -111,9 +111,9 @@ class OAuthEngagementModelTest(unittest.TestCase):
 
         secret_token = "oauth-token-that-must-not-leak"
         runtime = InstagramAccountRuntime(self.account_a_id, "17841438617458001", "oauth", secret_token)
-        with patch.object(oauth_graph, "resolve_oauth_instagram_account_runtime", return_value=runtime), patch.object(
-            oauth_graph.requests, "request", side_effect=oauth_graph.requests.RequestException(secret_token)
-        ):
+        with patch.object(oauth_graph, "oauth_engagement_capability_state", return_value="active"), patch.object(
+            oauth_graph, "resolve_oauth_instagram_account_runtime", return_value=runtime
+        ), patch.object(oauth_graph.requests, "request", side_effect=oauth_graph.requests.RequestException(secret_token)):
             with self.assertRaises(oauth_graph.OAuthGraphOperationError) as raised:
                 oauth_graph.lookup_oauth_media(lambda: self.Session(), instagram_account_id=self.account_a_id, instagram_user_id="17841438617458001", media_id="media")
         self.assertNotIn(secret_token, str(raised.exception))
@@ -144,6 +144,30 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
             account_b = InstagramAccount(user_id=user_b.id, instagram_user_id="17841438617458102", connection_status="connected")
             session.add_all([account_a, account_b]); session.flush()
             self.account_a_id, self.account_b_id = account_a.id, account_b.id
+            session.add_all([
+                InstagramCredential(
+                    instagram_account_id=account_a.id,
+                    token_ciphertext="test-ciphertext-a",
+                    encryption_key_id="KEY_2026_01",
+                    token_status="valid",
+                    scopes=[
+                        "instagram_business_basic",
+                        "instagram_business_manage_comments",
+                        "instagram_business_manage_messages",
+                    ],
+                ),
+                InstagramCredential(
+                    instagram_account_id=account_b.id,
+                    token_ciphertext="test-ciphertext-b",
+                    encryption_key_id="KEY_2026_01",
+                    token_status="valid",
+                    scopes=[
+                        "instagram_business_basic",
+                        "instagram_business_manage_comments",
+                        "instagram_business_manage_messages",
+                    ],
+                ),
+            ])
 
     def tearDown(self):
         self.Session.kw["bind"].dispose()
@@ -156,7 +180,9 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
 
     def test_comment_replay_is_claimed_once_and_never_calls_legacy_json_or_graph_fallback(self):
         comment = {"id": "comment-a", "text": "hello", "from": {"id": "customer"}}
-        with patch.object(self.module, "generate_oauth_smart_reply", return_value="Hello!"), patch.object(
+        with patch.dict(os.environ, {"INSTAGRAM_OAUTH_ENGAGEMENT_ENABLED": "true"}, clear=False), patch.object(
+            self.module, "generate_oauth_smart_reply", return_value="Hello!"
+        ), patch.object(
             self.module, "send_oauth_public_comment_reply", return_value=True
         ) as reply, patch.object(self.module, "save_json_file") as legacy_json, patch.object(
             self.module, "send_comment_reply_text"
@@ -174,7 +200,9 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
             save_oauth_pending_access(session, self.account_b_id, "customer", "https://example.test/p/o/b")
         no_mid = {"sender": {"id": "customer"}, "message": {"text": "ACCESS"}}
         event = {"sender": {"id": "customer"}, "message": {"mid": "mid-a", "text": "ACCESS"}}
-        with patch.object(self.module, "send_oauth_prompt_access_button", return_value=True) as button:
+        with patch.dict(os.environ, {"INSTAGRAM_OAUTH_ENGAGEMENT_ENABLED": "true"}, clear=False), patch.object(
+            self.module, "send_oauth_prompt_access_button", return_value=True
+        ) as button:
             self.module.process_oauth_webhook_entry({"messaging": [no_mid, event, event]}, self._route(self.account_a_id), "17841438617458101", "https://example.test")
         button.assert_called_once()
         self.assertEqual(button.call_args.kwargs["page_url"], "https://example.test/p/o/a")
@@ -195,7 +223,9 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
             )
         access_event = {"sender": {"id": "customer"}, "message": {"mid": "access-mid-a", "text": "ACCESS"}}
         normal_event = {"sender": {"id": "customer"}, "message": {"mid": "normal-mid-a", "text": "thanks"}}
-        with patch.object(self.module, "send_oauth_prompt_access_button", return_value=True):
+        with patch.dict(os.environ, {"INSTAGRAM_OAUTH_ENGAGEMENT_ENABLED": "true"}, clear=False), patch.object(
+            self.module, "send_oauth_prompt_access_button", return_value=True
+        ):
             self.module.process_oauth_webhook_entry({"messaging": [access_event, normal_event]}, self._route(self.account_a_id), "17841438617458101", "https://example.test")
         with self.Session() as session:
             account_a_jobs = list(session.query(InstagramOAuthFollowupJob).filter_by(instagram_account_id=self.account_a_id))

@@ -191,9 +191,9 @@ class OAuthFollowupGraphTest(unittest.TestCase):
         response = Mock(ok=True)
         runtime_a = InstagramAccountRuntime(account_a, "17841438617459201", "oauth", "oauth-token-a")
         runtime_b = InstagramAccountRuntime(account_b, "17841438617459202", "oauth", "oauth-token-b")
-        with patch.object(oauth_graph, "resolve_oauth_instagram_account_runtime", side_effect=[runtime_a, runtime_b]), patch.object(
-            oauth_graph.requests, "post", return_value=response
-        ) as graph_post:
+        with patch.object(oauth_graph, "oauth_engagement_capability_state", return_value="active"), patch.object(
+            oauth_graph, "resolve_oauth_instagram_account_runtime", side_effect=[runtime_a, runtime_b]
+        ), patch.object(oauth_graph.requests, "post", return_value=response) as graph_post:
             self.assertEqual(
                 oauth_graph.send_oauth_delayed_followup(lambda: nullcontext(object()), instagram_account_id=account_a, instagram_user_id="17841438617459201", recipient_id="recipient-a"),
                 "success",
@@ -205,13 +205,29 @@ class OAuthFollowupGraphTest(unittest.TestCase):
         self.assertEqual(graph_post.call_args_list[0].kwargs["headers"]["Authorization"], "Bearer oauth-token-a")
         self.assertEqual(graph_post.call_args_list[1].kwargs["headers"]["Authorization"], "Bearer oauth-token-b")
 
-        with patch.object(oauth_graph, "resolve_oauth_instagram_account_runtime", side_effect=oauth_graph.RuntimeCredentialUnavailableError("secret")), patch.object(
-            oauth_graph.requests, "post"
-        ) as graph_post:
+        with patch.object(oauth_graph, "oauth_engagement_capability_state", return_value="active"), patch.object(
+            oauth_graph, "resolve_oauth_instagram_account_runtime", side_effect=oauth_graph.RuntimeCredentialUnavailableError("secret")
+        ), patch.object(oauth_graph.requests, "post") as graph_post:
             self.assertEqual(
                 oauth_graph.send_oauth_delayed_followup(lambda: nullcontext(object()), instagram_account_id=account_a, instagram_user_id="17841438617459201", recipient_id="recipient-a"),
                 "retryable_pre_dispatch",
             )
+        graph_post.assert_not_called()
+
+    def test_non_active_followup_never_dispatches_and_reports_a_terminal_capability_failure(self):
+        from database import oauth_graph
+
+        with patch.object(oauth_graph, "oauth_engagement_capability_state", return_value="reconnect_required"), patch.object(
+            oauth_graph.requests, "post"
+        ) as graph_post:
+            outcome = oauth_graph.send_oauth_delayed_followup(
+                lambda: nullcontext(object()),
+                instagram_account_id=__import__("uuid").uuid4(),
+                instagram_user_id="17841438617459203",
+                recipient_id="recipient-c",
+            )
+
+        self.assertEqual(outcome, "capability_unavailable")
         graph_post.assert_not_called()
 
 

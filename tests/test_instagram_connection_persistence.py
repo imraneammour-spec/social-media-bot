@@ -131,6 +131,48 @@ class InstagramConnectionPersistenceTest(unittest.TestCase):
             self.assertEqual(credential.scopes, None)
             self.assertEqual(load_decrypted_access_token(session, account, self.keyring), replacement)
 
+    def test_reconnect_readiness_uses_only_the_scopes_meta_granted(self):
+        """Replacing a credential with a denied scope must return to reconnect-required."""
+        from database.oauth_capability import assess_oauth_engagement_records
+
+        full_scopes = (
+            "instagram_business_basic",
+            "instagram_business_manage_comments",
+            "instagram_business_manage_messages",
+        )
+        first_now = datetime.now(timezone.utc)
+        connected = self._persist(result=self._result(scopes=full_scopes), now=first_now)
+        with self.Session() as session:
+            account = session.get(InstagramAccount, connected.id)
+            credential = session.scalar(select(InstagramCredential).where(
+                InstagramCredential.instagram_account_id == connected.id
+            ))
+            active = assess_oauth_engagement_records(
+                account,
+                credential,
+                environment={"INSTAGRAM_OAUTH_ENGAGEMENT_ENABLED": "true"},
+            )
+        self.assertEqual(active.state, "active")
+
+        reconnected = self._persist(
+            result=self._result(scopes=(
+                "instagram_business_basic",
+                "instagram_business_manage_comments",
+            )),
+            now=first_now + timedelta(minutes=1),
+        )
+        with self.Session() as session:
+            account = session.get(InstagramAccount, reconnected.id)
+            credential = session.scalar(select(InstagramCredential).where(
+                InstagramCredential.instagram_account_id == reconnected.id
+            ))
+            blocked = assess_oauth_engagement_records(
+                account,
+                credential,
+                environment={"INSTAGRAM_OAUTH_ENGAGEMENT_ENABLED": "true"},
+            )
+        self.assertEqual(blocked.state, "reconnect_required")
+
     def test_cross_user_duplicate_and_legacy_account_are_rejected_without_mutation(self):
         existing = self._persist()
         original_credential = self._credentials()[0].token_ciphertext

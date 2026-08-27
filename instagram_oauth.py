@@ -23,7 +23,11 @@ INSTAGRAM_OAUTH_AUTHORIZE_URL = "https://www.instagram.com/oauth/authorize"
 INSTAGRAM_OAUTH_CODE_EXCHANGE_URL = "https://api.instagram.com/oauth/access_token"
 INSTAGRAM_OAUTH_LONG_LIVED_TOKEN_URL = "https://graph.instagram.com/access_token"
 INSTAGRAM_OAUTH_ACCOUNT_DISCOVERY_URL = "https://graph.instagram.com/me"
-INSTAGRAM_OAUTH_SCOPE = ("instagram_business_basic",)
+INSTAGRAM_OAUTH_SCOPE = (
+    "instagram_business_basic",
+    "instagram_business_manage_comments",
+    "instagram_business_manage_messages",
+)
 INSTAGRAM_OAUTH_STATE_SESSION_KEY = "_instagram_oauth_state"
 INSTAGRAM_OAUTH_STATE_TTL_SECONDS = 600
 INSTAGRAM_OAUTH_STATE_BYTES = 32

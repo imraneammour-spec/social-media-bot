@@ -240,14 +240,34 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertEqual([item["username"] for item in payload["accounts"]], ["alpha_first", "alpha_second"])
-        self.assertEqual(payload["accounts"][0]["activation_label"], "Activation not ready")
-        self.assertEqual(payload["accounts"][1]["activation_label"], "Activation ready")
+        self.assertEqual(payload["accounts"][0]["activation_label"], "Reconnect required")
+        self.assertEqual(payload["accounts"][1]["activation_label"], "Ready for activation")
         self.assertTrue(payload["accounts"][0]["is_selected"])
 
         selected = self._reference(self.owner_a, self.account_a2)
         response = self.client.get(f"/app/api/overview?account={selected}")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["account"]["username"], "alpha_second")
+
+    def test_dashboard_activation_labels_are_sanitized_for_active_and_reconnect_required_states(self):
+        self._login_as(self.owner_a)
+
+        with patch.dict("os.environ", {"INSTAGRAM_OAUTH_ENGAGEMENT_ENABLED": "true"}, clear=False):
+            payload = self.client.get("/app/api/accounts").get_json()
+
+        self.assertEqual(
+            [item["activation_label"] for item in payload["accounts"]],
+            ["Reconnect required", "Active"],
+        )
+        rendered = str(payload)
+        for secret_or_internal in (
+            "instagram_business_manage_comments",
+            "instagram_business_manage_messages",
+            "ciphertext-a-secret",
+            "KEY_2026_01",
+            "10000000000000001",
+        ):
+            self.assertNotIn(secret_or_internal, rendered)
 
     def test_selection_failures_are_generic_and_do_not_cross_tenants(self):
         self._login_as(self.owner_a)
@@ -452,7 +472,8 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertIn("alpha_first", accounts)
         self.assertIn("alpha_second", accounts)
         self.assertNotIn("bravo_private", accounts)
-        self.assertIn("Instagram engagement automation is not yet activated.", accounts)
+        self.assertIn("Reconnect Instagram to restore automation access.", accounts)
+        self.assertIn("Instagram is connected and ready, but engagement automation is not enabled yet.", accounts)
 
         for path, message in (
             (f"/app/leads?account={account_a2}", "No leads yet."),

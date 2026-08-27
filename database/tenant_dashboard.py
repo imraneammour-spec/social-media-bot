@@ -24,12 +24,9 @@ from .models import (
     InstagramSmartReplyActivity,
 )
 from .ownership import list_owned_instagram_accounts
+from .oauth_capability import assess_oauth_engagement_records
 
 
-REQUIRED_ENGAGEMENT_SCOPES = {
-    "instagram_business_manage_comments",
-    "instagram_business_manage_messages",
-}
 RECONNECT_STATUSES = {"disconnected", "error", "reconnect_required"}
 LEAD_STATUSES = ("new", "contacted", "qualified", "won", "lost")
 LEAD_VIEWS = ("active", "archived", "all")
@@ -51,6 +48,7 @@ class TenantAccount:
     connection_label: str
     connection_detail: str
     activation_label: str
+    activation_detail: str
     can_reconnect: bool
     can_disconnect: bool
 
@@ -246,12 +244,33 @@ def _connection(account: InstagramAccount) -> tuple[str, str, bool, bool]:
     return "Connection setup incomplete", "Connection setup is incomplete.", False, False
 
 
-def _activation_label(credential: InstagramCredential | None, connection_label: str) -> str:
-    scopes = credential.scopes if credential is not None else None
-    granted = {item for item in scopes if isinstance(item, str)} if isinstance(scopes, list) else set()
-    if connection_label == "Connected" and REQUIRED_ENGAGEMENT_SCOPES.issubset(granted):
-        return "Activation ready"
-    return "Activation not ready"
+def _activation_status(
+    account: InstagramAccount,
+    credential: InstagramCredential | None,
+    connection_label: str,
+) -> tuple[str, str]:
+    if connection_label == "Connection setup incomplete":
+        return "Connection setup incomplete", "Connection setup is incomplete."
+    assessment = assess_oauth_engagement_records(account, credential)
+    labels = {
+        "active": (
+            "Active",
+            "Instagram engagement automation is active.",
+        ),
+        "ready_for_activation": (
+            "Ready for activation",
+            "Instagram is connected and ready, but engagement automation is not enabled yet.",
+        ),
+        "reconnect_required": (
+            "Reconnect required",
+            "Reconnect Instagram to restore automation access.",
+        ),
+        "temporarily_unavailable": (
+            "Temporarily unavailable",
+            "Automation status is temporarily unavailable.",
+        ),
+    }
+    return labels.get(assessment.state, labels["temporarily_unavailable"])
 
 
 def list_tenant_accounts(
@@ -281,13 +300,19 @@ def list_tenant_accounts(
     result: list[TenantAccount] = []
     for account in accounts:
         label, detail, can_reconnect, can_disconnect = _connection(account)
+        activation_label, activation_detail = _activation_status(
+            account,
+            credentials.get(account.id),
+            label,
+        )
         result.append(
             TenantAccount(
                 instagram_account_id=account.id,
                 username=_username(account.username),
                 connection_label=label,
                 connection_detail=detail,
-                activation_label=_activation_label(credentials.get(account.id), label),
+                activation_label=activation_label,
+                activation_detail=activation_detail,
                 can_reconnect=can_reconnect,
                 can_disconnect=can_disconnect,
             )

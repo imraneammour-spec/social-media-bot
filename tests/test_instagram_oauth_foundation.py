@@ -94,15 +94,21 @@ class InstagramOAuthStartFoundationTest(unittest.TestCase):
                 oauth_configuration_from_environment(faulty_environment, production=True)
             self.assertNotIn(faulty_redirect_uri, str(error.exception))
 
-    def test_oauth_configuration_has_only_the_minimum_connection_scope(self):
+    def test_oauth_configuration_requests_exactly_the_connection_and_engagement_scopes(self):
         configuration = oauth_configuration_from_environment(
             self._oauth_environment(), production=True
         )
 
-        self.assertEqual(INSTAGRAM_OAUTH_SCOPE, ("instagram_business_basic",))
+        self.assertEqual(INSTAGRAM_OAUTH_SCOPE, (
+            "instagram_business_basic",
+            "instagram_business_manage_comments",
+            "instagram_business_manage_messages",
+        ))
         authorization_url = configuration.authorization_url("test-state")
         parameters = parse_qs(urlparse(authorization_url).query)
-        self.assertEqual(parameters["scope"], ["instagram_business_basic"])
+        self.assertEqual(parameters["scope"], [
+            "instagram_business_basic,instagram_business_manage_comments,instagram_business_manage_messages"
+        ])
         self.assertEqual(parameters["state"], ["test-state"])
         self.assertNotIn("test-meta-app-secret", authorization_url)
         self.assertFalse(hasattr(configuration, "app_secret"))

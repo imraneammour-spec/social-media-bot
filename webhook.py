@@ -41,6 +41,7 @@ from database.oauth_engagement import (
 )
 from database.oauth_graph import (
     lookup_oauth_media,
+    oauth_engagement_capability_state,
     send_oauth_delayed_followup,
     send_oauth_private_access_reply,
     send_oauth_prompt_access_button,
@@ -3909,6 +3910,11 @@ def process_due_oauth_followups(now=None):
                         db_session, job.id, job.lease_token,
                         category="provider_rejected", retryable=False, now=current,
                     )
+                elif outcome == "capability_unavailable":
+                    finalize_oauth_followup_failure(
+                        db_session, job.id, job.lease_token,
+                        category="capability_unavailable", retryable=False, now=current,
+                    )
                 else:
                     finalize_oauth_followup_failure(
                         db_session, job.id, job.lease_token,
@@ -3930,6 +3936,12 @@ def process_oauth_webhook_entry(entry, route, entry_external_id, public_base_url
     """Handle OAuth events only; no legacy handler, JSON store, or token fallback."""
     session_factory = _oauth_session_factory()
     if session_factory is None or not isinstance(entry, dict):
+        return
+    if oauth_engagement_capability_state(
+        session_factory,
+        instagram_account_id=route.instagram_account_id,
+        instagram_user_id=entry_external_id,
+    ) != "active":
         return
     changes = entry.get("changes", [])
     if isinstance(changes, list):
