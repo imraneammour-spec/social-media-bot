@@ -36,6 +36,7 @@ class DatabaseFoundationTest(unittest.TestCase):
         "instagram_pending_access",
         "instagram_prompt_requests",
         "instagram_smart_reply_activity",
+        "instagram_oauth_followup_jobs",
     }
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -283,7 +284,7 @@ class DatabaseFoundationTest(unittest.TestCase):
         self.assertEqual(upgraded_state["connection_status"], "environment_managed")
         self.assertEqual(upgraded_state["provider"], "instagram")
         self.assertEqual(credential_count, 0)
-        self.assertEqual(self._alembic_revision(environment["DATABASE_URL"]), "20260827_01")
+        self.assertEqual(self._alembic_revision(environment["DATABASE_URL"]), "20260827_02")
 
         downgrade = self._run_alembic(
             "downgrade", "20260825_01", root=root, environment=environment
@@ -328,7 +329,7 @@ class DatabaseFoundationTest(unittest.TestCase):
         self.assertEqual(reupgraded_state["connection_status"], "environment_managed")
         self.assertEqual(reupgraded_state["provider"], "instagram")
         self.assertEqual(credential_count, 0)
-        self.assertEqual(self._alembic_revision(environment["DATABASE_URL"]), "20260827_01")
+        self.assertEqual(self._alembic_revision(environment["DATABASE_URL"]), "20260827_02")
 
     def test_bootstrap_is_idempotent_and_does_not_create_a_credential(self):
         with self.Session.begin() as session:

@@ -41,9 +41,19 @@ from database.oauth_engagement import (
 )
 from database.oauth_graph import (
     lookup_oauth_media,
+    send_oauth_delayed_followup,
     send_oauth_private_access_reply,
     send_oauth_prompt_access_button,
     send_oauth_public_comment_reply,
+)
+from database.oauth_followups import (
+    cancel_oauth_followups,
+    claim_due_oauth_followups,
+    finalize_oauth_followup_failure,
+    finalize_oauth_followup_success,
+    oauth_followup_account_external_id,
+    reap_expired_oauth_followup_leases,
+    schedule_oauth_followup,
 )
 from auth import (
     configure_auth,
@@ -3825,7 +3835,13 @@ def _process_oauth_message(event, route, entry_external_id, session_factory):
     words = _oauth_words(message.get("text"))
     wants_access = "access" in words or "send" in words or str(quick.get("payload") or "").strip().upper() == "VIEW_AI_PROMPTS"
     if not wants_access:
-        _oauth_complete(session_factory, route.instagram_account_id, message_id, "message")
+        with session_factory.begin() as db_session:
+            cancel_oauth_followups(
+                db_session,
+                instagram_account_id=route.instagram_account_id,
+                recipient_id=sender_id,
+            )
+            complete_oauth_event(db_session, route.instagram_account_id, message_id, "message")
         return
     try:
         with session_factory() as db_session:
@@ -3837,10 +3853,75 @@ def _process_oauth_message(event, route, entry_external_id, session_factory):
             raise RuntimeError("oauth prompt access unavailable")
         with session_factory.begin() as db_session:
             pop_oauth_pending_access(db_session, route.instagram_account_id, sender_id)
+            schedule_oauth_followup(
+                db_session,
+                instagram_account_id=route.instagram_account_id,
+                source_message_id=message_id,
+                recipient_id=sender_id,
+                page_url=page_url,
+            )
             complete_oauth_event(db_session, route.instagram_account_id, message_id, "message")
     except Exception:
         _oauth_complete(session_factory, route.instagram_account_id, message_id, "message", failed=True)
         print("OAUTH ENGAGEMENT: message processing unavailable.")
+
+
+def process_due_oauth_followups(now=None):
+    """Process durable OAuth jobs without touching legacy JSON follow-ups."""
+    session_factory = _oauth_session_factory()
+    if session_factory is None:
+        return
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    try:
+        with session_factory.begin() as db_session:
+            reap_expired_oauth_followup_leases(db_session, now=current)
+            claimed_jobs = claim_due_oauth_followups(db_session, now=current)
+    except Exception:
+        print("OAUTH FOLLOW-UP: job claim unavailable.")
+        return
+
+    for job in claimed_jobs:
+        try:
+            with session_factory() as db_session:
+                external_id = oauth_followup_account_external_id(
+                    db_session, job.instagram_account_id
+                )
+            outcome = send_oauth_delayed_followup(
+                session_factory,
+                instagram_account_id=job.instagram_account_id,
+                instagram_user_id=external_id,
+                recipient_id=job.recipient_id,
+            )
+            with session_factory.begin() as db_session:
+                if outcome == "success":
+                    finalize_oauth_followup_success(db_session, job.id, job.lease_token, now=current)
+                elif outcome == "retryable_pre_dispatch":
+                    finalize_oauth_followup_failure(
+                        db_session, job.id, job.lease_token,
+                        category="credential_unavailable", retryable=True, now=current,
+                    )
+                elif outcome == "provider_rejected":
+                    finalize_oauth_followup_failure(
+                        db_session, job.id, job.lease_token,
+                        category="provider_rejected", retryable=False, now=current,
+                    )
+                else:
+                    finalize_oauth_followup_failure(
+                        db_session, job.id, job.lease_token,
+                        category="ambiguous_graph_failure", retryable=False, now=current,
+                    )
+        except Exception:
+            try:
+                with session_factory.begin() as db_session:
+                    finalize_oauth_followup_failure(
+                        db_session, job.id, job.lease_token,
+                        category="database_unavailable", retryable=True, now=current,
+                    )
+            except Exception:
+                pass
+            print("OAUTH FOLLOW-UP: processing unavailable.")
 
 
 def process_oauth_webhook_entry(entry, route, entry_external_id, public_base_url):
@@ -6766,6 +6847,7 @@ def dashboard_scheduler_loop():
             process_daily_auto_story()
             process_due_scheduled_stories()
             process_due_followups()
+            process_due_oauth_followups()
         except Exception as error:
             print("DASHBOARD SCHEDULER ERROR:", error)
         time.sleep(SCHEDULER_POLL_SECONDS)

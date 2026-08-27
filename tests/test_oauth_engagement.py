@@ -179,6 +179,32 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
         button.assert_called_once()
         self.assertEqual(button.call_args.kwargs["page_url"], "https://example.test/p/o/a")
 
+    def test_oauth_access_message_schedules_one_delayed_job_and_normal_message_cancels_only_its_account(self):
+        from database.models import InstagramOAuthFollowupJob
+        from database.oauth_engagement import save_oauth_pending_access
+        from database.oauth_followups import schedule_oauth_followup
+
+        with self.Session.begin() as session:
+            save_oauth_pending_access(session, self.account_a_id, "customer", "https://example.test/p/o/a")
+            schedule_oauth_followup(
+                session,
+                instagram_account_id=self.account_b_id,
+                source_message_id="existing-b-job",
+                recipient_id="customer",
+                page_url="https://example.test/p/o/b",
+            )
+        access_event = {"sender": {"id": "customer"}, "message": {"mid": "access-mid-a", "text": "ACCESS"}}
+        normal_event = {"sender": {"id": "customer"}, "message": {"mid": "normal-mid-a", "text": "thanks"}}
+        with patch.object(self.module, "send_oauth_prompt_access_button", return_value=True):
+            self.module.process_oauth_webhook_entry({"messaging": [access_event, normal_event]}, self._route(self.account_a_id), "17841438617458101", "https://example.test")
+        with self.Session() as session:
+            account_a_jobs = list(session.query(InstagramOAuthFollowupJob).filter_by(instagram_account_id=self.account_a_id))
+            account_b_job = session.query(InstagramOAuthFollowupJob).filter_by(instagram_account_id=self.account_b_id).one()
+        self.assertEqual(len(account_a_jobs), 1)
+        self.assertEqual(account_a_jobs[0].source_message_id, "access-mid-a")
+        self.assertEqual(account_a_jobs[0].state, "cancelled")
+        self.assertEqual(account_b_job.state, "pending")
+
     def test_unusable_oauth_account_performs_no_graph_action_or_legacy_fallback(self):
         comment = {"id": "comment-unusable", "text": "hello", "from": {"id": "customer"}}
         with patch.object(self.module, "generate_oauth_smart_reply", return_value="Hello!"), patch(

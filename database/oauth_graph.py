@@ -119,3 +119,48 @@ def send_oauth_prompt_access_button(session_factory: Callable[[], Any], *, insta
         return True
     except OAuthGraphOperationError:
         return False
+
+
+def send_oauth_delayed_followup(
+    session_factory: Callable[[], Any], *, instagram_account_id: object,
+    instagram_user_id: object, recipient_id: object,
+) -> str:
+    """Send one OAuth-only follow-up with a sanitized delivery outcome.
+
+    ``retryable_pre_dispatch`` means credential resolution failed before a
+    request was attempted.  A transport exception after ``requests.post`` is
+    considered ambiguous and is never safe to retry automatically.
+    """
+    account_id = _account_id(instagram_account_id)
+    external_id = str(instagram_user_id or "").strip()
+    recipient = str(recipient_id or "").strip()
+    if not external_id or not recipient:
+        return "retryable_pre_dispatch"
+    try:
+        with session_factory() as session:
+            runtime = resolve_oauth_instagram_account_runtime(
+                session,
+                instagram_account_id=account_id,
+                instagram_user_id=external_id,
+            )
+            try:
+                response = requests.post(
+                    f"{GRAPH_ROOT}/{API_VERSION}/{external_id}/messages",
+                    headers={
+                        "Authorization": f"Bearer {runtime.access_token}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "recipient": {"id": recipient},
+                        "messaging_type": "RESPONSE",
+                        "message": {
+                            "text": "Hope the prompts helped. Comment AI anytime for another set."
+                        },
+                    },
+                    timeout=20,
+                )
+            except requests.RequestException:
+                return "ambiguous_graph_failure"
+    except (RuntimeCredentialUnavailableError, OAuthGraphOperationError, ValueError, TypeError):
+        return "retryable_pre_dispatch"
+    return "success" if response.ok else "provider_rejected"

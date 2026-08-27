@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, func, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import Uuid
 
@@ -169,6 +169,55 @@ class InstagramSmartReplyActivity(TimestampMixin, Base):
     recipient_id: Mapped[str | None] = mapped_column(String(255))
     username: Mapped[str | None] = mapped_column(String(255))
     reply_text: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class InstagramOAuthFollowupJob(TimestampMixin, Base):
+    """Durable delayed OAuth message work; legacy follow-up JSON is untouched."""
+
+    __tablename__ = "instagram_oauth_followup_jobs"
+    __table_args__ = (
+        UniqueConstraint(
+            "instagram_account_id", "source_message_id",
+            name="uq_oauth_followup_account_source_message",
+        ),
+        Index(
+            "uq_oauth_followup_active_account_recipient",
+            "instagram_account_id", "recipient_id",
+            unique=True,
+            postgresql_where=text("state IN ('pending', 'processing')"),
+            sqlite_where=text("state IN ('pending', 'processing')"),
+        ),
+        Index("ix_oauth_followup_state_run_at", "state", "run_at"),
+        Index(
+            "ix_oauth_followup_account_recipient",
+            "instagram_account_id", "recipient_id",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    instagram_account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("instagram_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    prompt_request_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("instagram_prompt_requests.id", ondelete="SET NULL")
+    )
+    source_message_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    recipient_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    page_url: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="pending", server_default="pending"
+    )
+    run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_token: Mapped[str | None] = mapped_column(String(128))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    last_error_code: Mapped[str | None] = mapped_column(String(128))
 
 
 class MigrationRun(TimestampMixin, Base):
