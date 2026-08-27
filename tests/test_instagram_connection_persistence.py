@@ -14,8 +14,10 @@ from sqlalchemy.orm.session import SessionTransaction
 from database.credentials import credential_keyring_from_environment, load_decrypted_access_token
 from database.instagram_connection import (
     InstagramConnectionError,
+    complete_discovered_instagram_connection,
     persist_discovered_instagram_connection,
 )
+from database.oauth_webhook_subscription import OAuthWebhookSubscriptionError
 from database.models import Base, InstagramAccount, InstagramCredential, User
 from instagram_oauth import (
     InstagramAccountDiscovery,
@@ -81,6 +83,21 @@ class InstagramConnectionPersistenceTest(unittest.TestCase):
             now=now or datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
         )
 
+    def _complete(self, *, user_id=None, discovery=None, result=None, keyring=None, now=None):
+        return complete_discovered_instagram_connection(
+            self.Session,
+            user_id=user_id or self.owner_id,
+            legacy_instagram_user_id="17841438617459999",
+            discovery=discovery or self._discovery(),
+            token_result=result or self._result(scopes=(
+                "instagram_business_basic",
+                "instagram_business_manage_comments",
+                "instagram_business_manage_messages",
+            )),
+            keyring=keyring or self.keyring,
+            now=now or datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
+        )
+
     def test_new_connection_creates_one_owned_account_and_one_encrypted_credential(self):
         connected = self._persist()
 
@@ -130,6 +147,77 @@ class InstagramConnectionPersistenceTest(unittest.TestCase):
             )
             self.assertEqual(credential.scopes, None)
             self.assertEqual(load_decrypted_access_token(session, account, self.keyring), replacement)
+
+    def test_successful_subscription_commits_the_staged_credential_as_connected(self):
+        """Removing the finalization step must leave a safe pending state instead of connected."""
+        observed = {}
+
+        def subscription_succeeds_while_pending(session, **kwargs):
+            account = session.get(InstagramAccount, kwargs["instagram_account_id"])
+            credential = session.scalar(select(InstagramCredential).where(
+                InstagramCredential.instagram_account_id == account.id
+            ))
+            observed["status"] = account.connection_status
+            observed["ciphertext"] = credential.token_ciphertext
+            return True
+
+        with patch(
+            "database.instagram_connection.subscribe_oauth_account_webhooks",
+            side_effect=subscription_succeeds_while_pending,
+        ):
+            connected = self._complete()
+
+        self.assertEqual(connected.connection_status, "connected")
+        self.assertEqual(observed["status"], "subscription_pending")
+        self.assertNotEqual(observed["ciphertext"], self.token)
+        self.assertNotIn(self.token, observed["ciphertext"])
+        with self.Session() as session:
+            account = session.get(InstagramAccount, connected.id)
+            credential = session.scalar(select(InstagramCredential).where(
+                InstagramCredential.instagram_account_id == connected.id
+            ))
+            self.assertEqual(account.connection_status, "connected")
+            self.assertIsNone(account.last_connection_error_code)
+            self.assertEqual(credential.scopes, [
+                "instagram_business_basic",
+                "instagram_business_manage_comments",
+                "instagram_business_manage_messages",
+            ])
+            self.assertEqual(load_decrypted_access_token(session, account, self.keyring), self.token)
+
+    def test_failed_reconnect_preserves_old_credential_but_blocks_engagement(self):
+        """Replacing an old credential before subscription confirmation would destroy recoverability."""
+        original = self._persist(result=self._result(scopes=(
+            "instagram_business_basic",
+            "instagram_business_manage_comments",
+            "instagram_business_manage_messages",
+        )))
+        with self.Session() as session:
+            original_credential = session.scalar(select(InstagramCredential).where(
+                InstagramCredential.instagram_account_id == original.id
+            ))
+            original_ciphertext = original_credential.token_ciphertext
+        self.token = "replacement-token-that-must-not-become-usable"
+
+        with patch(
+            "database.instagram_connection.subscribe_oauth_account_webhooks",
+            side_effect=OAuthWebhookSubscriptionError("provider details must remain hidden"),
+        ):
+            with self.assertRaises(InstagramConnectionError) as raised:
+                self._complete()
+
+        self.assertEqual(str(raised.exception), "Instagram connection could not be completed.")
+        with self.Session() as session:
+            account = session.get(InstagramAccount, original.id)
+            credential = session.scalar(select(InstagramCredential).where(
+                InstagramCredential.instagram_account_id == original.id
+            ))
+            self.assertEqual(account.connection_status, "reconnect_required")
+            self.assertEqual(account.last_connection_error_code, "webhook_subscription_unavailable")
+            self.assertEqual(credential.token_ciphertext, original_ciphertext)
+            self.assertNotIn(self.token, credential.token_ciphertext)
+            self.assertEqual(load_decrypted_access_token(session, account, self.keyring),
+                             "long-lived-token-must-never-persist-in-plaintext")
 
     def test_reconnect_readiness_uses_only_the_scopes_meta_granted(self):
         """Replacing a credential with a denied scope must return to reconnect-required."""

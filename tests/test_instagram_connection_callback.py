@@ -11,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 
 from auth import configure_auth, install_auth_route_guard, register_auth_routes
 from database.models import Base, InstagramAccount, InstagramCredential, User
+from database.oauth_webhook_subscription import OAuthWebhookSubscriptionError
 from instagram_oauth import (
     INSTAGRAM_OAUTH_STATE_SESSION_KEY,
     InstagramAccountDiscovery,
@@ -82,7 +83,11 @@ class InstagramConnectionCallbackTest(unittest.TestCase):
         return InstagramOAuthTokenResult(
             long_lived_access_token=self.long_lived_token,
             expires_in=3600,
-            scopes=("instagram_business_basic",),
+            scopes=(
+                "instagram_business_basic",
+                "instagram_business_manage_comments",
+                "instagram_business_manage_messages",
+            ),
         )
 
     def _discovery(self):
@@ -95,7 +100,9 @@ class InstagramConnectionCallbackTest(unittest.TestCase):
         client = self._client_with_state()
         with patch.dict("os.environ", self.environment, clear=False), patch(
             "auth.complete_instagram_token_exchange", return_value=self._token_result()
-        ), patch("auth.discover_instagram_account", return_value=self._discovery()):
+        ), patch("auth.discover_instagram_account", return_value=self._discovery()), patch(
+            "database.instagram_connection.subscribe_oauth_account_webhooks", return_value=True
+        ):
             response = client.get(
                 "/connect/instagram/callback",
                 query_string={"state": "connection-callback-state", "code": self.authorization_code},
@@ -135,6 +142,31 @@ class InstagramConnectionCallbackTest(unittest.TestCase):
             key_id,
         ):
             self.assertNotIn(secret, onboarding_page)
+
+    def test_subscription_failure_returns_generic_response_and_leaves_account_reconnect_required(self):
+        """A provider failure must not let OAuth callback report an active connection."""
+        client = self._client_with_state()
+        with patch.dict("os.environ", self.environment, clear=False), patch(
+            "auth.complete_instagram_token_exchange", return_value=self._token_result()
+        ), patch("auth.discover_instagram_account", return_value=self._discovery()), patch(
+            "database.instagram_connection.subscribe_oauth_account_webhooks",
+            side_effect=OAuthWebhookSubscriptionError("provider response must remain private"),
+        ):
+            response = client.get(
+                "/connect/instagram/callback",
+                query_string={"state": "connection-callback-state", "code": self.authorization_code},
+            )
+
+        self.assertEqual(response.status_code, 502)
+        response_text = response.get_data(as_text=True)
+        for secret in (self.authorization_code, self.long_lived_token, self.external_id):
+            self.assertNotIn(secret, response_text)
+        with self.Session() as session:
+            account = session.scalar(select(InstagramAccount))
+            self.assertIsNotNone(account)
+            self.assertEqual(account.connection_status, "reconnect_required")
+            self.assertEqual(account.last_connection_error_code, "webhook_subscription_unavailable")
+            self.assertEqual(session.scalars(select(InstagramCredential)).all(), [])
 
     def test_discovery_failure_returns_generic_response_and_persists_nothing(self):
         client = self._client_with_state()

@@ -22,9 +22,15 @@ from .credentials import (
 )
 from .models import InstagramAccount, InstagramCredential
 from .ownership import resolve_owned_instagram_account
+from .oauth_webhook_subscription import (
+    OAUTH_SUBSCRIPTION_PENDING_STATUS,
+    OAuthWebhookSubscriptionError,
+    subscribe_oauth_account_webhooks,
+)
 
 
 INSTAGRAM_EXTERNAL_ID_PATTERN = re.compile(r"^[0-9]{1,64}$")
+SUBSCRIPTION_FAILURE_ERROR_CODE = "webhook_subscription_unavailable"
 
 
 class InstagramConnectionError(ValueError):
@@ -101,6 +107,78 @@ def _expiry_at(now: datetime, expires_in: int | None) -> datetime | None:
         return None
 
 
+def _validated_connection_inputs(
+    *,
+    user_id: object,
+    legacy_instagram_user_id: object,
+    discovery: InstagramAccountDiscovery,
+    token_result: InstagramOAuthTokenResult,
+    now: datetime | None,
+) -> tuple[uuid.UUID, str, str | None, str, datetime | None, list[str] | None, datetime]:
+    normalized_user_id = _normalized_user_id(user_id)
+    instagram_user_id, username = _validated_discovery(discovery)
+    token, expires_in, scopes = _validated_token_result(token_result)
+    legacy_id = str(legacy_instagram_user_id or "").strip()
+    if legacy_id and hmac.compare_digest(instagram_user_id, legacy_id):
+        raise _connection_error()
+    current_time = _utc_now(now)
+    return (
+        normalized_user_id,
+        instagram_user_id,
+        username,
+        token,
+        _expiry_at(current_time, expires_in),
+        scopes,
+        current_time,
+    )
+
+
+def _stage_discovered_connection(
+    db_session,
+    *,
+    user_id: uuid.UUID,
+    instagram_user_id: str,
+    username: str | None,
+    access_token: str,
+    expiry: datetime | None,
+    scopes: list[str] | None,
+    keyring: CredentialKeyring,
+    current_time: datetime,
+    connection_status: str,
+) -> InstagramAccount:
+    """Stage one encrypted OAuth credential without allowing engagement yet."""
+
+    account = db_session.scalar(select(InstagramAccount).where(
+        InstagramAccount.instagram_user_id == instagram_user_id
+    ))
+    if account is not None and account.user_id != user_id:
+        raise _connection_error()
+    if account is None:
+        account = InstagramAccount(user_id=user_id, instagram_user_id=instagram_user_id)
+        db_session.add(account)
+        db_session.flush()
+    if username is not None:
+        account.username = username
+    account.provider = "instagram"
+    account.connection_status = connection_status
+    account.connected_at = current_time if connection_status == "connected" else None
+    account.disconnected_at = None
+    account.last_connection_error_code = None
+    account.token_expires_at = expiry
+
+    credential = store_encrypted_credential(db_session, account, access_token, keyring)
+    credential.token_status = "valid"
+    credential.issued_at = current_time
+    credential.last_validated_at = current_time
+    credential.last_refreshed_at = None
+    credential.revoked_at = None
+    credential.last_error_code = None
+    credential.expires_at = expiry
+    credential.scopes = scopes
+    db_session.flush()
+    return account
+
+
 def persist_discovered_instagram_connection(
     session_factory: sessionmaker,
     *,
@@ -111,58 +189,146 @@ def persist_discovered_instagram_connection(
     keyring: CredentialKeyring,
     now: datetime | None = None,
 ) -> InstagramAccount:
-    """Create or reconnect one owned account and credential in one transaction.
+    """Persist a direct connection for compatibility-only internal callers.
 
-    Every mutation, including replacement of an existing encrypted credential,
-    is part of the same transaction. Any exception therefore leaves the prior
-    account/credential relationship and ciphertext untouched.
+    Live OAuth callbacks must use ``complete_discovered_instagram_connection``
+    so an account cannot become connected before webhook subscription succeeds.
     """
 
-    normalized_user_id = _normalized_user_id(user_id)
-    instagram_user_id, username = _validated_discovery(discovery)
-    token, expires_in, scopes = _validated_token_result(token_result)
-    legacy_id = str(legacy_instagram_user_id or "").strip()
-    if legacy_id and hmac.compare_digest(instagram_user_id, legacy_id):
-        raise _connection_error()
-
-    current_time = _utc_now(now)
-    expiry = _expiry_at(current_time, expires_in)
     try:
-        with session_factory.begin() as db_session:
-            account = db_session.scalar(
-                select(InstagramAccount).where(
-                    InstagramAccount.instagram_user_id == instagram_user_id
-                )
+        normalized_user_id, instagram_user_id, username, token, expiry, scopes, current_time = (
+            _validated_connection_inputs(
+                user_id=user_id,
+                legacy_instagram_user_id=legacy_instagram_user_id,
+                discovery=discovery,
+                token_result=token_result,
+                now=now,
             )
-            if account is not None and account.user_id != normalized_user_id:
-                raise _connection_error()
-            if account is None:
-                account = InstagramAccount(
+        )
+        with session_factory.begin() as db_session:
+            return _stage_discovered_connection(
+                db_session,
+                user_id=normalized_user_id,
+                instagram_user_id=instagram_user_id,
+                username=username,
+                access_token=token,
+                expiry=expiry,
+                scopes=scopes,
+                keyring=keyring,
+                current_time=current_time,
+                connection_status="connected",
+            )
+    except InstagramConnectionError:
+        raise
+    except (
+        CredentialConfigurationError,
+        CredentialEncryptionError,
+        CredentialPersistenceError,
+        SQLAlchemyError,
+        AttributeError,
+        TypeError,
+        ValueError,
+    ):
+        raise _connection_error() from None
+
+
+def _record_subscription_failure(
+    session_factory: sessionmaker,
+    *,
+    user_id: uuid.UUID,
+    instagram_user_id: str,
+    username: str | None,
+    current_time: datetime,
+) -> None:
+    """Persist only a sanitized, non-active reconnect state after rollback."""
+
+    with session_factory.begin() as db_session:
+        account = db_session.scalar(select(InstagramAccount).where(
+            InstagramAccount.instagram_user_id == instagram_user_id
+        ))
+        if account is None:
+            account = InstagramAccount(
+                user_id=user_id,
+                instagram_user_id=instagram_user_id,
+                username=username,
+                provider="instagram",
+            )
+            db_session.add(account)
+        elif account.user_id != user_id:
+            raise _connection_error()
+        account.connection_status = "reconnect_required"
+        account.connected_at = None
+        account.disconnected_at = current_time
+        account.last_connection_error_code = SUBSCRIPTION_FAILURE_ERROR_CODE
+        db_session.flush()
+
+
+def complete_discovered_instagram_connection(
+    session_factory: sessionmaker,
+    *,
+    user_id: object,
+    legacy_instagram_user_id: object,
+    discovery: InstagramAccountDiscovery,
+    token_result: InstagramOAuthTokenResult,
+    keyring: CredentialKeyring,
+    now: datetime | None = None,
+) -> InstagramAccount:
+    """Connect only after the staged credential subscribes its exact account.
+
+    A failed or ambiguous subscription rolls back the staged credential.  An
+    older credential remains encrypted but cannot be used because the account
+    is marked reconnect-required in a separate, sanitized transaction.
+    """
+
+    try:
+        normalized_user_id, instagram_user_id, username, token, expiry, scopes, current_time = (
+            _validated_connection_inputs(
+                user_id=user_id,
+                legacy_instagram_user_id=legacy_instagram_user_id,
+                discovery=discovery,
+                token_result=token_result,
+                now=now,
+            )
+        )
+        try:
+            with session_factory.begin() as db_session:
+                account = _stage_discovered_connection(
+                    db_session,
                     user_id=normalized_user_id,
                     instagram_user_id=instagram_user_id,
+                    username=username,
+                    access_token=token,
+                    expiry=expiry,
+                    scopes=scopes,
+                    keyring=keyring,
+                    current_time=current_time,
+                    connection_status=OAUTH_SUBSCRIPTION_PENDING_STATUS,
                 )
-                db_session.add(account)
-
-            if username is not None:
-                account.username = username
-            account.provider = "instagram"
-            account.connection_status = "connected"
-            account.connected_at = current_time
-            account.disconnected_at = None
-            account.last_connection_error_code = None
-            account.token_expires_at = expiry
-
-            credential = store_encrypted_credential(db_session, account, token, keyring)
-            credential.token_status = "valid"
-            credential.issued_at = current_time
-            credential.last_validated_at = current_time
-            credential.last_refreshed_at = None
-            credential.revoked_at = None
-            credential.last_error_code = None
-            credential.expires_at = expiry
-            credential.scopes = scopes
-            db_session.flush()
-            return account
+                if not subscribe_oauth_account_webhooks(
+                    db_session,
+                    instagram_account_id=account.id,
+                    instagram_user_id=instagram_user_id,
+                    keyring=keyring,
+                    now=current_time,
+                ):
+                    raise OAuthWebhookSubscriptionError(
+                        "Instagram webhook subscription is unavailable."
+                    )
+                account.connection_status = "connected"
+                account.connected_at = current_time
+                account.disconnected_at = None
+                account.last_connection_error_code = None
+                db_session.flush()
+                return account
+        except OAuthWebhookSubscriptionError:
+            _record_subscription_failure(
+                session_factory,
+                user_id=normalized_user_id,
+                instagram_user_id=instagram_user_id,
+                username=username,
+                current_time=current_time,
+            )
+            raise _connection_error() from None
     except InstagramConnectionError:
         raise
     except (

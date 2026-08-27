@@ -24,8 +24,8 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from database.credentials import CredentialConfigurationError, credential_keyring_from_environment
 from database.instagram_connection import (
     InstagramConnectionError,
+    complete_discovered_instagram_connection,
     disconnect_owned_instagram_connection,
-    persist_discovered_instagram_connection,
 )
 from database.models import InstagramAccount, User
 from database.ownership import (
@@ -476,7 +476,7 @@ def register_auth_routes(app) -> None:
             state = _auth_state()
             if state.session_factory is None:
                 return _unavailable_response()
-            persist_discovered_instagram_connection(
+            complete_discovered_instagram_connection(
                 state.session_factory,
                 user_id=user.id,
                 legacy_instagram_user_id=state.legacy_instagram_user_id,
