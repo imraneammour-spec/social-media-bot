@@ -23,6 +23,19 @@
                         <h2>{{ account.username }}</h2>
                         <p><strong>{{ account.label }}</strong></p>
                         <p>{{ account.detail }}</p>
+                        {% if account.can_reconnect %}
+                            <form method="post" action="{{ url_for('start_instagram_connection') }}">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                <button type="submit">Reconnect Instagram</button>
+                            </form>
+                        {% endif %}
+                        {% if account.can_disconnect %}
+                            <form method="post" action="{{ url_for('disconnect_instagram_connection') }}">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                <input type="hidden" name="account_action" value="{{ account.disconnect_action }}">
+                                <button type="submit">Disconnect from this app</button>
+                            </form>
+                        {% endif %}
                     </article>
                 {% endfor %}
             </section>

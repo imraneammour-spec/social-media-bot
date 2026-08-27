@@ -182,7 +182,24 @@ class InstagramConnectionPersistenceTest(unittest.TestCase):
 
     def test_database_commit_failure_preserves_existing_credential(self):
         existing = self._persist()
-        original_ciphertext = self._credentials()[0].token_ciphertext
+        with self.Session() as session:
+            original_account = session.get(InstagramAccount, existing.id)
+            original_credential = session.scalar(
+                select(InstagramCredential).where(InstagramCredential.instagram_account_id == existing.id)
+            )
+            original_account_state = (
+                original_account.connection_status,
+                original_account.connected_at,
+                original_account.disconnected_at,
+                original_account.token_expires_at,
+            )
+            original_credential_state = (
+                original_credential.token_ciphertext,
+                original_credential.encryption_key_id,
+                original_credential.token_status,
+                original_credential.expires_at,
+                original_credential.scopes,
+            )
         self.token = "replacement-token-that-must-not-commit-on-failure"
 
         with patch.object(SessionTransaction, "commit", side_effect=SQLAlchemyError("commit unavailable")):
@@ -190,7 +207,31 @@ class InstagramConnectionPersistenceTest(unittest.TestCase):
                 self._persist()
 
         self.assertEqual(len(self._accounts()), 1)
-        self.assertEqual(self._credentials()[0].token_ciphertext, original_ciphertext)
+        self.assertEqual(len(self._credentials()), 1)
+        with self.Session() as session:
+            account = session.get(InstagramAccount, existing.id)
+            credential = session.scalar(
+                select(InstagramCredential).where(InstagramCredential.instagram_account_id == existing.id)
+            )
+            self.assertEqual(
+                (
+                    account.connection_status,
+                    account.connected_at,
+                    account.disconnected_at,
+                    account.token_expires_at,
+                ),
+                original_account_state,
+            )
+            self.assertEqual(
+                (
+                    credential.token_ciphertext,
+                    credential.encryption_key_id,
+                    credential.token_status,
+                    credential.expires_at,
+                    credential.scopes,
+                ),
+                original_credential_state,
+            )
 
     def test_unique_constraint_race_leaves_no_partial_account_or_credential(self):
         with patch.object(

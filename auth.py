@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import secrets
@@ -23,6 +24,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from database.credentials import CredentialConfigurationError, credential_keyring_from_environment
 from database.instagram_connection import (
     InstagramConnectionError,
+    disconnect_owned_instagram_connection,
     persist_discovered_instagram_connection,
 )
 from database.models import InstagramAccount, User
@@ -47,6 +49,8 @@ from instagram_oauth import (
 CSRF_SESSION_KEY = "_csrf_token"
 USER_SESSION_KEY = "user_id"
 CSRF_TOKEN_BYTES = 32
+ACCOUNT_ACTION_REFERENCE_TTL_SECONDS = 900
+ACCOUNT_ACTION_REFERENCE_VERSION = "v1"
 SESSION_LIFETIME_HOURS = 8
 READY_CONNECTION_STATUSES = {"connected"}
 RECONNECT_CONNECTION_STATUSES = {"disconnected", "error", "reconnect_required"}
@@ -184,11 +188,61 @@ def current_user_has_legacy_workspace_access() -> bool:
     return account is not None
 
 
+def action_reference_for_account(
+    user_id: object,
+    account_id: object,
+    purpose: str,
+    *,
+    secret_key: object,
+    now: int | None = None,
+) -> str:
+    """Create an opaque, purpose-bound, short-lived account action reference."""
+
+    current = int(time.time() if now is None else now)
+    expires_at = current + ACCOUNT_ACTION_REFERENCE_TTL_SECONDS
+    payload = f"{ACCOUNT_ACTION_REFERENCE_VERSION}|{purpose}|{user_id}|{account_id}|{expires_at}"
+    signature = hmac.new(str(secret_key).encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).digest()
+    encoded = base64.urlsafe_b64encode(signature).rstrip(b"=").decode("ascii")
+    return f"{ACCOUNT_ACTION_REFERENCE_VERSION}.{expires_at}.{encoded}"
+
+
+def resolve_owned_account_action_reference(
+    db_session,
+    *,
+    user_id: object,
+    reference: object,
+    purpose: str,
+    secret_key: object,
+    now: int | None = None,
+) -> InstagramAccount | None:
+    """Resolve an opaque action only against the current user's owned accounts."""
+
+    if not isinstance(reference, str):
+        return None
+    parts = reference.split(".")
+    if len(parts) != 3 or parts[0] != ACCOUNT_ACTION_REFERENCE_VERSION or not parts[1].isdigit():
+        return None
+    current = int(time.time() if now is None else now)
+    expires_at = int(parts[1])
+    if expires_at < current or expires_at > current + ACCOUNT_ACTION_REFERENCE_TTL_SECONDS:
+        return None
+    for account in list_owned_instagram_accounts(db_session, user_id=user_id):
+        expected = action_reference_for_account(
+            user_id, account.id, purpose, secret_key=secret_key,
+            now=expires_at - ACCOUNT_ACTION_REFERENCE_TTL_SECONDS,
+        )
+        if hmac.compare_digest(expected, reference):
+            return account
+    return None
+
+
 def build_onboarding_account_statuses(
     accounts: Iterable[InstagramAccount],
     *,
     legacy_instagram_user_id: str,
-) -> list[dict[str, str]]:
+    user_id: object,
+    action_secret: object,
+) -> list[dict[str, object]]:
     """Create a finite, credential-free status model for owned accounts only."""
 
     legacy_id = str(legacy_instagram_user_id or "")
@@ -202,19 +256,50 @@ def build_onboarding_account_statuses(
             and connection_status == "environment_managed"
             and hmac.compare_digest(str(account.instagram_user_id), legacy_id)
         )
-        if connection_status in RECONNECT_CONNECTION_STATUSES or has_connection_error:
-            label = "Reconnect required"
-            detail = "This account needs reconnection before it can be used."
-        elif is_legacy_environment_managed:
+        can_reconnect = False
+        can_disconnect = False
+        disconnect_action = None
+        if is_legacy_environment_managed:
             label = "Legacy workspace managed by server configuration"
             detail = "This is the existing server-managed Instagram workspace."
+        elif connection_status == "connected" and has_connection_error:
+            label = "Reconnect required"
+            detail = "This account needs reconnection before it can be used."
+            can_reconnect = True
+            # An errored connection can still have a usable credential, so allow
+            # the owner to explicitly erase it locally.
+            can_disconnect = True
+        elif connection_status in RECONNECT_CONNECTION_STATUSES:
+            label = "Reconnect required"
+            detail = "This account needs reconnection before it can be used."
+            can_reconnect = True
+            # A disconnected account has already had its credential erased;
+            # error/reconnect-required states may still have one to remove.
+            can_disconnect = connection_status != "disconnected"
         elif connection_status in READY_CONNECTION_STATUSES:
             label = "Connected and ready"
             detail = "This account is ready for the next connection phase."
+            can_disconnect = True
         else:
             label = "Connection setup incomplete"
             detail = "Connection setup will continue in the next connection phase."
-        statuses.append({"username": username, "label": label, "detail": detail})
+        if can_disconnect:
+            disconnect_action = action_reference_for_account(
+                user_id,
+                account.id,
+                "disconnect",
+                secret_key=action_secret,
+            )
+        statuses.append(
+            {
+                "username": username,
+                "label": label,
+                "detail": detail,
+                "can_reconnect": can_reconnect,
+                "can_disconnect": can_disconnect,
+                "disconnect_action": disconnect_action,
+            }
+        )
     return statuses
 
 
@@ -405,6 +490,42 @@ def register_auth_routes(app) -> None:
             return "Instagram connection could not be completed.", 502
         return redirect(url_for("onboarding"))
 
+    @app.post("/connect/instagram/disconnect")
+    @login_required
+    def disconnect_instagram_connection():
+        """Erase one owned OAuth credential through an opaque, CSRF-bound action."""
+
+        if not validate_csrf_token(request_csrf_token()):
+            return "Invalid form token.", 400
+        user = get_current_user()
+        state = _auth_state()
+        if user is None:
+            return _unauthenticated_response()
+        if state.session_factory is None:
+            return _unavailable_response()
+        try:
+            with state.session_factory() as db_session:
+                account = resolve_owned_account_action_reference(
+                    db_session,
+                    user_id=user.id,
+                    reference=request.form.get("account_action"),
+                    purpose="disconnect",
+                    secret_key=current_app.secret_key,
+                )
+            if account is None:
+                return "Instagram connection could not be completed.", 400
+            disconnect_owned_instagram_connection(
+                state.session_factory,
+                user_id=user.id,
+                account_id=account.id,
+                legacy_instagram_user_id=state.legacy_instagram_user_id,
+            )
+        except SQLAlchemyError:
+            return _unavailable_response()
+        except InstagramConnectionError:
+            return "Instagram connection could not be completed.", 400
+        return redirect(url_for("onboarding"))
+
     @app.get("/onboarding")
     @login_required
     def onboarding():
@@ -424,6 +545,8 @@ def register_auth_routes(app) -> None:
             account_statuses=build_onboarding_account_statuses(
                 accounts,
                 legacy_instagram_user_id=state.legacy_instagram_user_id,
+                user_id=user.id,
+                action_secret=current_app.secret_key,
             ),
         )
 

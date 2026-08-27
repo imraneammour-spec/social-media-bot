@@ -20,7 +20,8 @@ from .credentials import (
     CredentialKeyring,
     store_encrypted_credential,
 )
-from .models import InstagramAccount
+from .models import InstagramAccount, InstagramCredential
+from .ownership import resolve_owned_instagram_account
 
 
 INSTAGRAM_EXTERNAL_ID_PATTERN = re.compile(r"^[0-9]{1,64}$")
@@ -173,4 +174,54 @@ def persist_discovered_instagram_connection(
         TypeError,
         ValueError,
     ):
+        raise _connection_error() from None
+
+
+def disconnect_owned_instagram_connection(
+    session_factory: sessionmaker,
+    *,
+    user_id: object,
+    account_id: object,
+    legacy_instagram_user_id: object,
+    now: datetime | None = None,
+) -> InstagramAccount:
+    """Locally disconnect one owned non-legacy account by erasing its credential."""
+
+    normalized_user_id = _normalized_user_id(user_id)
+    current_time = _utc_now(now)
+    legacy_id = str(legacy_instagram_user_id or "").strip()
+    try:
+        with session_factory.begin() as db_session:
+            account = resolve_owned_instagram_account(
+                db_session, user_id=normalized_user_id, account_id=account_id
+            )
+            if account is None or (legacy_id and hmac.compare_digest(account.instagram_user_id, legacy_id)):
+                raise _connection_error()
+            credential = db_session.scalar(
+                select(InstagramCredential).where(InstagramCredential.instagram_account_id == account.id)
+            )
+            already_disconnected = (
+                account.connection_status == "disconnected"
+                and account.disconnected_at is not None
+                and (credential is None or (credential.token_ciphertext is None and credential.encryption_key_id is None))
+            )
+            if already_disconnected:
+                return account
+            account.connection_status = "disconnected"
+            account.disconnected_at = current_time
+            account.last_connection_error_code = None
+            account.token_expires_at = None
+            if credential is not None:
+                credential.token_status = "disconnected"
+                credential.token_ciphertext = None
+                credential.encryption_key_id = None
+                credential.scopes = None
+                credential.expires_at = None
+                credential.revoked_at = None
+                credential.last_error_code = None
+            db_session.flush()
+            return account
+    except InstagramConnectionError:
+        raise
+    except (SQLAlchemyError, AttributeError, TypeError, ValueError):
         raise _connection_error() from None

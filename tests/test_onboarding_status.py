@@ -169,16 +169,20 @@ class OnboardingStatusTest(unittest.TestCase):
             instagram_user_id="future-status-id",
             username="future_status_account",
             connection_status="future_unrecognized_status",
+            last_connection_error_code="raw-error-future",
         )
 
         page = self._onboarding(user_id).get_data(as_text=True)
 
         self.assertEqual(page.count("Reconnect required"), 4)
+        self.assertEqual(page.count("Reconnect Instagram"), 4)
+        self.assertEqual(page.count("Disconnect from this app"), 3)
         self.assertIn("Connection setup incomplete", page)
         self.assertNotIn("raw-error-0", page)
         self.assertNotIn("raw-error-1", page)
         self.assertNotIn("raw-error-2", page)
         self.assertNotIn("raw-error-connected", page)
+        self.assertNotIn("raw-error-future", page)
         self.assertNotIn("future_unrecognized_status", page)
 
     def test_only_configured_legacy_environment_managed_account_gets_legacy_state(self):
@@ -201,6 +205,8 @@ class OnboardingStatusTest(unittest.TestCase):
         non_legacy_page = self._onboarding(non_legacy_owner_id).get_data(as_text=True)
 
         self.assertIn("Legacy workspace managed by server configuration", legacy_page)
+        self.assertNotIn("Reconnect Instagram", legacy_page)
+        self.assertNotIn("Disconnect from this app", legacy_page)
         self.assertNotIn("Legacy workspace managed by server configuration", non_legacy_page)
         self.assertIn("Connection setup incomplete", non_legacy_page)
 
