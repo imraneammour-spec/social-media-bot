@@ -484,6 +484,77 @@ class AccountRuntimeResolverTest(unittest.TestCase):
 
         self.assertEqual(state, "indeterminate")
 
+    def test_webhook_identity_classification_reports_connected_oauth_from_a_verified_profile(self):
+        from database.account_runtime import classify_failed_webhook_identity
+
+        with self.Session.begin() as session:
+            session.get(InstagramAccount, self.account_b_id).connection_status = "disconnected"
+        response = type(
+            "GraphProfileResponse",
+            (),
+            {"ok": True, "json": lambda _self: {"id": "17841438617458902"}},
+        )()
+        with self.Session() as session, patch(
+            "database.account_runtime.requests.get", return_value=response
+        ), patch("builtins.print") as log:
+            classification = classify_failed_webhook_identity(
+                session,
+                instagram_user_id="17841438617458902",
+                keyring=self.keyring,
+            )
+
+        self.assertEqual(classification, "connected_oauth")
+        log.assert_not_called()
+
+    def test_webhook_identity_classification_reports_other_known_for_a_non_oauth_persisted_identity(self):
+        from database.account_runtime import classify_failed_webhook_identity
+
+        with self.Session.begin() as session:
+            session.get(InstagramAccount, self.account_a_id).connection_status = "disconnected"
+            session.get(InstagramAccount, self.account_b_id).connection_status = "disconnected"
+        with self.Session() as session:
+            classification = classify_failed_webhook_identity(
+                session,
+                instagram_user_id=self.legacy_external_id,
+                keyring=self.keyring,
+            )
+
+        self.assertEqual(classification, "other_known")
+
+    def test_webhook_identity_classification_reports_unknown_when_no_persisted_or_verified_profile_identity_matches(self):
+        from database.account_runtime import classify_failed_webhook_identity
+
+        responses = [
+            type("GraphProfileResponseA", (), {"ok": True, "json": lambda _self: {"id": "17841438617458902"}})(),
+            type("GraphProfileResponseB", (), {"ok": True, "json": lambda _self: {"id": "17841438617458903"}})(),
+        ]
+        with self.Session() as session, patch(
+            "database.account_runtime.requests.get", side_effect=responses
+        ):
+            classification = classify_failed_webhook_identity(
+                session,
+                instagram_user_id="17841438617458999",
+                keyring=self.keyring,
+            )
+
+        self.assertEqual(classification, "unknown")
+
+    def test_webhook_identity_classification_fails_closed_and_never_logs_secrets_or_identifiers(self):
+        from database.account_runtime import classify_failed_webhook_identity
+
+        with self.Session() as session, patch(
+            "database.account_runtime.requests.get",
+            side_effect=requests.RequestException("provider URL and token must stay secret"),
+        ), patch("builtins.print") as log:
+            classification = classify_failed_webhook_identity(
+                session,
+                instagram_user_id="17841438617458999",
+                keyring=self.keyring,
+            )
+
+        self.assertEqual(classification, "indeterminate")
+        log.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

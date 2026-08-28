@@ -236,7 +236,9 @@ class WebhookTenantRoutingTest(unittest.TestCase):
             self.module,
             "_resolve_webhook_entry_route",
             side_effect=RuntimeError("forced route failure"),
-        ), patch.object(self.module, "process_comment") as legacy_handler, patch.object(
+        ), patch.object(
+            self.module, "_webhook_entry_identity_classification", return_value="connected_oauth"
+        ) as classify, patch.object(self.module, "process_comment") as legacy_handler, patch.object(
             self.module, "process_oauth_webhook_entry"
         ) as oauth_handler, patch("builtins.print") as log:
             self.module.process_webhook_background(payload, "http://localhost")
@@ -244,10 +246,13 @@ class WebhookTenantRoutingTest(unittest.TestCase):
         rendered = " ".join(
             str(argument) for call in log.call_args_list for argument in call.args
         )
-        self.assertIn("WEBHOOK ROUTING DIAGNOSTIC: identity_match=True", rendered)
+        self.assertIn(
+            "WEBHOOK ROUTING DIAGNOSTIC: identity_classification=connected_oauth", rendered
+        )
         self.assertIn("WEBHOOK ROUTING: entry skipped (route unavailable).", rendered)
         for secret_or_identifier in (entry_id, sensitive_payload, sensitive_token):
             self.assertNotIn(secret_or_identifier, rendered)
+        classify.assert_called_once_with(entry_id)
         legacy_handler.assert_not_called()
         oauth_handler.assert_not_called()
 
@@ -258,7 +263,9 @@ class WebhookTenantRoutingTest(unittest.TestCase):
                 "changes": [{"field": "comments", "value": {}}],
             }]
         }
-        with patch("builtins.print") as log, patch.object(
+        with patch.object(
+            self.module, "_webhook_entry_identity_classification", return_value="unknown"
+        ) as classify, patch("builtins.print") as log, patch.object(
             self.module, "process_comment"
         ) as legacy_handler:
             self.module.process_webhook_background(payload, "http://localhost")
@@ -266,12 +273,60 @@ class WebhookTenantRoutingTest(unittest.TestCase):
         rendered = " ".join(
             str(argument) for call in log.call_args_list for argument in call.args
         )
-        self.assertIn("WEBHOOK ROUTING DIAGNOSTIC: identity_match=False", rendered)
+        self.assertIn("WEBHOOK ROUTING DIAGNOSTIC: identity_classification=unknown", rendered)
         self.assertIn("WEBHOOK ROUTING: entry skipped (route unavailable).", rendered)
         self.assertNotIn("17841438617458999", rendered)
+        classify.assert_called_once_with("17841438617458999")
         legacy_handler.assert_not_called()
 
-    def test_false_database_identity_diagnostic_logs_only_the_graph_profile_comparison(self):
+    def test_route_failure_logs_one_safe_identity_classification_without_changing_dispatch(self):
+        entry_id = "17841438617458999"
+        sensitive_token = self.environment["INSTAGRAM_ACCESS_TOKEN"]
+        sensitive_payload = "private-message-content"
+        sensitive_username = "private-provider-username"
+        payload = {
+            "entry": [{
+                "id": entry_id,
+                "changes": [{
+                    "field": "comments",
+                    "value": {
+                        "text": sensitive_payload,
+                        "from": {"username": sensitive_username},
+                    },
+                }],
+            }]
+        }
+        with patch.object(
+            self.module,
+            "_resolve_webhook_entry_route",
+            side_effect=RuntimeError("forced route failure"),
+        ), patch.object(
+            self.module,
+            "_webhook_entry_identity_classification",
+            return_value="unknown",
+        ) as classify, patch("builtins.print") as log, patch.object(
+            self.module, "process_comment"
+        ) as legacy_handler, patch.object(self.module, "process_oauth_webhook_entry") as oauth_handler:
+            self.module.process_webhook_background(payload, "http://localhost")
+
+        rendered = " ".join(
+            str(argument) for call in log.call_args_list for argument in call.args
+        )
+        self.assertIn("WEBHOOK ROUTING DIAGNOSTIC: identity_classification=unknown", rendered)
+        self.assertNotIn("identity_match=", rendered)
+        self.assertNotIn("webhook_matches_graph_profile=", rendered)
+        for secret_or_identifier in (
+            entry_id,
+            sensitive_token,
+            sensitive_payload,
+            sensitive_username,
+        ):
+            self.assertNotIn(secret_or_identifier, rendered)
+        classify.assert_called_once_with(entry_id)
+        legacy_handler.assert_not_called()
+        oauth_handler.assert_not_called()
+
+    def test_route_failure_diagnostic_logs_other_known_without_disclosing_data(self):
         entry_id = "17841438617458999"
         sensitive_token = self.environment["INSTAGRAM_ACCESS_TOKEN"]
         payload = {
@@ -283,10 +338,8 @@ class WebhookTenantRoutingTest(unittest.TestCase):
         with patch.object(
             self.module, "_resolve_webhook_entry_route", side_effect=RuntimeError("forced route failure")
         ), patch.object(
-            self.module, "_webhook_entry_identity_match_state", return_value="False"
-        ), patch.object(
-            self.module, "_webhook_entry_graph_profile_match_state", return_value="True"
-        ) as graph_profile_state, patch("builtins.print") as log, patch.object(
+            self.module, "_webhook_entry_identity_classification", return_value="other_known"
+        ) as classify, patch("builtins.print") as log, patch.object(
             self.module, "process_comment"
         ) as legacy_handler, patch.object(self.module, "process_oauth_webhook_entry") as oauth_handler:
             self.module.process_webhook_background(payload, "http://localhost")
@@ -294,27 +347,26 @@ class WebhookTenantRoutingTest(unittest.TestCase):
         rendered = " ".join(
             str(argument) for call in log.call_args_list for argument in call.args
         )
-        self.assertIn("WEBHOOK ROUTING DIAGNOSTIC: identity_match=False", rendered)
         self.assertIn(
-            "WEBHOOK ROUTING DIAGNOSTIC: webhook_matches_graph_profile=True", rendered
+            "WEBHOOK ROUTING DIAGNOSTIC: identity_classification=other_known", rendered
         )
         self.assertIn("WEBHOOK ROUTING: entry skipped (route unavailable).", rendered)
         for secret_or_identifier in (entry_id, sensitive_token, "private-message-content"):
             self.assertNotIn(secret_or_identifier, rendered)
-        graph_profile_state.assert_called_once_with(entry_id)
+        classify.assert_called_once_with(entry_id)
         legacy_handler.assert_not_called()
         oauth_handler.assert_not_called()
 
-    def test_graph_profile_diagnostic_runs_only_after_a_false_database_identity_match(self):
+    def test_route_failure_diagnostic_classifies_every_route_failure_once(self):
         payload = {"entry": [{"id": "17841438617458902", "changes": []}]}
         with patch.object(
             self.module, "_resolve_webhook_entry_route", side_effect=RuntimeError("forced route failure")
         ), patch.object(
-            self.module, "_webhook_entry_identity_match_state", return_value="True"
-        ), patch.object(self.module, "_webhook_entry_graph_profile_match_state") as graph_profile_state:
+            self.module, "_webhook_entry_identity_classification", return_value="unknown"
+        ) as classify:
             self.module.process_webhook_background(payload, "http://localhost")
 
-        graph_profile_state.assert_not_called()
+        classify.assert_called_once_with("17841438617458902")
 
     def test_route_failure_diagnostic_reports_indeterminate_when_lookup_is_unavailable(self):
         auth_state = self.module.app.extensions["phase3a_auth"]
@@ -337,7 +389,9 @@ class WebhookTenantRoutingTest(unittest.TestCase):
         rendered = " ".join(
             str(argument) for call in log.call_args_list for argument in call.args
         )
-        self.assertIn("WEBHOOK ROUTING DIAGNOSTIC: identity_match=indeterminate", rendered)
+        self.assertIn(
+            "WEBHOOK ROUTING DIAGNOSTIC: identity_classification=indeterminate", rendered
+        )
         self.assertIn("WEBHOOK ROUTING: entry skipped (route unavailable).", rendered)
         self.assertNotIn("17841438617458902", rendered)
         legacy_handler.assert_not_called()

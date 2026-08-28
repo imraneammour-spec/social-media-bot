@@ -30,6 +30,10 @@ USABLE_CREDENTIAL_STATUS = "valid"
 LEGACY_CONNECTION_STATUS = "environment_managed"
 OAUTH_GRAPH_PROFILE_URL = "https://graph.instagram.com/v25.0/me"
 OAUTH_GRAPH_PROFILE_TIMEOUT_SECONDS = 15
+WEBHOOK_IDENTITY_CLASSIFICATION_CONNECTED_OAUTH = "connected_oauth"
+WEBHOOK_IDENTITY_CLASSIFICATION_OTHER_KNOWN = "other_known"
+WEBHOOK_IDENTITY_CLASSIFICATION_UNKNOWN = "unknown"
+WEBHOOK_IDENTITY_CLASSIFICATION_INDETERMINATE = "indeterminate"
 
 
 class RuntimeCredentialUnavailableError(ValueError):
@@ -192,6 +196,66 @@ def webhook_identity_matches_single_connected_oauth_graph_profile(
         return "True" if hmac.compare_digest(webhook_external_id, profile_external_id) else "False"
     except Exception:
         return "indeterminate"
+
+
+def classify_failed_webhook_identity(
+    session: Session,
+    *,
+    instagram_user_id: object,
+    keyring: CredentialKeyring | None = None,
+) -> str:
+    """Return a finite, in-memory classification for a failed webhook route.
+
+    This diagnostic never writes state or emits logs.  It intentionally uses
+    no mutable username-to-label mapping: a verified Graph profile match is
+    ``connected_oauth`` and any other persisted identity is ``other_known``.
+    """
+
+    webhook_external_id = _normalized_external_id(instagram_user_id)
+    if webhook_external_id is None:
+        return WEBHOOK_IDENTITY_CLASSIFICATION_INDETERMINATE
+    try:
+        accounts = list(session.scalars(select(InstagramAccount).where(
+            InstagramAccount.provider == "instagram"
+        )))
+        persisted_matches = [
+            account for account in accounts
+            if hmac.compare_digest(str(account.instagram_user_id), webhook_external_id)
+        ]
+        if len(persisted_matches) > 1:
+            return WEBHOOK_IDENTITY_CLASSIFICATION_INDETERMINATE
+
+        for account in accounts:
+            if not _usable_oauth_account(account, now=datetime.now(timezone.utc)):
+                continue
+            runtime = resolve_oauth_instagram_account_runtime(
+                session,
+                instagram_account_id=account.id,
+                instagram_user_id=account.instagram_user_id,
+                keyring=keyring,
+            )
+            response = requests.get(
+                OAUTH_GRAPH_PROFILE_URL,
+                headers={"Authorization": f"Bearer {runtime.access_token}"},
+                params={"fields": "id"},
+                timeout=OAUTH_GRAPH_PROFILE_TIMEOUT_SECONDS,
+            )
+            if not bool(getattr(response, "ok", False)):
+                return WEBHOOK_IDENTITY_CLASSIFICATION_INDETERMINATE
+            payload = response.json()
+            profile_external_id = _normalized_external_id(
+                payload.get("id") if isinstance(payload, dict) else None
+            )
+            if profile_external_id is None:
+                return WEBHOOK_IDENTITY_CLASSIFICATION_INDETERMINATE
+            if hmac.compare_digest(webhook_external_id, profile_external_id):
+                return WEBHOOK_IDENTITY_CLASSIFICATION_CONNECTED_OAUTH
+
+        if persisted_matches:
+            return WEBHOOK_IDENTITY_CLASSIFICATION_OTHER_KNOWN
+        return WEBHOOK_IDENTITY_CLASSIFICATION_UNKNOWN
+    except Exception:
+        return WEBHOOK_IDENTITY_CLASSIFICATION_INDETERMINATE
 
 
 def resolve_instagram_account_route(
