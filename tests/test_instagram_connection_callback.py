@@ -150,7 +150,7 @@ class InstagramConnectionCallbackTest(unittest.TestCase):
             "auth.complete_instagram_token_exchange", return_value=self._token_result()
         ), patch("auth.discover_instagram_account", return_value=self._discovery()), patch(
             "database.instagram_connection.subscribe_oauth_account_webhooks",
-            side_effect=OAuthWebhookSubscriptionError("provider response must remain private"),
+            side_effect=OAuthWebhookSubscriptionError("webhook_subscription_provider_rejected"),
         ):
             response = client.get(
                 "/connect/instagram/callback",
@@ -165,7 +165,10 @@ class InstagramConnectionCallbackTest(unittest.TestCase):
             account = session.scalar(select(InstagramAccount))
             self.assertIsNotNone(account)
             self.assertEqual(account.connection_status, "reconnect_required")
-            self.assertEqual(account.last_connection_error_code, "webhook_subscription_unavailable")
+            self.assertEqual(
+                account.last_connection_error_code,
+                "webhook_subscription_provider_rejected",
+            )
             self.assertEqual(session.scalars(select(InstagramCredential)).all(), [])
 
     def test_discovery_failure_returns_generic_response_and_persists_nothing(self):

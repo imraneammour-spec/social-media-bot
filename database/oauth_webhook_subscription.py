@@ -30,14 +30,35 @@ OAUTH_SUBSCRIBED_FIELDS = ("comments", "messages")
 OAUTH_SUBSCRIBED_FIELDS_PARAMETER = ",".join(OAUTH_SUBSCRIBED_FIELDS)
 OAUTH_SUBSCRIPTION_TIMEOUT_SECONDS = 15
 _EXTERNAL_ID_PATTERN = re.compile(INSTAGRAM_EXTERNAL_ID_PATTERN.pattern)
+WEBHOOK_SUBSCRIPTION_PRECONDITION_FAILED = "webhook_subscription_precondition_failed"
+WEBHOOK_SUBSCRIPTION_CREDENTIAL_UNAVAILABLE = "webhook_subscription_credential_unavailable"
+WEBHOOK_SUBSCRIPTION_TRANSPORT_FAILED = "webhook_subscription_transport_failed"
+WEBHOOK_SUBSCRIPTION_PROVIDER_REJECTED = "webhook_subscription_provider_rejected"
+WEBHOOK_SUBSCRIPTION_PROVIDER_RESPONSE_INVALID = "webhook_subscription_provider_response_invalid"
+_FAILURE_CODES = frozenset((
+    WEBHOOK_SUBSCRIPTION_PRECONDITION_FAILED,
+    WEBHOOK_SUBSCRIPTION_CREDENTIAL_UNAVAILABLE,
+    WEBHOOK_SUBSCRIPTION_TRANSPORT_FAILED,
+    WEBHOOK_SUBSCRIPTION_PROVIDER_REJECTED,
+    WEBHOOK_SUBSCRIPTION_PROVIDER_RESPONSE_INVALID,
+))
+_GENERIC_SUBSCRIPTION_MESSAGE = "Instagram webhook subscription is unavailable."
 
 
 class OAuthWebhookSubscriptionError(ValueError):
     """Credential-safe failure for one account webhook subscription attempt."""
 
+    def __init__(self, failure_code: str):
+        if failure_code not in _FAILURE_CODES:
+            raise ValueError("Invalid webhook subscription failure code.")
+        self.failure_code = failure_code
+        super().__init__(_GENERIC_SUBSCRIPTION_MESSAGE)
 
-def _unavailable() -> OAuthWebhookSubscriptionError:
-    return OAuthWebhookSubscriptionError("Instagram webhook subscription is unavailable.")
+
+def _unavailable(
+    failure_code: str = WEBHOOK_SUBSCRIPTION_PRECONDITION_FAILED,
+) -> OAuthWebhookSubscriptionError:
+    return OAuthWebhookSubscriptionError(failure_code)
 
 
 def _normalized_account_id(value: object) -> uuid.UUID:
@@ -125,36 +146,47 @@ def subscribe_oauth_account_webhooks(
         )) if account is not None else None
         if not _usable_pending_subscription(account, credential, now=current):
             raise _unavailable()
-        active_keyring = keyring if keyring is not None else credential_keyring_from_environment()
-        access_token = decrypt_access_token(
-            credential.token_ciphertext,
-            credential.encryption_key_id,
-            active_keyring,
-        )
+        try:
+            active_keyring = keyring if keyring is not None else credential_keyring_from_environment()
+            access_token = decrypt_access_token(
+                credential.token_ciphertext,
+                credential.encryption_key_id,
+                active_keyring,
+            )
+        except (
+            CredentialConfigurationError,
+            CredentialDecryptionError,
+            CredentialNotFoundError,
+            AttributeError,
+            TypeError,
+            ValueError,
+        ):
+            raise _unavailable(WEBHOOK_SUBSCRIPTION_CREDENTIAL_UNAVAILABLE) from None
         if not access_token:
-            raise _unavailable()
-        response = requests.post(
-            f"{GRAPH_ROOT}/{API_VERSION}/{external_id}/subscribed_apps",
-            headers={"Authorization": f"Bearer {access_token}"},
-            params={"subscribed_fields": OAUTH_SUBSCRIBED_FIELDS_PARAMETER},
-            timeout=OAUTH_SUBSCRIPTION_TIMEOUT_SECONDS,
-        )
-        if not response.ok:
-            raise _unavailable()
-        payload = response.json()
+            raise _unavailable(WEBHOOK_SUBSCRIPTION_CREDENTIAL_UNAVAILABLE)
+        try:
+            response = requests.post(
+                f"{GRAPH_ROOT}/{API_VERSION}/{external_id}/subscribed_apps",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={"subscribed_fields": OAUTH_SUBSCRIBED_FIELDS_PARAMETER},
+                timeout=OAUTH_SUBSCRIPTION_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException:
+            raise _unavailable(WEBHOOK_SUBSCRIPTION_TRANSPORT_FAILED) from None
+        try:
+            if not response.ok:
+                raise _unavailable(WEBHOOK_SUBSCRIPTION_PROVIDER_REJECTED)
+            payload = response.json()
+        except OAuthWebhookSubscriptionError:
+            raise
+        except (AttributeError, TypeError, ValueError):
+            raise _unavailable(WEBHOOK_SUBSCRIPTION_PROVIDER_RESPONSE_INVALID) from None
         if not isinstance(payload, dict) or payload.get("success") is not True:
-            raise _unavailable()
+            raise _unavailable(WEBHOOK_SUBSCRIPTION_PROVIDER_RESPONSE_INVALID)
         return True
     except OAuthWebhookSubscriptionError:
         raise
     except (
-        CredentialConfigurationError,
-        CredentialDecryptionError,
-        CredentialNotFoundError,
         SQLAlchemyError,
-        requests.RequestException,
-        AttributeError,
-        TypeError,
-        ValueError,
     ):
         raise _unavailable() from None

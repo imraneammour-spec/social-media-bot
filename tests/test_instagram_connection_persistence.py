@@ -199,9 +199,13 @@ class InstagramConnectionPersistenceTest(unittest.TestCase):
             original_ciphertext = original_credential.token_ciphertext
         self.token = "replacement-token-that-must-not-become-usable"
 
+        from database.oauth_webhook_subscription import (
+            WEBHOOK_SUBSCRIPTION_PROVIDER_REJECTED,
+        )
+
         with patch(
             "database.instagram_connection.subscribe_oauth_account_webhooks",
-            side_effect=OAuthWebhookSubscriptionError("provider details must remain hidden"),
+            side_effect=OAuthWebhookSubscriptionError(WEBHOOK_SUBSCRIPTION_PROVIDER_REJECTED),
         ):
             with self.assertRaises(InstagramConnectionError) as raised:
                 self._complete()
@@ -213,7 +217,10 @@ class InstagramConnectionPersistenceTest(unittest.TestCase):
                 InstagramCredential.instagram_account_id == original.id
             ))
             self.assertEqual(account.connection_status, "reconnect_required")
-            self.assertEqual(account.last_connection_error_code, "webhook_subscription_unavailable")
+            self.assertEqual(
+                account.last_connection_error_code,
+                WEBHOOK_SUBSCRIPTION_PROVIDER_REJECTED,
+            )
             self.assertEqual(credential.token_ciphertext, original_ciphertext)
             self.assertNotIn(self.token, credential.token_ciphertext)
             self.assertEqual(load_decrypted_access_token(session, account, self.keyring),

@@ -25,14 +25,12 @@ from .ownership import resolve_owned_instagram_account
 from .oauth_webhook_subscription import (
     OAUTH_SUBSCRIPTION_PENDING_STATUS,
     OAuthWebhookSubscriptionError,
+    WEBHOOK_SUBSCRIPTION_PROVIDER_RESPONSE_INVALID,
     subscribe_oauth_account_webhooks,
 )
 
 
 INSTAGRAM_EXTERNAL_ID_PATTERN = re.compile(r"^[0-9]{1,64}$")
-SUBSCRIPTION_FAILURE_ERROR_CODE = "webhook_subscription_unavailable"
-
-
 class InstagramConnectionError(ValueError):
     """Raised without account, token, provider, or database details."""
 
@@ -239,6 +237,7 @@ def _record_subscription_failure(
     instagram_user_id: str,
     username: str | None,
     current_time: datetime,
+    failure_code: str,
 ) -> None:
     """Persist only a sanitized, non-active reconnect state after rollback."""
 
@@ -259,7 +258,7 @@ def _record_subscription_failure(
         account.connection_status = "reconnect_required"
         account.connected_at = None
         account.disconnected_at = current_time
-        account.last_connection_error_code = SUBSCRIPTION_FAILURE_ERROR_CODE
+        account.last_connection_error_code = failure_code
         db_session.flush()
 
 
@@ -312,7 +311,7 @@ def complete_discovered_instagram_connection(
                     now=current_time,
                 ):
                     raise OAuthWebhookSubscriptionError(
-                        "Instagram webhook subscription is unavailable."
+                        WEBHOOK_SUBSCRIPTION_PROVIDER_RESPONSE_INVALID
                     )
                 account.connection_status = "connected"
                 account.connected_at = current_time
@@ -320,13 +319,14 @@ def complete_discovered_instagram_connection(
                 account.last_connection_error_code = None
                 db_session.flush()
                 return account
-        except OAuthWebhookSubscriptionError:
+        except OAuthWebhookSubscriptionError as subscription_error:
             _record_subscription_failure(
                 session_factory,
                 user_id=normalized_user_id,
                 instagram_user_id=instagram_user_id,
                 username=username,
                 current_time=current_time,
+                failure_code=subscription_error.failure_code,
             )
             raise _connection_error() from None
     except InstagramConnectionError:

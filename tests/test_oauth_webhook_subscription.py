@@ -97,6 +97,10 @@ class OAuthWebhookSubscriptionTest(unittest.TestCase):
                 self._subscribe(instagram_user_id=self.account_b.instagram_user_id)
 
         self.assertEqual(str(raised.exception), "Instagram webhook subscription is unavailable.")
+        self.assertEqual(
+            raised.exception.failure_code,
+            "webhook_subscription_precondition_failed",
+        )
         decrypt.assert_not_called()
         post.assert_not_called()
 
@@ -118,8 +122,12 @@ class OAuthWebhookSubscriptionTest(unittest.TestCase):
                 with patch.object(subscriptions, "decrypt_access_token") as decrypt, patch.object(
                     subscriptions.requests, "post"
                 ) as post:
-                    with self.assertRaises(OAuthWebhookSubscriptionError):
+                    with self.assertRaises(OAuthWebhookSubscriptionError) as raised:
                         self._subscribe()
+                self.assertEqual(
+                    raised.exception.failure_code,
+                    "webhook_subscription_precondition_failed",
+                )
                 decrypt.assert_not_called()
                 post.assert_not_called()
 
@@ -139,9 +147,13 @@ class OAuthWebhookSubscriptionTest(unittest.TestCase):
             with self.assertRaises(OAuthWebhookSubscriptionError) as raised:
                 self._subscribe()
         self.assertEqual(str(raised.exception), "Instagram webhook subscription is unavailable.")
+        self.assertEqual(
+            raised.exception.failure_code,
+            "webhook_subscription_precondition_failed",
+        )
 
-    def test_revoked_credential_timeout_and_malformed_success_are_sanitized(self):
-        """Removing lifecycle checks or accepting an ambiguous response must fail this test."""
+    def test_failure_classes_are_finite_and_do_not_expose_provider_details(self):
+        """Collapsing distinct internal failures prevents safe staging diagnosis."""
         from database import oauth_webhook_subscription as subscriptions
         from database.oauth_webhook_subscription import OAuthWebhookSubscriptionError
 
@@ -156,6 +168,10 @@ class OAuthWebhookSubscriptionTest(unittest.TestCase):
             with self.assertRaises(OAuthWebhookSubscriptionError) as raised:
                 self._subscribe()
         self.assertEqual(str(raised.exception), "Instagram webhook subscription is unavailable.")
+        self.assertEqual(
+            raised.exception.failure_code,
+            "webhook_subscription_precondition_failed",
+        )
         decrypt.assert_not_called()
         post.assert_not_called()
 
@@ -164,11 +180,20 @@ class OAuthWebhookSubscriptionTest(unittest.TestCase):
                 instagram_account_id=self.account_a.id
             ).one()
             credential.revoked_at = None
-        for provider_result in (
-            subscriptions.requests.Timeout("provider endpoint unavailable"),
-            Mock(ok=True, json=Mock(return_value={"success": False})),
-        ):
-            with self.subTest(result=type(provider_result).__name__), patch.object(
+        cases = (
+            (
+                "transport",
+                subscriptions.requests.Timeout("provider endpoint unavailable"),
+                "webhook_subscription_transport_failed",
+            ),
+            (
+                "invalid_success",
+                Mock(ok=True, json=Mock(return_value={"success": False})),
+                "webhook_subscription_provider_response_invalid",
+            ),
+        )
+        for name, provider_result, expected_code in cases:
+            with self.subTest(result=name), patch.object(
                 subscriptions, "decrypt_access_token", return_value="staged-token-a"
             ), patch.object(
                 subscriptions.requests, "post",
@@ -178,8 +203,7 @@ class OAuthWebhookSubscriptionTest(unittest.TestCase):
                 with self.assertRaises(OAuthWebhookSubscriptionError) as raised:
                     self._subscribe()
             self.assertEqual(str(raised.exception), "Instagram webhook subscription is unavailable.")
-        decrypt.assert_not_called()
-        post.assert_not_called()
+            self.assertEqual(raised.exception.failure_code, expected_code)
 
         with self.Session.begin() as session:
             credential = session.query(InstagramCredential).filter_by(
@@ -193,6 +217,68 @@ class OAuthWebhookSubscriptionTest(unittest.TestCase):
             with self.assertRaises(OAuthWebhookSubscriptionError) as raised:
                 self._subscribe()
         self.assertEqual(str(raised.exception), "Instagram webhook subscription is unavailable.")
+        self.assertEqual(
+            raised.exception.failure_code,
+            "webhook_subscription_provider_rejected",
+        )
+
+    def test_credential_decryption_failure_is_classified_without_posting(self):
+        """A staged credential failure must be distinguishable without leaking its contents."""
+        from database import oauth_webhook_subscription as subscriptions
+        from database.credentials import CredentialDecryptionError
+        from database.oauth_webhook_subscription import OAuthWebhookSubscriptionError
+
+        with patch.object(
+            subscriptions,
+            "decrypt_access_token",
+            side_effect=CredentialDecryptionError("private credential text"),
+        ), patch.object(subscriptions.requests, "post") as post:
+            with self.assertRaises(OAuthWebhookSubscriptionError) as raised:
+                self._subscribe()
+
+        self.assertEqual(str(raised.exception), "Instagram webhook subscription is unavailable.")
+        self.assertEqual(
+            raised.exception.failure_code,
+            "webhook_subscription_credential_unavailable",
+        )
+        self.assertNotIn("private credential text", str(raised.exception))
+        post.assert_not_called()
+
+    def test_invalid_keyring_is_classified_without_posting(self):
+        """A keyring failure must not be mistaken for a provider rejection."""
+        from database import oauth_webhook_subscription as subscriptions
+        from database.oauth_webhook_subscription import OAuthWebhookSubscriptionError
+
+        with patch.object(subscriptions.requests, "post") as post:
+            with self.assertRaises(OAuthWebhookSubscriptionError) as raised:
+                self._subscribe()
+
+        self.assertEqual(str(raised.exception), "Instagram webhook subscription is unavailable.")
+        self.assertEqual(
+            raised.exception.failure_code,
+            "webhook_subscription_credential_unavailable",
+        )
+        post.assert_not_called()
+
+    def test_malformed_provider_json_is_classified_without_provider_body(self):
+        """Accepting malformed provider JSON would make connection state ambiguous."""
+        from database import oauth_webhook_subscription as subscriptions
+        from database.oauth_webhook_subscription import OAuthWebhookSubscriptionError
+
+        response = Mock(ok=True)
+        response.json.side_effect = ValueError("raw provider body must stay private")
+        with patch.object(subscriptions, "decrypt_access_token", return_value="staged-token-a"), patch.object(
+            subscriptions.requests, "post", return_value=response
+        ):
+            with self.assertRaises(OAuthWebhookSubscriptionError) as raised:
+                self._subscribe()
+
+        self.assertEqual(str(raised.exception), "Instagram webhook subscription is unavailable.")
+        self.assertEqual(
+            raised.exception.failure_code,
+            "webhook_subscription_provider_response_invalid",
+        )
+        self.assertNotIn("raw provider body", str(raised.exception))
 
     def test_repeated_subscription_has_no_local_duplicate_state(self):
         """A later reconnect can repeat the same provider request without creating local records."""
