@@ -154,16 +154,23 @@ def _discovery_error() -> OAuthDiscoveryError:
     return OAuthDiscoveryError("Instagram account discovery could not be completed.")
 
 
-def _access_token_from_response(response: object) -> str:
-    """Extract only a nonempty access token without surfacing provider details."""
-
+def _successful_response_payload(response: object) -> dict[str, object]:
+    """Read one successful provider JSON object without surfacing its contents."""
     if not bool(getattr(response, "ok", False)):
         raise _exchange_error()
     try:
         payload = response.json()  # type: ignore[union-attr]
     except (AttributeError, TypeError, ValueError):
         raise _exchange_error() from None
-    access_token = payload.get("access_token") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        raise _exchange_error()
+    return payload
+
+
+def _access_token_from_payload(payload: Mapping[str, object]) -> str:
+    """Extract only a nonempty access token from already-read provider JSON."""
+
+    access_token = payload.get("access_token")
     if not isinstance(access_token, str) or not access_token:
         raise _exchange_error()
     return access_token
@@ -179,14 +186,17 @@ def normalized_expires_in(value: object) -> int | None:
     return value
 
 
-def _validated_scopes(payload: object) -> tuple[str, ...] | None:
-    if not isinstance(payload, dict):
-        return None
-    scopes = payload.get("scopes")
-    if not isinstance(scopes, list) or not scopes or len(scopes) > 64:
-        return None
+def _validated_granted_permissions(payload: Mapping[str, object]) -> tuple[str, ...]:
+    """Validate Meta's comma-separated short-lived OAuth grant evidence."""
+
+    permissions = payload.get("permissions")
+    if not isinstance(permissions, str) or not permissions or len(permissions) > 8192:
+        raise _exchange_error()
+    granted = permissions.split(",")
+    if not granted or len(granted) > 64:
+        raise _exchange_error()
     normalized: list[str] = []
-    for scope in scopes:
+    for scope in granted:
         if (
             not isinstance(scope, str)
             or not scope
@@ -194,24 +204,25 @@ def _validated_scopes(payload: object) -> tuple[str, ...] | None:
             or not scope.isascii()
             or not all(character.islower() or character.isdigit() or character == "_" for character in scope)
         ):
-            return None
+            raise _exchange_error()
         normalized.append(scope)
+    if len(set(normalized)) != len(normalized):
+        raise _exchange_error()
     return tuple(normalized)
 
 
-def _token_result_from_response(response: object) -> InstagramOAuthTokenResult:
-    token = _access_token_from_response(response)
-    try:
-        payload = response.json()  # type: ignore[union-attr]
-    except (AttributeError, TypeError, ValueError):
-        raise _exchange_error() from None
-    if not isinstance(payload, dict):
-        raise _exchange_error()
-    return InstagramOAuthTokenResult(
-        long_lived_access_token=token,
-        expires_in=normalized_expires_in(payload.get("expires_in")),
-        scopes=_validated_scopes(payload),
-    )
+def _short_lived_exchange_result(response: object) -> tuple[str, tuple[str, ...]]:
+    """Return a short-lived token and only Meta-issued granted permissions."""
+
+    payload = _successful_response_payload(response)
+    return _access_token_from_payload(payload), _validated_granted_permissions(payload)
+
+
+def _long_lived_exchange_result(response: object) -> tuple[str, int | None]:
+    """Return only the replacement token and optional expiry from Meta."""
+
+    payload = _successful_response_payload(response)
+    return _access_token_from_payload(payload), normalized_expires_in(payload.get("expires_in"))
 
 
 def complete_instagram_token_exchange(
@@ -240,7 +251,7 @@ def complete_instagram_token_exchange(
             },
             timeout=INSTAGRAM_OAUTH_REQUEST_TIMEOUT_SECONDS,
         )
-        short_lived_token = _access_token_from_response(short_lived_response)
+        short_lived_token, verified_permissions = _short_lived_exchange_result(short_lived_response)
         long_lived_response = requests.get(
             INSTAGRAM_OAUTH_LONG_LIVED_TOKEN_URL,
             params={
@@ -250,7 +261,12 @@ def complete_instagram_token_exchange(
             },
             timeout=INSTAGRAM_OAUTH_REQUEST_TIMEOUT_SECONDS,
         )
-        return _token_result_from_response(long_lived_response)
+        long_lived_token, expires_in = _long_lived_exchange_result(long_lived_response)
+        return InstagramOAuthTokenResult(
+            long_lived_access_token=long_lived_token,
+            expires_in=expires_in,
+            scopes=verified_permissions,
+        )
     except (OAuthConfigurationError, OAuthExchangeError):
         raise _exchange_error() from None
     except (requests.RequestException, AttributeError, TypeError, ValueError):

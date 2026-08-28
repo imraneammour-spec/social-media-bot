@@ -215,12 +215,17 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
         authorization_code = "authorization-code-must-not-leak"
         short_token = "short-token-must-not-leak"
         long_token = "long-token-must-not-leak"
-        short_response = _ProviderResponse(payload={"access_token": short_token})
+        short_response = _ProviderResponse(payload={
+            "access_token": short_token,
+            "permissions": (
+                "instagram_business_basic,instagram_business_manage_comments,"
+                "instagram_business_manage_messages"
+            ),
+        })
         long_response = _ProviderResponse(
             payload={
                 "access_token": long_token,
                 "expires_in": 3600,
-                "scopes": ["instagram_business_basic"],
             }
         )
 
@@ -233,7 +238,11 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
 
         self.assertEqual(result.long_lived_access_token, long_token)
         self.assertEqual(result.expires_in, 3600)
-        self.assertEqual(result.scopes, ("instagram_business_basic",))
+        self.assertEqual(result.scopes, (
+            "instagram_business_basic",
+            "instagram_business_manage_comments",
+            "instagram_business_manage_messages",
+        ))
         self.assertNotIn(long_token, repr(result))
 
         self.assertTrue(INSTAGRAM_OAUTH_CODE_EXCHANGE_URL.startswith("https://"))
@@ -259,6 +268,38 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
             timeout=INSTAGRAM_OAUTH_REQUEST_TIMEOUT_SECONDS,
         )
         self.assertNotIn(long_token, str(configuration))
+
+    def test_missing_or_malformed_short_lived_permissions_fail_before_long_lived_exchange(self):
+        """Using requested or long-lived scopes instead of Meta's grant evidence must fail."""
+        environment = self._oauth_environment()
+        configuration = oauth_configuration_from_environment(environment, production=True)
+        authorization_code = "authorization-code-must-not-leak"
+        short_token = "short-token-must-not-leak"
+        app_secret = environment["META_APP_SECRET"]
+        invalid_permissions = (
+            None,
+            "",
+            "instagram_business_basic,,instagram_business_manage_comments",
+            "instagram_business_basic,INVALID_PERMISSION",
+            ["instagram_business_basic"],
+        )
+
+        for permissions in invalid_permissions:
+            with self.subTest(permissions=type(permissions).__name__), patch.dict(
+                os.environ, environment, clear=False
+            ), patch(
+                "instagram_oauth.requests.post",
+                return_value=_ProviderResponse(payload={
+                    "access_token": short_token,
+                    "permissions": permissions,
+                }),
+            ), patch("instagram_oauth.requests.get") as get:
+                with self.assertRaises(OAuthExchangeError) as error:
+                    complete_instagram_token_exchange(authorization_code, configuration)
+            self.assertEqual(str(error.exception), "Instagram authorization could not be completed.")
+            self.assertNotIn(short_token, str(error.exception))
+            self.assertNotIn(app_secret, str(error.exception))
+            get.assert_not_called()
 
     def test_discovery_uses_https_bearer_auth_minimal_fields_and_sanitizes_failures(self):
         long_token = "long-token-must-not-leak"
@@ -317,7 +358,10 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
 
         with patch.dict("os.environ", self._oauth_environment(), clear=False), patch(
             "instagram_oauth.requests.post",
-            return_value=_ProviderResponse(payload={"access_token": short_token}),
+            return_value=_ProviderResponse(payload={
+                "access_token": short_token,
+                "permissions": "instagram_business_basic",
+            }),
         ), patch(
             "instagram_oauth.requests.get",
             return_value=_ProviderResponse(payload={"access_token": long_token}),
@@ -385,7 +429,10 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
 
         with patch.dict(os.environ, environment, clear=False), patch(
             "instagram_oauth.requests.post",
-            return_value=_ProviderResponse(payload={"access_token": short_token}),
+            return_value=_ProviderResponse(payload={
+                "access_token": short_token,
+                "permissions": "instagram_business_basic",
+            }),
         ), patch(
             "instagram_oauth.requests.get",
             return_value=_ProviderResponse(ok=False, payload=provider_body),
@@ -397,7 +444,10 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
 
         with patch.dict(os.environ, environment, clear=False), patch(
             "instagram_oauth.requests.post",
-            return_value=_ProviderResponse(payload={"access_token": short_token}),
+            return_value=_ProviderResponse(payload={
+                "access_token": short_token,
+                "permissions": "instagram_business_basic",
+            }),
         ), patch(
             "instagram_oauth.requests.get", return_value=_ProviderResponse(payload={}),
         ):
