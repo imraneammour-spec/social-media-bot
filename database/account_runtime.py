@@ -118,6 +118,27 @@ def _usable_oauth_account(account: InstagramAccount, *, now: datetime) -> bool:
     )
 
 
+def instagram_account_route_identity_match_state(
+    session: Session,
+    *,
+    instagram_user_id: object,
+) -> str:
+    """Return only a finite token-free identity match diagnostic."""
+
+    external_id = _normalized_external_id(instagram_user_id)
+    if external_id is None:
+        return "indeterminate"
+    try:
+        account_id = session.scalar(
+            select(InstagramAccount.id).where(
+                InstagramAccount.instagram_user_id == external_id
+            )
+        )
+        return "True" if account_id is not None else "False"
+    except (SQLAlchemyError, AttributeError, TypeError, ValueError):
+        return "indeterminate"
+
+
 def resolve_instagram_account_route(
     session: Session,
     *,

@@ -23,6 +23,7 @@ from database.cli import register_database_commands
 from database.config import database_url_from_environment
 from database.account_runtime import (
     RuntimeAccountRouteUnavailableError,
+    instagram_account_route_identity_match_state,
     resolve_instagram_account_route,
 )
 from database.oauth_engagement import (
@@ -3623,6 +3624,27 @@ def _resolve_webhook_entry_route(entry_external_id):
         )
 
 
+def _webhook_entry_identity_match_state(entry_external_id):
+    """Return a finite, token-free diagnostic for a failed webhook route."""
+
+    if not isinstance(entry_external_id, str) or not WEBHOOK_EXTERNAL_ID_PATTERN.fullmatch(
+        entry_external_id
+    ):
+        return "indeterminate"
+    try:
+        auth_state = app.extensions.get("phase3a_auth")
+        session_factory = getattr(auth_state, "session_factory", None)
+        if session_factory is None:
+            return "indeterminate"
+        with session_factory() as db_session:
+            return instagram_account_route_identity_match_state(
+                db_session,
+                instagram_user_id=entry_external_id,
+            )
+    except Exception:
+        return "indeterminate"
+
+
 def _messaging_event_matches_entry(event, entry_external_id):
     """Require a supplied messaging recipient to agree with its envelope ID."""
 
@@ -3973,6 +3995,8 @@ def process_webhook_background(
         try:
             route = _resolve_webhook_entry_route(entry_external_id)
         except Exception:
+            identity_match = _webhook_entry_identity_match_state(entry_external_id)
+            print(f"WEBHOOK ROUTING DIAGNOSTIC: identity_match={identity_match}")
             print("WEBHOOK ROUTING: entry skipped (route unavailable).")
             continue
 

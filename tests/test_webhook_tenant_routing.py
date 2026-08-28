@@ -222,6 +222,91 @@ class WebhookTenantRoutingTest(unittest.TestCase):
 
         process_comment.assert_called_once_with({"id": "good"}, "http://localhost")
 
+    def test_route_failure_diagnostic_reports_matching_identity_without_leaking_data(self):
+        entry_id = "17841438617458902"
+        sensitive_token = self.environment["INSTAGRAM_ACCESS_TOKEN"]
+        sensitive_payload = "private-message-content"
+        payload = {
+            "entry": [{
+                "id": entry_id,
+                "changes": [{"field": "comments", "value": {"text": sensitive_payload}}],
+            }]
+        }
+        with patch.object(
+            self.module,
+            "_resolve_webhook_entry_route",
+            side_effect=RuntimeError("forced route failure"),
+        ), patch.object(self.module, "process_comment") as legacy_handler, patch.object(
+            self.module, "process_oauth_webhook_entry"
+        ) as oauth_handler, patch("builtins.print") as log:
+            self.module.process_webhook_background(payload, "http://localhost")
+
+        rendered = " ".join(
+            str(argument) for call in log.call_args_list for argument in call.args
+        )
+        self.assertIn("WEBHOOK ROUTING DIAGNOSTIC: identity_match=True", rendered)
+        self.assertIn("WEBHOOK ROUTING: entry skipped (route unavailable).", rendered)
+        for secret_or_identifier in (entry_id, sensitive_payload, sensitive_token):
+            self.assertNotIn(secret_or_identifier, rendered)
+        legacy_handler.assert_not_called()
+        oauth_handler.assert_not_called()
+
+    def test_route_failure_diagnostic_reports_false_for_unknown_identity(self):
+        payload = {
+            "entry": [{
+                "id": "17841438617458999",
+                "changes": [{"field": "comments", "value": {}}],
+            }]
+        }
+        with patch("builtins.print") as log, patch.object(
+            self.module, "process_comment"
+        ) as legacy_handler:
+            self.module.process_webhook_background(payload, "http://localhost")
+
+        rendered = " ".join(
+            str(argument) for call in log.call_args_list for argument in call.args
+        )
+        self.assertIn("WEBHOOK ROUTING DIAGNOSTIC: identity_match=False", rendered)
+        self.assertIn("WEBHOOK ROUTING: entry skipped (route unavailable).", rendered)
+        self.assertNotIn("17841438617458999", rendered)
+        legacy_handler.assert_not_called()
+
+    def test_route_failure_diagnostic_reports_indeterminate_when_lookup_is_unavailable(self):
+        auth_state = self.module.app.extensions["phase3a_auth"]
+        session_factory = auth_state.session_factory
+        auth_state.session_factory = None
+        payload = {
+            "entry": [{
+                "id": "17841438617458902",
+                "changes": [{"field": "comments", "value": {}}],
+            }]
+        }
+        try:
+            with patch("builtins.print") as log, patch.object(
+                self.module, "process_comment"
+            ) as legacy_handler:
+                self.module.process_webhook_background(payload, "http://localhost")
+        finally:
+            auth_state.session_factory = session_factory
+
+        rendered = " ".join(
+            str(argument) for call in log.call_args_list for argument in call.args
+        )
+        self.assertIn("WEBHOOK ROUTING DIAGNOSTIC: identity_match=indeterminate", rendered)
+        self.assertIn("WEBHOOK ROUTING: entry skipped (route unavailable).", rendered)
+        self.assertNotIn("17841438617458902", rendered)
+        legacy_handler.assert_not_called()
+
+    def test_route_failure_diagnostic_does_not_change_webhook_acknowledgment(self):
+        payload = {"entry": [{"id": "17841438617458999", "changes": []}]}
+        with patch.object(self.module.threading, "Thread", _NoopThread):
+            body, headers = self._signed_headers(payload)
+            response = self.client.post(
+                "/webhook", data=body, content_type="application/json", headers=headers
+            )
+
+        self.assertEqual(response.status_code, 200)
+
     def test_legacy_processing_failure_does_not_block_a_later_legacy_entry(self):
         payload = {
             "entry": [
