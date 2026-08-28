@@ -25,6 +25,7 @@ from database.account_runtime import (
     RuntimeAccountRouteUnavailableError,
     instagram_account_route_identity_match_state,
     resolve_instagram_account_route,
+    webhook_identity_matches_single_connected_oauth_graph_profile,
 )
 from database.oauth_engagement import (
     claim_oauth_event,
@@ -3645,6 +3646,27 @@ def _webhook_entry_identity_match_state(entry_external_id):
         return "indeterminate"
 
 
+def _webhook_entry_graph_profile_match_state(entry_external_id):
+    """Return a finite, in-memory Graph profile comparison for diagnostics."""
+
+    if not isinstance(entry_external_id, str) or not WEBHOOK_EXTERNAL_ID_PATTERN.fullmatch(
+        entry_external_id
+    ):
+        return "indeterminate"
+    try:
+        auth_state = app.extensions.get("phase3a_auth")
+        session_factory = getattr(auth_state, "session_factory", None)
+        if session_factory is None:
+            return "indeterminate"
+        with session_factory() as db_session:
+            return webhook_identity_matches_single_connected_oauth_graph_profile(
+                db_session,
+                instagram_user_id=entry_external_id,
+            )
+    except Exception:
+        return "indeterminate"
+
+
 def _messaging_event_matches_entry(event, entry_external_id):
     """Require a supplied messaging recipient to agree with its envelope ID."""
 
@@ -3997,6 +4019,12 @@ def process_webhook_background(
         except Exception:
             identity_match = _webhook_entry_identity_match_state(entry_external_id)
             print(f"WEBHOOK ROUTING DIAGNOSTIC: identity_match={identity_match}")
+            if identity_match == "False":
+                graph_profile_match = _webhook_entry_graph_profile_match_state(entry_external_id)
+                print(
+                    "WEBHOOK ROUTING DIAGNOSTIC: "
+                    f"webhook_matches_graph_profile={graph_profile_match}"
+                )
             print("WEBHOOK ROUTING: entry skipped (route unavailable).")
             continue
 

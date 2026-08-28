@@ -8,6 +8,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+import requests
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -27,6 +28,8 @@ INSTAGRAM_EXTERNAL_ID_PATTERN = re.compile(r"^[0-9]{1,64}$")
 OAUTH_CONNECTION_STATUS = "connected"
 USABLE_CREDENTIAL_STATUS = "valid"
 LEGACY_CONNECTION_STATUS = "environment_managed"
+OAUTH_GRAPH_PROFILE_URL = "https://graph.instagram.com/v25.0/me"
+OAUTH_GRAPH_PROFILE_TIMEOUT_SECONDS = 15
 
 
 class RuntimeCredentialUnavailableError(ValueError):
@@ -136,6 +139,58 @@ def instagram_account_route_identity_match_state(
         )
         return "True" if account_id is not None else "False"
     except (SQLAlchemyError, AttributeError, TypeError, ValueError):
+        return "indeterminate"
+
+
+def webhook_identity_matches_single_connected_oauth_graph_profile(
+    session: Session,
+    *,
+    instagram_user_id: object,
+    keyring: CredentialKeyring | None = None,
+) -> str:
+    """Compare a failed webhook identity to one connected OAuth profile only.
+
+    This is diagnostic-only: it never mutates state, emits logs, or returns an
+    identifier.  Any unavailable or ambiguous dependency is indeterminate.
+    """
+
+    webhook_external_id = _normalized_external_id(instagram_user_id)
+    if webhook_external_id is None:
+        return "indeterminate"
+    try:
+        accounts = list(
+            session.scalars(
+                select(InstagramAccount).where(
+                    InstagramAccount.provider == "instagram",
+                    InstagramAccount.connection_status == OAUTH_CONNECTION_STATUS,
+                )
+            )
+        )
+        if len(accounts) != 1:
+            return "indeterminate"
+        account = accounts[0]
+        runtime = resolve_oauth_instagram_account_runtime(
+            session,
+            instagram_account_id=account.id,
+            instagram_user_id=account.instagram_user_id,
+            keyring=keyring,
+        )
+        response = requests.get(
+            OAUTH_GRAPH_PROFILE_URL,
+            headers={"Authorization": f"Bearer {runtime.access_token}"},
+            params={"fields": "id"},
+            timeout=OAUTH_GRAPH_PROFILE_TIMEOUT_SECONDS,
+        )
+        if not bool(getattr(response, "ok", False)):
+            return "indeterminate"
+        payload = response.json()
+        profile_external_id = _normalized_external_id(
+            payload.get("id") if isinstance(payload, dict) else None
+        )
+        if profile_external_id is None:
+            return "indeterminate"
+        return "True" if hmac.compare_digest(webhook_external_id, profile_external_id) else "False"
+    except Exception:
         return "indeterminate"
 
 

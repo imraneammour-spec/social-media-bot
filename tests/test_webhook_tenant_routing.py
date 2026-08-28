@@ -271,6 +271,51 @@ class WebhookTenantRoutingTest(unittest.TestCase):
         self.assertNotIn("17841438617458999", rendered)
         legacy_handler.assert_not_called()
 
+    def test_false_database_identity_diagnostic_logs_only_the_graph_profile_comparison(self):
+        entry_id = "17841438617458999"
+        sensitive_token = self.environment["INSTAGRAM_ACCESS_TOKEN"]
+        payload = {
+            "entry": [{
+                "id": entry_id,
+                "changes": [{"field": "comments", "value": {"text": "private-message-content"}}],
+            }]
+        }
+        with patch.object(
+            self.module, "_resolve_webhook_entry_route", side_effect=RuntimeError("forced route failure")
+        ), patch.object(
+            self.module, "_webhook_entry_identity_match_state", return_value="False"
+        ), patch.object(
+            self.module, "_webhook_entry_graph_profile_match_state", return_value="True"
+        ) as graph_profile_state, patch("builtins.print") as log, patch.object(
+            self.module, "process_comment"
+        ) as legacy_handler, patch.object(self.module, "process_oauth_webhook_entry") as oauth_handler:
+            self.module.process_webhook_background(payload, "http://localhost")
+
+        rendered = " ".join(
+            str(argument) for call in log.call_args_list for argument in call.args
+        )
+        self.assertIn("WEBHOOK ROUTING DIAGNOSTIC: identity_match=False", rendered)
+        self.assertIn(
+            "WEBHOOK ROUTING DIAGNOSTIC: webhook_matches_graph_profile=True", rendered
+        )
+        self.assertIn("WEBHOOK ROUTING: entry skipped (route unavailable).", rendered)
+        for secret_or_identifier in (entry_id, sensitive_token, "private-message-content"):
+            self.assertNotIn(secret_or_identifier, rendered)
+        graph_profile_state.assert_called_once_with(entry_id)
+        legacy_handler.assert_not_called()
+        oauth_handler.assert_not_called()
+
+    def test_graph_profile_diagnostic_runs_only_after_a_false_database_identity_match(self):
+        payload = {"entry": [{"id": "17841438617458902", "changes": []}]}
+        with patch.object(
+            self.module, "_resolve_webhook_entry_route", side_effect=RuntimeError("forced route failure")
+        ), patch.object(
+            self.module, "_webhook_entry_identity_match_state", return_value="True"
+        ), patch.object(self.module, "_webhook_entry_graph_profile_match_state") as graph_profile_state:
+            self.module.process_webhook_background(payload, "http://localhost")
+
+        graph_profile_state.assert_not_called()
+
     def test_route_failure_diagnostic_reports_indeterminate_when_lookup_is_unavailable(self):
         auth_state = self.module.app.extensions["phase3a_auth"]
         session_factory = auth_state.session_factory

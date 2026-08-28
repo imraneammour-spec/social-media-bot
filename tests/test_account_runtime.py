@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from cryptography.fernet import Fernet
+import requests
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
@@ -400,6 +401,88 @@ class AccountRuntimeResolverTest(unittest.TestCase):
             self.assertEqual(credential_after.token_ciphertext, ciphertext_before)
             self.assertEqual(credential_after.encryption_key_id, key_id_before)
             self.assertEqual(session.query(InstagramCredential).count(), 2)
+
+    def test_webhook_identity_graph_profile_diagnostic_matches_single_connected_oauth_account(self):
+        from database.account_runtime import (
+            OAUTH_GRAPH_PROFILE_TIMEOUT_SECONDS,
+            OAUTH_GRAPH_PROFILE_URL,
+            webhook_identity_matches_single_connected_oauth_graph_profile,
+        )
+
+        with self.Session.begin() as session:
+            session.get(InstagramAccount, self.account_b_id).connection_status = "disconnected"
+
+        response = type(
+            "GraphProfileResponse",
+            (),
+            {"ok": True, "json": lambda _self: {"id": "17841438617458902"}},
+        )()
+        with self.Session() as session, patch(
+            "database.account_runtime.requests.get", return_value=response
+        ) as graph_get, patch("builtins.print") as log:
+            state = webhook_identity_matches_single_connected_oauth_graph_profile(
+                session,
+                instagram_user_id="17841438617458902",
+                keyring=self.keyring,
+            )
+
+        self.assertEqual(state, "True")
+        graph_get.assert_called_once_with(
+            OAUTH_GRAPH_PROFILE_URL,
+            headers={"Authorization": f"Bearer {self.token_a}"},
+            params={"fields": "id"},
+            timeout=OAUTH_GRAPH_PROFILE_TIMEOUT_SECONDS,
+        )
+        self.assertFalse(log.called)
+
+    def test_webhook_identity_graph_profile_diagnostic_reports_false_without_disclosing_identity(self):
+        from database.account_runtime import webhook_identity_matches_single_connected_oauth_graph_profile
+
+        webhook_identity = "17841438617458999"
+        response = type(
+            "GraphProfileResponse",
+            (),
+            {"ok": True, "json": lambda _self: {"id": "17841438617458902"}},
+        )()
+        with self.Session.begin() as session:
+            session.get(InstagramAccount, self.account_b_id).connection_status = "disconnected"
+        with self.Session() as session, patch(
+            "database.account_runtime.requests.get", return_value=response
+        ), patch("builtins.print") as log:
+            state = webhook_identity_matches_single_connected_oauth_graph_profile(
+                session,
+                instagram_user_id=webhook_identity,
+                keyring=self.keyring,
+            )
+
+        self.assertEqual(state, "False")
+        rendered = " ".join(
+            str(argument) for call in log.call_args_list for argument in call.args
+        )
+        for secret_or_identifier in (
+            webhook_identity,
+            "17841438617458902",
+            self.token_a,
+            self.key,
+        ):
+            self.assertNotIn(secret_or_identifier, rendered)
+
+    def test_webhook_identity_graph_profile_diagnostic_fails_closed_when_graph_is_unavailable(self):
+        from database.account_runtime import webhook_identity_matches_single_connected_oauth_graph_profile
+
+        with self.Session.begin() as session:
+            session.get(InstagramAccount, self.account_b_id).connection_status = "disconnected"
+        with self.Session() as session, patch(
+            "database.account_runtime.requests.get",
+            side_effect=requests.RequestException("sensitive request details"),
+        ):
+            state = webhook_identity_matches_single_connected_oauth_graph_profile(
+                session,
+                instagram_user_id="17841438617458999",
+                keyring=self.keyring,
+            )
+
+        self.assertEqual(state, "indeterminate")
 
 
 if __name__ == "__main__":
