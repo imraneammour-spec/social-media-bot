@@ -112,13 +112,24 @@ class AccountRuntimeResolverTest(unittest.TestCase):
     def _resolve_route(self, external_id, **kwargs):
         from database.account_runtime import resolve_instagram_account_route
 
+        legacy_instagram_user_id = kwargs.pop(
+            "legacy_instagram_user_id", self.legacy_external_id
+        )
         with self.Session() as session:
             return resolve_instagram_account_route(
                 session,
                 instagram_user_id=external_id,
-                legacy_instagram_user_id=self.legacy_external_id,
+                legacy_instagram_user_id=legacy_instagram_user_id,
                 **kwargs,
             )
+
+    def _assert_route_unavailable(self, external_id, **kwargs):
+        from database.account_runtime import RuntimeAccountRouteUnavailableError
+
+        with self.assertRaises(RuntimeAccountRouteUnavailableError) as raised:
+            self._resolve_route(external_id, **kwargs)
+        self.assertIsNone(raised.exception.__cause__)
+        return str(raised.exception)
 
     def test_token_free_route_classifies_legacy_and_connected_oauth_without_credential_access(self):
         with patch(
@@ -138,6 +149,48 @@ class AccountRuntimeResolverTest(unittest.TestCase):
         rendered = repr(oauth)
         for secret in (self.token_a, self.key, "KEY_2026_01"):
             self.assertNotIn(secret, rendered)
+
+    def test_connected_oauth_route_ignores_unusable_legacy_configuration_without_credential_access(self):
+        for legacy_instagram_user_id in (None, "not-an-instagram-id"):
+            with self.subTest(legacy_instagram_user_id=legacy_instagram_user_id), patch(
+                "database.account_runtime.credential_keyring_from_environment",
+                side_effect=AssertionError("routing must not load a keyring"),
+            ), patch(
+                "database.account_runtime.decrypt_access_token",
+                side_effect=AssertionError("routing must not decrypt a credential"),
+            ):
+                route = self._resolve_route(
+                    "17841438617458902",
+                    legacy_instagram_user_id=legacy_instagram_user_id,
+                )
+                self.assertEqual(route.instagram_account_id, self.account_a_id)
+                self.assertEqual(route.connection_mode, "oauth")
+
+    def test_legacy_route_requires_usable_legacy_configuration(self):
+        messages = [
+            self._assert_route_unavailable(
+                self.legacy_external_id,
+                legacy_instagram_user_id=legacy_instagram_user_id,
+            )
+            for legacy_instagram_user_id in (None, "not-an-instagram-id")
+        ]
+        self.assertEqual(messages, [messages[0]] * len(messages))
+
+        legacy = self._resolve_route(
+            self.legacy_external_id,
+            legacy_instagram_user_id=self.legacy_external_id,
+        )
+        self.assertEqual(legacy.instagram_account_id, self.legacy_account_id)
+        self.assertEqual(legacy.connection_mode, "legacy_environment")
+
+    def test_token_free_route_rejects_unknown_and_malformed_webhook_ids(self):
+        messages = [
+            self._assert_route_unavailable("17841438617458999"),
+            self._assert_route_unavailable("not-an-instagram-id"),
+            self._assert_route_unavailable(""),
+            self._assert_route_unavailable(None),
+        ]
+        self.assertEqual(messages, [messages[0]] * len(messages))
 
     def test_token_free_route_uses_only_account_lifecycle_not_credential_metadata(self):
         with self.Session.begin() as session:

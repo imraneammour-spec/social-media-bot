@@ -134,13 +134,12 @@ def resolve_instagram_account_route(
     """
 
     external_id = _normalized_external_id(instagram_user_id)
-    legacy_id = _normalized_external_id(legacy_instagram_user_id)
     current_time = now or datetime.now(timezone.utc)
     if current_time.tzinfo is None:
         current_time = current_time.replace(tzinfo=timezone.utc)
     else:
         current_time = current_time.astimezone(timezone.utc)
-    if external_id is None or legacy_id is None:
+    if external_id is None:
         raise _route_unavailable()
 
     try:
@@ -150,8 +149,10 @@ def resolve_instagram_account_route(
         if account is None:
             raise _route_unavailable()
 
+        legacy_id = _normalized_external_id(legacy_instagram_user_id)
         is_exact_legacy_account = bool(
-            hmac.compare_digest(external_id, legacy_id)
+            legacy_id is not None
+            and hmac.compare_digest(external_id, legacy_id)
             and hmac.compare_digest(str(account.instagram_user_id), legacy_id)
         )
         if is_exact_legacy_account:
