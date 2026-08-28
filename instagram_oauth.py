@@ -221,29 +221,49 @@ def normalized_expires_in(value: object) -> int | None:
         return None
     return value
 
-
 def _validated_granted_permissions(payload: Mapping[str, object]) -> tuple[str, ...]:
-    """Validate Meta's comma-separated short-lived OAuth grant evidence."""
+    """Validate Meta-issued granted permissions from the short-lived OAuth response."""
 
     permissions = payload.get("permissions")
-    if not isinstance(permissions, str) or not permissions or len(permissions) > 8192:
+
+    if isinstance(permissions, str):
+        if not permissions or len(permissions) > 8192:
+            raise _exchange_error(OAUTH_CALLBACK_STAGE_PERMISSIONS_INVALID)
+        granted = [item.strip(" \t") for item in permissions.split(",")]
+
+    elif isinstance(permissions, list):
+        if not permissions or len(permissions) > 64:
+            raise _exchange_error(OAUTH_CALLBACK_STAGE_PERMISSIONS_INVALID)
+        granted = permissions
+
+    else:
         raise _exchange_error(OAUTH_CALLBACK_STAGE_PERMISSIONS_INVALID)
-    granted = permissions.split(",")
+
     if not granted or len(granted) > 64:
         raise _exchange_error(OAUTH_CALLBACK_STAGE_PERMISSIONS_INVALID)
+
     normalized: list[str] = []
+
     for scope in granted:
         if (
             not isinstance(scope, str)
             or not scope
             or len(scope) > 128
             or not scope.isascii()
-            or not all(character.islower() or character.isdigit() or character == "_" for character in scope)
+            or not all(
+                character.islower()
+                or character.isdigit()
+                or character == "_"
+                for character in scope
+            )
         ):
             raise _exchange_error(OAUTH_CALLBACK_STAGE_PERMISSIONS_INVALID)
+
         normalized.append(scope)
+
     if len(set(normalized)) != len(normalized):
         raise _exchange_error(OAUTH_CALLBACK_STAGE_PERMISSIONS_INVALID)
+
     return tuple(normalized)
 
 

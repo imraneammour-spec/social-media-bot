@@ -274,6 +274,43 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
         )
         self.assertNotIn(long_token, str(configuration))
 
+    def test_short_lived_permissions_list_is_accepted(self):
+        environment = self._oauth_environment()
+        configuration = oauth_configuration_from_environment(environment, production=True)
+        short_token = "short-token-must-not-leak"
+        long_token = "long-token-must-not-leak"
+
+        with patch.dict(os.environ, environment, clear=False), patch(
+            "instagram_oauth.requests.post",
+            return_value=_ProviderResponse(payload={
+                "access_token": short_token,
+                "permissions": [
+                    "instagram_business_basic",
+                    "instagram_business_manage_comments",
+                    "instagram_business_manage_messages",
+                ],
+            }),
+        ), patch(
+            "instagram_oauth.requests.get",
+            return_value=_ProviderResponse(payload={
+                "access_token": long_token,
+                "expires_in": 3600,
+            }),
+        ):
+            result = complete_instagram_token_exchange(
+                "authorization-code-must-not-leak",
+                configuration,
+            )
+
+        self.assertEqual(
+            result.scopes,
+            (
+                "instagram_business_basic",
+                "instagram_business_manage_comments",
+                "instagram_business_manage_messages",
+            ),
+        )
+
     def test_missing_or_malformed_short_lived_permissions_fail_before_long_lived_exchange(self):
         """Using requested or long-lived scopes instead of Meta's grant evidence must fail."""
         environment = self._oauth_environment()
@@ -286,7 +323,10 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
             "",
             "instagram_business_basic,,instagram_business_manage_comments",
             "instagram_business_basic,INVALID_PERMISSION",
-            ["instagram_business_basic"],
+            [],
+            ["instagram_business_basic", ""],
+            ["instagram_business_basic", "INVALID_PERMISSION"],
+            {"instagram_business_basic": True},
         )
 
         for permissions in invalid_permissions:
