@@ -7,6 +7,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import requests
 from sqlalchemy import select
@@ -30,6 +31,9 @@ USABLE_CREDENTIAL_STATUS = "valid"
 LEGACY_CONNECTION_STATUS = "environment_managed"
 OAUTH_GRAPH_PROFILE_URL = "https://graph.instagram.com/v25.0/me"
 OAUTH_GRAPH_PROFILE_TIMEOUT_SECONDS = 15
+OAUTH_GRAPH_MEDIA_URL = "https://graph.instagram.com/v25.0/me/media"
+OAUTH_GRAPH_MEDIA_TIMEOUT_SECONDS = 15
+OAUTH_GRAPH_MEDIA_MAX_PAGES = 10
 WEBHOOK_IDENTITY_CLASSIFICATION_CONNECTED_OAUTH = "connected_oauth"
 WEBHOOK_IDENTITY_CLASSIFICATION_OTHER_KNOWN = "other_known"
 WEBHOOK_IDENTITY_CLASSIFICATION_UNKNOWN = "unknown"
@@ -256,6 +260,89 @@ def classify_failed_webhook_identity(
         return WEBHOOK_IDENTITY_CLASSIFICATION_UNKNOWN
     except Exception:
         return WEBHOOK_IDENTITY_CLASSIFICATION_INDETERMINATE
+
+
+def _graph_media_id_for_shortcode(
+    runtime: InstagramAccountRuntime,
+    *,
+    reel_shortcode: str,
+) -> str | None:
+    """Find one known Reel only through authenticated ``/me/media`` membership."""
+
+    cursor: str | None = None
+    seen_cursors: set[str] = set()
+    for _page_number in range(OAUTH_GRAPH_MEDIA_MAX_PAGES):
+        params = {"fields": "id,permalink", "limit": "100"}
+        if cursor is not None:
+            params["after"] = cursor
+        response = requests.get(
+            OAUTH_GRAPH_MEDIA_URL,
+            headers={"Authorization": f"Bearer {runtime.access_token}"},
+            params=params,
+            timeout=OAUTH_GRAPH_MEDIA_TIMEOUT_SECONDS,
+        )
+        if not bool(getattr(response, "ok", False)):
+            raise ValueError
+        payload = response.json()
+        media_items = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(media_items, list):
+            raise ValueError
+        for media in media_items:
+            media_id = _normalized_external_id(media.get("id") if isinstance(media, dict) else None)
+            permalink = media.get("permalink") if isinstance(media, dict) else None
+            if media_id is None or not isinstance(permalink, str):
+                continue
+            path = urlparse(permalink).path
+            if path in (f"/reel/{reel_shortcode}", f"/reel/{reel_shortcode}/"):
+                return media_id
+        paging = payload.get("paging") if isinstance(payload, dict) else None
+        if not isinstance(paging, dict) or not paging.get("next"):
+            return None
+        next_cursor = (
+            (paging.get("cursors") or {}).get("after")
+        )
+        if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
+            raise ValueError
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+    raise ValueError
+
+
+def failed_comment_media_matches_known_reel(
+    session: Session,
+    *,
+    media_id: object,
+    reel_shortcode: object,
+    keyring: CredentialKeyring | None = None,
+) -> str:
+    """Compare one failed comment media ID to a known Reel without emitting data."""
+
+    comment_media_id = _normalized_external_id(media_id)
+    shortcode = reel_shortcode if isinstance(reel_shortcode, str) else ""
+    if comment_media_id is None or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", shortcode):
+        return "indeterminate"
+    try:
+        accounts = list(session.scalars(select(InstagramAccount).where(
+            InstagramAccount.provider == "instagram"
+        )))
+        for account in accounts:
+            if not _usable_oauth_account(account, now=datetime.now(timezone.utc)):
+                continue
+            runtime = resolve_oauth_instagram_account_runtime(
+                session,
+                instagram_account_id=account.id,
+                instagram_user_id=account.instagram_user_id,
+                keyring=keyring,
+            )
+            known_reel_media_id = _graph_media_id_for_shortcode(
+                runtime,
+                reel_shortcode=shortcode,
+            )
+            if known_reel_media_id is not None:
+                return "True" if hmac.compare_digest(comment_media_id, known_reel_media_id) else "False"
+        return "indeterminate"
+    except Exception:
+        return "indeterminate"
 
 
 def resolve_instagram_account_route(

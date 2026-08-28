@@ -555,6 +555,269 @@ class AccountRuntimeResolverTest(unittest.TestCase):
         self.assertEqual(classification, "indeterminate")
         log.assert_not_called()
 
+    def test_failed_comment_media_matches_known_reel_for_connected_oauth_account(self):
+        from database.account_runtime import failed_comment_media_matches_known_reel
+
+        with self.Session.begin() as session:
+            session.get(InstagramAccount, self.account_b_id).connection_status = "disconnected"
+        response = type(
+            "GraphMediaResponse",
+            (),
+            {
+                "ok": True,
+                "json": lambda _self: {
+                    "data": [{
+                        "id": "17890000000000001",
+                        "permalink": "https://www.instagram.com/reel/test_shortcode/",
+                    }]
+                },
+            },
+        )()
+        with self.Session() as session, patch(
+            "database.account_runtime.requests.get", return_value=response
+        ), patch("builtins.print") as log:
+            state = failed_comment_media_matches_known_reel(
+                session,
+                media_id="17890000000000001",
+                reel_shortcode="test_shortcode",
+                keyring=self.keyring,
+            )
+
+        self.assertEqual(state, "True")
+        log.assert_not_called()
+
+    def test_failed_comment_media_reports_false_for_a_different_known_reel(self):
+        from database.account_runtime import failed_comment_media_matches_known_reel
+
+        with self.Session.begin() as session:
+            session.get(InstagramAccount, self.account_b_id).connection_status = "disconnected"
+        response = type(
+            "GraphMediaResponse",
+            (),
+            {
+                "ok": True,
+                "json": lambda _self: {
+                    "data": [{
+                        "id": "17890000000000001",
+                        "permalink": "https://www.instagram.com/reel/test_shortcode/",
+                    }]
+                },
+            },
+        )()
+        with self.Session() as session, patch(
+            "database.account_runtime.requests.get", return_value=response
+        ):
+            state = failed_comment_media_matches_known_reel(
+                session,
+                media_id="17890000000000002",
+                reel_shortcode="test_shortcode",
+                keyring=self.keyring,
+            )
+
+        self.assertEqual(state, "False")
+
+    def test_failed_comment_media_stops_when_graph_has_no_next_page(self):
+        from database.account_runtime import failed_comment_media_matches_known_reel
+
+        with self.Session.begin() as session:
+            session.get(InstagramAccount, self.account_b_id).connection_status = "disconnected"
+        response = type(
+            "GraphMediaResponse",
+            (),
+            {
+                "ok": True,
+                "json": lambda _self: {
+                    "data": [{
+                        "id": "17890000000000001",
+                        "permalink": "https://www.instagram.com/reel/other_shortcode/",
+                    }],
+                    "paging": {"cursors": {"after": "last-page-cursor"}},
+                },
+            },
+        )()
+        with self.Session() as session, patch(
+            "database.account_runtime.requests.get", return_value=response
+        ) as graph_get:
+            state = failed_comment_media_matches_known_reel(
+                session,
+                media_id="17890000000000002",
+                reel_shortcode="test_shortcode",
+                keyring=self.keyring,
+            )
+
+        self.assertEqual(state, "indeterminate")
+        graph_get.assert_called_once()
+
+    def test_failed_comment_media_rejects_repeated_pagination_cursor(self):
+        from database.account_runtime import failed_comment_media_matches_known_reel
+
+        with self.Session.begin() as session:
+            session.get(InstagramAccount, self.account_b_id).connection_status = "disconnected"
+        response = type(
+            "GraphMediaResponse",
+            (),
+            {
+                "ok": True,
+                "json": lambda _self: {
+                    "data": [],
+                    "paging": {
+                        "next": "https://graph.instagram.com/v25.0/me/media",
+                        "cursors": {"after": "repeated-cursor"},
+                    },
+                },
+            },
+        )()
+        with self.Session() as session, patch(
+            "database.account_runtime.requests.get", return_value=response
+        ) as graph_get:
+            state = failed_comment_media_matches_known_reel(
+                session,
+                media_id="17890000000000002",
+                reel_shortcode="test_shortcode",
+                keyring=self.keyring,
+            )
+
+        self.assertEqual(state, "indeterminate")
+        self.assertEqual(graph_get.call_count, 2)
+
+    def test_failed_comment_media_hard_stops_at_the_maximum_page_limit(self):
+        from database.account_runtime import failed_comment_media_matches_known_reel
+
+        with self.Session.begin() as session:
+            session.get(InstagramAccount, self.account_b_id).connection_status = "disconnected"
+        responses = [
+            type(
+                f"GraphMediaResponse{index}",
+                (),
+                {
+                    "ok": True,
+                    "json": lambda _self, cursor=f"cursor-{index}": {
+                        "data": [],
+                        "paging": {
+                            "next": "https://graph.instagram.com/v25.0/me/media",
+                            "cursors": {"after": cursor},
+                        },
+                    },
+                },
+            )()
+            for index in range(2)
+        ]
+        with self.Session() as session, patch(
+            "database.account_runtime.OAUTH_GRAPH_MEDIA_MAX_PAGES", 2
+        ), patch("database.account_runtime.requests.get", side_effect=responses) as graph_get:
+            state = failed_comment_media_matches_known_reel(
+                session,
+                media_id="17890000000000002",
+                reel_shortcode="test_shortcode",
+                keyring=self.keyring,
+            )
+
+        self.assertEqual(state, "indeterminate")
+        self.assertEqual(graph_get.call_count, 2)
+
+    def test_failed_comment_media_accepts_only_canonical_reel_permalink_forms(self):
+        from database.account_runtime import failed_comment_media_matches_known_reel
+
+        with self.Session.begin() as session:
+            session.get(InstagramAccount, self.account_b_id).connection_status = "disconnected"
+        for permalink in (
+            "https://www.instagram.com/reel/test_shortcode",
+            "https://www.instagram.com/reel/test_shortcode/",
+            "https://www.instagram.com/reel/test_shortcode/?utm_source=test#fragment",
+        ):
+            with self.subTest(permalink=permalink):
+                response = type(
+                    "GraphMediaResponse",
+                    (),
+                    {
+                        "ok": True,
+                        "json": lambda _self, current_permalink=permalink: {
+                            "data": [{
+                                "id": "17890000000000001",
+                                "permalink": current_permalink,
+                            }]
+                        },
+                    },
+                )()
+                with self.Session() as session, patch(
+                    "database.account_runtime.requests.get", return_value=response
+                ):
+                    state = failed_comment_media_matches_known_reel(
+                        session,
+                        media_id="17890000000000001",
+                        reel_shortcode="test_shortcode",
+                        keyring=self.keyring,
+                    )
+                self.assertEqual(state, "True")
+
+    def test_failed_comment_media_rejects_noncanonical_reel_permalink_forms(self):
+        from database.account_runtime import failed_comment_media_matches_known_reel
+
+        with self.Session.begin() as session:
+            session.get(InstagramAccount, self.account_b_id).connection_status = "disconnected"
+        for permalink in (
+            "https://www.instagram.com/p/test_shortcode/",
+            "https://www.instagram.com/tv/test_shortcode/",
+            "https://www.instagram.com/arbitrary/test_shortcode/",
+            "https://www.instagram.com/reel/test_shortcode/extra/",
+            "https://www.instagram.com/reel/test_shortcode_suffix/",
+        ):
+            with self.subTest(permalink=permalink):
+                response = type(
+                    "GraphMediaResponse",
+                    (),
+                    {
+                        "ok": True,
+                        "json": lambda _self, current_permalink=permalink: {
+                            "data": [{
+                                "id": "17890000000000001",
+                                "permalink": current_permalink,
+                            }]
+                        },
+                    },
+                )()
+                with self.Session() as session, patch(
+                    "database.account_runtime.requests.get", return_value=response
+                ):
+                    state = failed_comment_media_matches_known_reel(
+                        session,
+                        media_id="17890000000000001",
+                        reel_shortcode="test_shortcode",
+                        keyring=self.keyring,
+                    )
+                self.assertEqual(state, "indeterminate")
+
+    def test_failed_comment_media_fails_closed_when_graph_or_credential_is_unavailable(self):
+        from database.account_runtime import failed_comment_media_matches_known_reel
+
+        with self.Session.begin() as session:
+            session.get(InstagramAccount, self.account_b_id).connection_status = "disconnected"
+        with self.Session() as session, patch(
+            "database.account_runtime.requests.get",
+            side_effect=requests.RequestException("provider URL and token must stay secret"),
+        ), patch("builtins.print") as log:
+            graph_state = failed_comment_media_matches_known_reel(
+                session,
+                media_id="17890000000000001",
+                reel_shortcode="test_shortcode",
+                keyring=self.keyring,
+            )
+        self.assertEqual(graph_state, "indeterminate")
+        log.assert_not_called()
+
+        with self.Session() as session, patch(
+            "database.account_runtime.decrypt_access_token",
+            side_effect=AssertionError("credential material must stay private"),
+        ), patch("database.account_runtime.requests.get") as graph_get:
+            credential_state = failed_comment_media_matches_known_reel(
+                session,
+                media_id="17890000000000001",
+                reel_shortcode="test_shortcode",
+                keyring=self.keyring,
+            )
+        self.assertEqual(credential_state, "indeterminate")
+        graph_get.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
