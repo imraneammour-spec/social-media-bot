@@ -34,6 +34,20 @@ INSTAGRAM_OAUTH_STATE_BYTES = 32
 INSTAGRAM_OAUTH_REQUEST_TIMEOUT_SECONDS = 15
 INSTAGRAM_OAUTH_MAX_EXPIRES_IN_SECONDS = 60 * 60 * 24 * 366 * 10
 INSTAGRAM_OAUTH_EXTERNAL_ID_PATTERN = re.compile(r"^[0-9]{1,64}$")
+OAUTH_CALLBACK_STAGE_SHORT_RESPONSE_INVALID = "oauth_short_response_invalid"
+OAUTH_CALLBACK_STAGE_PERMISSIONS_INVALID = "oauth_permissions_invalid"
+OAUTH_CALLBACK_STAGE_LONG_EXCHANGE_FAILED = "oauth_long_exchange_failed"
+OAUTH_CALLBACK_STAGE_LONG_RESPONSE_INVALID = "oauth_long_response_invalid"
+OAUTH_CALLBACK_STAGE_DISCOVERY_FAILED = "oauth_discovery_failed"
+OAUTH_CALLBACK_STAGE_CONNECTION_PRECOMMIT_FAILED = "oauth_connection_precommit_failed"
+_OAUTH_CALLBACK_DIAGNOSTIC_STAGES = frozenset((
+    OAUTH_CALLBACK_STAGE_SHORT_RESPONSE_INVALID,
+    OAUTH_CALLBACK_STAGE_PERMISSIONS_INVALID,
+    OAUTH_CALLBACK_STAGE_LONG_EXCHANGE_FAILED,
+    OAUTH_CALLBACK_STAGE_LONG_RESPONSE_INVALID,
+    OAUTH_CALLBACK_STAGE_DISCOVERY_FAILED,
+    OAUTH_CALLBACK_STAGE_CONNECTION_PRECOMMIT_FAILED,
+))
 
 
 class OAuthConfigurationError(ValueError):
@@ -47,9 +61,20 @@ class OAuthStateError(ValueError):
 class OAuthExchangeError(ValueError):
     """Raised without provider content when an OAuth exchange fails."""
 
+    def __init__(self, diagnostic_stage: str):
+        if diagnostic_stage not in _OAUTH_CALLBACK_DIAGNOSTIC_STAGES:
+            raise ValueError("Invalid OAuth callback diagnostic stage.")
+        self.diagnostic_stage = diagnostic_stage
+        super().__init__("Instagram authorization could not be completed.")
+
 
 class OAuthDiscoveryError(ValueError):
     """Raised without provider or account details when discovery fails."""
+
+    diagnostic_stage = OAUTH_CALLBACK_STAGE_DISCOVERY_FAILED
+
+    def __init__(self):
+        super().__init__("Instagram account discovery could not be completed.")
 
 
 @dataclass(frozen=True, repr=False)
@@ -146,33 +171,44 @@ def _app_secret_from_environment(environ: Mapping[str, str] | None = None) -> st
     return _required(source, META_APP_SECRET_ENV)
 
 
-def _exchange_error() -> OAuthExchangeError:
-    return OAuthExchangeError("Instagram authorization could not be completed.")
+def _exchange_error(
+    diagnostic_stage: str = OAUTH_CALLBACK_STAGE_SHORT_RESPONSE_INVALID,
+) -> OAuthExchangeError:
+    return OAuthExchangeError(diagnostic_stage)
 
 
 def _discovery_error() -> OAuthDiscoveryError:
-    return OAuthDiscoveryError("Instagram account discovery could not be completed.")
+    return OAuthDiscoveryError()
 
 
-def _successful_response_payload(response: object) -> dict[str, object]:
+def _successful_response_payload(
+    response: object,
+    *,
+    non_success_stage: str,
+    invalid_response_stage: str,
+) -> dict[str, object]:
     """Read one successful provider JSON object without surfacing its contents."""
     if not bool(getattr(response, "ok", False)):
-        raise _exchange_error()
+        raise _exchange_error(non_success_stage)
     try:
         payload = response.json()  # type: ignore[union-attr]
     except (AttributeError, TypeError, ValueError):
-        raise _exchange_error() from None
+        raise _exchange_error(invalid_response_stage) from None
     if not isinstance(payload, dict):
-        raise _exchange_error()
+        raise _exchange_error(invalid_response_stage)
     return payload
 
 
-def _access_token_from_payload(payload: Mapping[str, object]) -> str:
+def _access_token_from_payload(
+    payload: Mapping[str, object],
+    *,
+    invalid_response_stage: str,
+) -> str:
     """Extract only a nonempty access token from already-read provider JSON."""
 
     access_token = payload.get("access_token")
     if not isinstance(access_token, str) or not access_token:
-        raise _exchange_error()
+        raise _exchange_error(invalid_response_stage)
     return access_token
 
 
@@ -191,10 +227,10 @@ def _validated_granted_permissions(payload: Mapping[str, object]) -> tuple[str, 
 
     permissions = payload.get("permissions")
     if not isinstance(permissions, str) or not permissions or len(permissions) > 8192:
-        raise _exchange_error()
+        raise _exchange_error(OAUTH_CALLBACK_STAGE_PERMISSIONS_INVALID)
     granted = permissions.split(",")
     if not granted or len(granted) > 64:
-        raise _exchange_error()
+        raise _exchange_error(OAUTH_CALLBACK_STAGE_PERMISSIONS_INVALID)
     normalized: list[str] = []
     for scope in granted:
         if (
@@ -204,25 +240,47 @@ def _validated_granted_permissions(payload: Mapping[str, object]) -> tuple[str, 
             or not scope.isascii()
             or not all(character.islower() or character.isdigit() or character == "_" for character in scope)
         ):
-            raise _exchange_error()
+            raise _exchange_error(OAUTH_CALLBACK_STAGE_PERMISSIONS_INVALID)
         normalized.append(scope)
     if len(set(normalized)) != len(normalized):
-        raise _exchange_error()
+        raise _exchange_error(OAUTH_CALLBACK_STAGE_PERMISSIONS_INVALID)
     return tuple(normalized)
 
 
 def _short_lived_exchange_result(response: object) -> tuple[str, tuple[str, ...]]:
     """Return a short-lived token and only Meta-issued granted permissions."""
 
-    payload = _successful_response_payload(response)
-    return _access_token_from_payload(payload), _validated_granted_permissions(payload)
+    payload = _successful_response_payload(
+        response,
+        non_success_stage=OAUTH_CALLBACK_STAGE_SHORT_RESPONSE_INVALID,
+        invalid_response_stage=OAUTH_CALLBACK_STAGE_SHORT_RESPONSE_INVALID,
+    )
+    return (
+        _access_token_from_payload(
+            payload,
+            invalid_response_stage=OAUTH_CALLBACK_STAGE_SHORT_RESPONSE_INVALID,
+        ),
+        _validated_granted_permissions(payload),
+    )
 
 
 def _long_lived_exchange_result(response: object) -> tuple[str, int | None]:
     """Return only the replacement token and optional expiry from Meta."""
 
-    payload = _successful_response_payload(response)
-    return _access_token_from_payload(payload), normalized_expires_in(payload.get("expires_in"))
+    payload = _successful_response_payload(
+        response,
+        non_success_stage=OAUTH_CALLBACK_STAGE_LONG_EXCHANGE_FAILED,
+        invalid_response_stage=OAUTH_CALLBACK_STAGE_LONG_RESPONSE_INVALID,
+    )
+    token = _access_token_from_payload(
+        payload,
+        invalid_response_stage=OAUTH_CALLBACK_STAGE_LONG_RESPONSE_INVALID,
+    )
+    raw_expiry = payload.get("expires_in")
+    expires_in = normalized_expires_in(raw_expiry)
+    if raw_expiry is not None and expires_in is None:
+        raise _exchange_error(OAUTH_CALLBACK_STAGE_LONG_RESPONSE_INVALID)
+    return token, expires_in
 
 
 def complete_instagram_token_exchange(
@@ -251,7 +309,19 @@ def complete_instagram_token_exchange(
             },
             timeout=INSTAGRAM_OAUTH_REQUEST_TIMEOUT_SECONDS,
         )
+    except OAuthConfigurationError:
+        raise _exchange_error() from None
+    except (requests.RequestException, AttributeError, TypeError, ValueError):
+        raise _exchange_error() from None
+
+    try:
         short_lived_token, verified_permissions = _short_lived_exchange_result(short_lived_response)
+    except OAuthExchangeError:
+        raise
+    except (AttributeError, TypeError, ValueError):
+        raise _exchange_error() from None
+
+    try:
         long_lived_response = requests.get(
             INSTAGRAM_OAUTH_LONG_LIVED_TOKEN_URL,
             params={
@@ -261,16 +331,22 @@ def complete_instagram_token_exchange(
             },
             timeout=INSTAGRAM_OAUTH_REQUEST_TIMEOUT_SECONDS,
         )
+    except requests.RequestException:
+        raise _exchange_error(OAUTH_CALLBACK_STAGE_LONG_EXCHANGE_FAILED) from None
+    except (AttributeError, TypeError, ValueError):
+        raise _exchange_error(OAUTH_CALLBACK_STAGE_LONG_EXCHANGE_FAILED) from None
+
+    try:
         long_lived_token, expires_in = _long_lived_exchange_result(long_lived_response)
-        return InstagramOAuthTokenResult(
-            long_lived_access_token=long_lived_token,
-            expires_in=expires_in,
-            scopes=verified_permissions,
-        )
-    except (OAuthConfigurationError, OAuthExchangeError):
-        raise _exchange_error() from None
-    except (requests.RequestException, AttributeError, TypeError, ValueError):
-        raise _exchange_error() from None
+    except OAuthExchangeError:
+        raise
+    except (AttributeError, TypeError, ValueError):
+        raise _exchange_error(OAUTH_CALLBACK_STAGE_LONG_RESPONSE_INVALID) from None
+    return InstagramOAuthTokenResult(
+        long_lived_access_token=long_lived_token,
+        expires_in=expires_in,
+        scopes=verified_permissions,
+    )
 
 
 def discover_instagram_account(token_result: InstagramOAuthTokenResult) -> InstagramAccountDiscovery:

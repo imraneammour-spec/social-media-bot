@@ -12,11 +12,14 @@ from sqlalchemy.orm import sessionmaker
 from auth import configure_auth, install_auth_route_guard, register_auth_routes
 from database.models import Base, InstagramAccount, InstagramCredential, User
 from database.oauth_webhook_subscription import OAuthWebhookSubscriptionError
+from database.instagram_connection import InstagramConnectionError
 from instagram_oauth import (
     INSTAGRAM_OAUTH_STATE_SESSION_KEY,
     InstagramAccountDiscovery,
     InstagramOAuthTokenResult,
     OAuthDiscoveryError,
+    OAUTH_CALLBACK_STAGE_CONNECTION_PRECOMMIT_FAILED,
+    OAUTH_CALLBACK_STAGE_DISCOVERY_FAILED,
 )
 
 
@@ -177,7 +180,7 @@ class InstagramConnectionCallbackTest(unittest.TestCase):
             "auth.complete_instagram_token_exchange", return_value=self._token_result()
         ), patch(
             "auth.discover_instagram_account",
-            side_effect=OAuthDiscoveryError("Instagram account discovery could not be completed."),
+            side_effect=OAuthDiscoveryError(),
         ):
             response = client.get(
                 "/connect/instagram/callback",
@@ -188,6 +191,35 @@ class InstagramConnectionCallbackTest(unittest.TestCase):
         response_text = response.get_data(as_text=True)
         for secret in (self.authorization_code, self.long_lived_token, self.external_id):
             self.assertNotIn(secret, response_text)
+        with self.Session() as session:
+            self.assertEqual(session.scalars(select(InstagramAccount)).all(), [])
+            self.assertEqual(session.scalars(select(InstagramCredential)).all(), [])
+
+    def test_post_discovery_precommit_failure_logs_only_its_finite_stage(self):
+        """A precommit failure must not be mistaken for OAuth exchange or discovery failure."""
+        client = self._client_with_state()
+        with patch.dict("os.environ", self.environment, clear=False), patch(
+            "auth.complete_instagram_token_exchange", return_value=self._token_result()
+        ), patch("auth.discover_instagram_account", return_value=self._discovery()), patch(
+            "auth.complete_discovered_instagram_connection",
+            side_effect=InstagramConnectionError("connection-private-detail-must-not-leak"),
+        ), patch.object(self.app.logger, "warning") as warning:
+            response = client.get(
+                "/connect/instagram/callback",
+                query_string={"state": "connection-callback-state", "code": self.authorization_code},
+            )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.get_data(as_text=True), "Instagram connection could not be completed.")
+        warning.assert_called_once_with(OAUTH_CALLBACK_STAGE_CONNECTION_PRECOMMIT_FAILED)
+        logged = " ".join(str(argument) for call in warning.call_args_list for argument in call.args)
+        for sensitive_value in (
+            self.authorization_code,
+            self.long_lived_token,
+            self.external_id,
+            "connection-private-detail-must-not-leak",
+        ):
+            self.assertNotIn(sensitive_value, logged)
         with self.Session() as session:
             self.assertEqual(session.scalars(select(InstagramAccount)).all(), [])
             self.assertEqual(session.scalars(select(InstagramCredential)).all(), [])

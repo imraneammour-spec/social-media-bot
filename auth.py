@@ -38,6 +38,7 @@ from instagram_oauth import (
     OAuthDiscoveryError,
     OAuthExchangeError,
     OAuthStateError,
+    OAUTH_CALLBACK_STAGE_CONNECTION_PRECOMMIT_FAILED,
     complete_instagram_token_exchange,
     consume_instagram_oauth_state,
     discover_instagram_account,
@@ -486,7 +487,14 @@ def register_auth_routes(app) -> None:
             )
         except (OAuthConfigurationError, CredentialConfigurationError):
             return "Instagram connection configuration is unavailable.", 503
-        except (OAuthExchangeError, OAuthDiscoveryError, InstagramConnectionError):
+        except OAuthExchangeError as error:
+            current_app.logger.warning(error.diagnostic_stage)
+            return "Instagram connection could not be completed.", 502
+        except OAuthDiscoveryError as error:
+            current_app.logger.warning(error.diagnostic_stage)
+            return "Instagram connection could not be completed.", 502
+        except InstagramConnectionError:
+            current_app.logger.warning(OAUTH_CALLBACK_STAGE_CONNECTION_PRECOMMIT_FAILED)
             return "Instagram connection could not be completed.", 502
         return redirect(url_for("onboarding"))
 

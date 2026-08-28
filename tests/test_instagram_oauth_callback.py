@@ -21,6 +21,11 @@ from instagram_oauth import (
     INSTAGRAM_OAUTH_STATE_SESSION_KEY,
     OAuthExchangeError,
     OAuthDiscoveryError,
+    OAUTH_CALLBACK_STAGE_DISCOVERY_FAILED,
+    OAUTH_CALLBACK_STAGE_LONG_EXCHANGE_FAILED,
+    OAUTH_CALLBACK_STAGE_LONG_RESPONSE_INVALID,
+    OAUTH_CALLBACK_STAGE_PERMISSIONS_INVALID,
+    OAUTH_CALLBACK_STAGE_SHORT_RESPONSE_INVALID,
     InstagramOAuthTokenResult,
     complete_instagram_token_exchange,
     discover_instagram_account,
@@ -112,7 +117,7 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
             "auth.complete_instagram_token_exchange", side_effect=exchange_after_state_is_consumed
         ) as exchange, patch(
             "auth.discover_instagram_account",
-            side_effect=OAuthDiscoveryError("Instagram account discovery could not be completed."),
+            side_effect=OAuthDiscoveryError(),
         ):
             response = client.get(
                 "/connect/instagram/callback",
@@ -166,7 +171,7 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
             "auth.complete_instagram_token_exchange", return_value=token_result
         ) as exchange, patch(
             "auth.discover_instagram_account",
-            side_effect=OAuthDiscoveryError("Instagram account discovery could not be completed."),
+            side_effect=OAuthDiscoveryError(),
         ):
             first = replay_client.get(
                 "/connect/instagram/callback",
@@ -297,6 +302,10 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
                 with self.assertRaises(OAuthExchangeError) as error:
                     complete_instagram_token_exchange(authorization_code, configuration)
             self.assertEqual(str(error.exception), "Instagram authorization could not be completed.")
+            self.assertEqual(
+                error.exception.diagnostic_stage,
+                OAUTH_CALLBACK_STAGE_PERMISSIONS_INVALID,
+            )
             self.assertNotIn(short_token, str(error.exception))
             self.assertNotIn(app_secret, str(error.exception))
             get.assert_not_called()
@@ -336,6 +345,7 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
                 with self.assertRaises(OAuthDiscoveryError) as error:
                     discover_instagram_account(token_result)
             self.assertEqual(str(error.exception), "Instagram account discovery could not be completed.")
+            self.assertEqual(error.exception.diagnostic_stage, OAUTH_CALLBACK_STAGE_DISCOVERY_FAILED)
             self.assertNotIn(long_token, str(error.exception))
             self.assertNotIn(sensitive_url, str(error.exception))
 
@@ -347,6 +357,7 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
                 with self.assertRaises(OAuthDiscoveryError) as error:
                     discover_instagram_account(token_result)
             self.assertEqual(str(error.exception), "Instagram account discovery could not be completed.")
+            self.assertEqual(error.exception.diagnostic_stage, OAUTH_CALLBACK_STAGE_DISCOVERY_FAILED)
 
     def test_successful_real_exchange_never_exposes_tokens_or_secret_to_callback_client(self):
         client = self._authenticated_client()
@@ -367,7 +378,7 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
             return_value=_ProviderResponse(payload={"access_token": long_token}),
         ), patch(
             "auth.discover_instagram_account",
-            side_effect=OAuthDiscoveryError("Instagram account discovery could not be completed."),
+            side_effect=OAuthDiscoveryError(),
         ), patch("builtins.print") as printed:
             response = client.get(
                 "/connect/instagram/callback",
@@ -441,6 +452,7 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
                 complete_instagram_token_exchange(authorization_code, configuration)
         self.assertEqual(str(error.exception), "Instagram authorization could not be completed.")
         self.assertNotIn("provider-body-must-not-leak", str(error.exception))
+        self.assertEqual(error.exception.diagnostic_stage, OAUTH_CALLBACK_STAGE_LONG_EXCHANGE_FAILED)
 
         with patch.dict(os.environ, environment, clear=False), patch(
             "instagram_oauth.requests.post",
@@ -454,6 +466,65 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
             with self.assertRaises(OAuthExchangeError) as error:
                 complete_instagram_token_exchange(authorization_code, configuration)
         self.assertEqual(str(error.exception), "Instagram authorization could not be completed.")
+        self.assertEqual(error.exception.diagnostic_stage, OAUTH_CALLBACK_STAGE_LONG_RESPONSE_INVALID)
+
+    def test_exchange_diagnostics_distinguish_short_response_permissions_and_long_response(self):
+        """Collapsing token-exchange boundaries would make staging diagnosis impossible."""
+        environment = self._oauth_environment()
+        configuration = oauth_configuration_from_environment(environment, production=True)
+        authorization_code = "authorization-code-must-not-leak"
+        short_token = "short-token-must-not-leak"
+        long_token = "long-token-must-not-leak"
+        cases = (
+            (
+                "short_response",
+                _ProviderResponse(ok=False, payload={"error": "provider-body-must-not-leak"}),
+                None,
+                OAUTH_CALLBACK_STAGE_SHORT_RESPONSE_INVALID,
+            ),
+            (
+                "permissions",
+                _ProviderResponse(payload={"access_token": short_token, "permissions": ""}),
+                None,
+                OAUTH_CALLBACK_STAGE_PERMISSIONS_INVALID,
+            ),
+            (
+                "long_transport",
+                _ProviderResponse(payload={
+                    "access_token": short_token,
+                    "permissions": "instagram_business_basic",
+                }),
+                requests.Timeout("https://provider.example.test/private-token"),
+                OAUTH_CALLBACK_STAGE_LONG_EXCHANGE_FAILED,
+            ),
+            (
+                "long_response",
+                _ProviderResponse(payload={
+                    "access_token": short_token,
+                    "permissions": "instagram_business_basic",
+                }),
+                _ProviderResponse(payload={"access_token": long_token, "expires_in": "invalid"}),
+                OAUTH_CALLBACK_STAGE_LONG_RESPONSE_INVALID,
+            ),
+        )
+
+        for name, short_response, long_response, expected_stage in cases:
+            with self.subTest(name=name), patch.dict(os.environ, environment, clear=False), patch(
+                "instagram_oauth.requests.post", return_value=short_response
+            ), patch(
+                "instagram_oauth.requests.get",
+                side_effect=long_response if isinstance(long_response, requests.RequestException) else None,
+                return_value=None if isinstance(long_response, requests.RequestException) else long_response,
+            ) as get:
+                with self.assertRaises(OAuthExchangeError) as error:
+                    complete_instagram_token_exchange(authorization_code, configuration)
+            self.assertEqual(error.exception.diagnostic_stage, expected_stage)
+            self.assertEqual(str(error.exception), "Instagram authorization could not be completed.")
+            self.assertNotIn(authorization_code, str(error.exception))
+            self.assertNotIn(short_token, str(error.exception))
+            self.assertNotIn(long_token, str(error.exception))
+            if name in {"short_response", "permissions"}:
+                get.assert_not_called()
 
     def test_callback_exchange_failure_is_sanitized_without_logs_or_database_writes(self):
         client = self._authenticated_client()
@@ -464,8 +535,8 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
 
         with patch.dict("os.environ", self._oauth_environment(), clear=False), patch(
             "auth.complete_instagram_token_exchange",
-            side_effect=OAuthExchangeError("Instagram authorization could not be completed."),
-        ), patch("builtins.print") as printed:
+            side_effect=OAuthExchangeError(OAUTH_CALLBACK_STAGE_SHORT_RESPONSE_INVALID),
+        ), patch.object(self.app.logger, "warning") as warning:
             response = client.get(
                 "/connect/instagram/callback",
                 query_string={"state": state, "code": authorization_code},
@@ -475,10 +546,7 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
         rendered = response.get_data(as_text=True) + response.headers.get("Location", "")
         for sensitive_value in (authorization_code, secret, sensitive_url):
             self.assertNotIn(sensitive_value, rendered)
-        logs = " ".join(
-            str(argument) for call in printed.call_args_list for argument in call.args
-        )
-        self.assertEqual(logs, "")
+        warning.assert_called_once_with(OAUTH_CALLBACK_STAGE_SHORT_RESPONSE_INVALID)
         self._assert_no_database_writes()
 
 
