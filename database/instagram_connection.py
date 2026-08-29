@@ -32,6 +32,7 @@ from .credentials import (
 )
 from .models import InstagramAccount, InstagramCredential
 from .ownership import resolve_owned_instagram_account
+from .tenant_automation import ensure_initial_oauth_automation_config
 from .oauth_webhook_subscription import (
     OAUTH_SUBSCRIPTION_PENDING_STATUS,
     OAuthWebhookSubscriptionError,
@@ -409,7 +410,7 @@ def persist_discovered_instagram_connection(
             )
         )
         with session_factory.begin() as db_session:
-            return _stage_discovered_connection(
+            account = _stage_discovered_connection(
                 db_session,
                 user_id=normalized_user_id,
                 instagram_user_id=instagram_user_id,
@@ -421,6 +422,13 @@ def persist_discovered_instagram_connection(
                 current_time=current_time,
                 connection_status="connected",
             )
+            credential = db_session.scalar(select(InstagramCredential).where(
+                InstagramCredential.instagram_account_id == account.id
+            ))
+            ensure_initial_oauth_automation_config(
+                db_session, account=account, credential=credential, now=current_time
+            )
+            return account
     except InstagramConnectionError:
         raise
     except (
@@ -522,6 +530,12 @@ def complete_discovered_instagram_connection(
                 account.connected_at = current_time
                 account.disconnected_at = None
                 account.last_connection_error_code = None
+                credential = db_session.scalar(select(InstagramCredential).where(
+                    InstagramCredential.instagram_account_id == account.id
+                ))
+                ensure_initial_oauth_automation_config(
+                    db_session, account=account, credential=credential, now=current_time
+                )
                 db_session.flush()
                 return account
         except OAuthWebhookSubscriptionError as subscription_error:

@@ -87,11 +87,24 @@ def assess_oauth_engagement_records(
     """Assess already-loaded account records for non-secret presentation/use."""
 
     current_time = _normalized_now(now)
-    if not _engagement_prerequisites_met(account, credential, now=current_time):
+    if not oauth_engagement_prerequisites_met(account, credential, now=current_time):
         return _reconnect_required()
     if not oauth_engagement_enabled_from_environment(environment):
         return OAuthEngagementCapability("ready_for_activation")
     return OAuthEngagementCapability("active")
+
+
+def oauth_engagement_prerequisites_met(
+    account: InstagramAccount | None,
+    credential: InstagramCredential | None,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Evaluate account-side OAuth readiness without reading environment state."""
+
+    return _engagement_prerequisites_met(
+        account, credential, now=_normalized_now(now)
+    )
 
 
 def _engagement_prerequisites_met(

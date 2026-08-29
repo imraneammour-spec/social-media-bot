@@ -18,10 +18,14 @@ from database.instagram_connection import (
     persist_discovered_instagram_connection,
     repair_owned_oauth_connection_identity,
 )
-from database.oauth_webhook_subscription import OAuthWebhookSubscriptionError
+from database.oauth_webhook_subscription import (
+    OAuthWebhookSubscriptionError,
+    WEBHOOK_SUBSCRIPTION_PROVIDER_REJECTED,
+)
 from database.models import (
     Base,
     InstagramAccount,
+    InstagramAutomationConfig,
     InstagramCredential,
     InstagramPendingAccess,
     User,
@@ -582,6 +586,66 @@ class InstagramConnectionPersistenceTest(unittest.TestCase):
 
         self.assertEqual(self._accounts(), [])
         self.assertEqual(self._credentials(), [])
+
+    def test_successful_subscribed_connection_creates_current_behavior_config(self):
+        """Omitting initial config after subscription must fail this rollout test."""
+
+        with patch("database.instagram_connection.subscribe_oauth_account_webhooks", return_value=True):
+            connected = self._complete()
+
+        with self.Session() as session:
+            config = session.scalar(select(InstagramAutomationConfig).where(
+                InstagramAutomationConfig.instagram_account_id == connected.id
+            ))
+        self.assertIsNotNone(config)
+        self.assertTrue(config.enabled)
+        self.assertEqual(
+            config.trigger_keywords,
+            ["access", "ai", "prompt", "prompts", "send"],
+        )
+        self.assertTrue(config.public_reply_enabled)
+        self.assertEqual(config.public_reply_text, "Your prompts are ready. Check your messages.")
+
+    def test_failed_subscription_does_not_create_config_for_reconnect_required_account(self):
+        """Creating config before subscription confirmation must fail this safety test."""
+
+        with patch(
+            "database.instagram_connection.subscribe_oauth_account_webhooks",
+            side_effect=OAuthWebhookSubscriptionError(WEBHOOK_SUBSCRIPTION_PROVIDER_REJECTED),
+        ):
+            with self.assertRaises(InstagramConnectionError):
+                self._complete()
+
+        with self.Session() as session:
+            self.assertEqual(session.scalars(select(InstagramAutomationConfig)).all(), [])
+
+    def test_reconnect_and_direct_compatibility_paths_preserve_one_existing_config(self):
+        """Recreating or overwriting tenant choices during persistence must fail."""
+
+        with patch("database.instagram_connection.subscribe_oauth_account_webhooks", return_value=True):
+            connected = self._complete()
+        with self.Session.begin() as session:
+            config = session.scalar(select(InstagramAutomationConfig).where(
+                InstagramAutomationConfig.instagram_account_id == connected.id
+            ))
+            config.enabled = False
+            config.trigger_keywords = ["custom"]
+            config.public_reply_enabled = False
+            config.public_reply_text = "Custom tenant copy"
+
+        with patch("database.instagram_connection.subscribe_oauth_account_webhooks", return_value=True):
+            self._complete()
+        self._persist()
+
+        with self.Session() as session:
+            configs = session.scalars(select(InstagramAutomationConfig).where(
+                InstagramAutomationConfig.instagram_account_id == connected.id
+            )).all()
+        self.assertEqual(len(configs), 1)
+        self.assertFalse(configs[0].enabled)
+        self.assertEqual(configs[0].trigger_keywords, ["custom"])
+        self.assertFalse(configs[0].public_reply_enabled)
+        self.assertEqual(configs[0].public_reply_text, "Custom tenant copy")
 
 
 if __name__ == "__main__":

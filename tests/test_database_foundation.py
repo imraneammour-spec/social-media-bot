@@ -369,7 +369,7 @@ class DatabaseFoundationTest(unittest.TestCase):
         finally:
             engine.dispose()
 
-        upgrade = self._run_alembic("upgrade", "head", root=root, environment=environment)
+        upgrade = self._run_alembic("upgrade", "20260827_03", root=root, environment=environment)
         self.assertEqual(upgrade.returncode, 0, upgrade.stderr)
         self.assertEqual(self._alembic_revision(environment["DATABASE_URL"]), "20260827_03")
         columns = self._table_columns(environment["DATABASE_URL"], "instagram_prompt_requests")
@@ -400,7 +400,7 @@ class DatabaseFoundationTest(unittest.TestCase):
         columns = self._table_columns(environment["DATABASE_URL"], "instagram_prompt_requests")
         self.assertFalse(self.PHASE5B_PROMPT_REQUEST_COLUMNS.intersection(columns))
 
-        reupgrade = self._run_alembic("upgrade", "head", root=root, environment=environment)
+        reupgrade = self._run_alembic("upgrade", "20260827_03", root=root, environment=environment)
         self.assertEqual(reupgrade.returncode, 0, reupgrade.stderr)
         self.assertEqual(self._alembic_revision(environment["DATABASE_URL"]), "20260827_03")
         engine = create_engine(environment["DATABASE_URL"])

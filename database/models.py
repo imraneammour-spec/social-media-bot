@@ -73,6 +73,9 @@ class InstagramAccount(TimestampMixin, Base):
     credentials: Mapped[list["InstagramCredential"]] = relationship(
         back_populates="instagram_account", cascade="all, delete-orphan"
     )
+    automation_config: Mapped["InstagramAutomationConfig | None"] = relationship(
+        back_populates="instagram_account", cascade="all, delete-orphan", uselist=False
+    )
 
 
 class InstagramCredential(TimestampMixin, Base):
@@ -102,6 +105,38 @@ class InstagramCredential(TimestampMixin, Base):
     last_error_code: Mapped[str | None] = mapped_column(String(128))
 
     instagram_account: Mapped[InstagramAccount] = relationship(back_populates="credentials")
+
+
+class InstagramAutomationConfig(TimestampMixin, Base):
+    """Tenant-owned automation choices for one OAuth Instagram account."""
+
+    __tablename__ = "instagram_automation_configs"
+    __table_args__ = (
+        UniqueConstraint(
+            "instagram_account_id", name="uq_automation_config_account"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    instagram_account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("instagram_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    enabled: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default=text("false")
+    )
+    trigger_keywords: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list, server_default=text("'[]'")
+    )
+    public_reply_enabled: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default=text("false")
+    )
+    public_reply_text: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=text("''")
+    )
+
+    instagram_account: Mapped[InstagramAccount] = relationship(
+        back_populates="automation_config"
+    )
 
 
 class InstagramEngagementEvent(TimestampMixin, Base):

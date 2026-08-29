@@ -1,0 +1,257 @@
+"""Tests for tenant-owned OAuth automation configuration storage."""
+
+from __future__ import annotations
+
+import importlib
+import importlib.util
+import unittest
+from datetime import datetime, timedelta, timezone
+from tempfile import TemporaryDirectory
+
+from sqlalchemy import create_engine, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import sessionmaker
+
+from database import models
+from database.models import Base, InstagramAccount, InstagramAutomationConfig, InstagramCredential, User
+
+
+class TenantAutomationModelTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = TemporaryDirectory()
+        self.engine = create_engine(f"sqlite:///{self.temp_dir.name}/automation.db")
+        Base.metadata.create_all(self.engine)
+        self.Session = sessionmaker(bind=self.engine)
+
+    def tearDown(self):
+        self.engine.dispose()
+        self.temp_dir.cleanup()
+
+    def _config_model(self):
+        config_model = getattr(models, "InstagramAutomationConfig", None)
+        self.assertIsNotNone(config_model, "tenant automation configuration model is required")
+        return config_model
+
+    def _account_id(self):
+        with self.Session.begin() as session:
+            owner = User(email="automation-owner@example.test")
+            session.add(owner)
+            session.flush()
+            account = InstagramAccount(
+                user_id=owner.id,
+                instagram_user_id="17841438617458111",
+                provider="instagram",
+                connection_status="connected",
+            )
+            session.add(account)
+            session.flush()
+            return account.id
+
+    def test_configuration_model_has_fail_closed_database_defaults(self):
+        """Changing raw creation defaults to active behavior must fail this test."""
+
+        config_model = self._config_model()
+        self.assertIn("instagram_automation_configs", Base.metadata.tables)
+        account_id = self._account_id()
+        with self.Session.begin() as session:
+            config = config_model(instagram_account_id=account_id)
+            session.add(config)
+            session.flush()
+            self.assertFalse(config.enabled)
+            self.assertEqual(config.trigger_keywords, [])
+            self.assertFalse(config.public_reply_enabled)
+            self.assertEqual(config.public_reply_text, "")
+
+    def test_configuration_model_allows_only_one_row_per_account(self):
+        """Removing the per-account uniqueness guard must fail this test."""
+
+        config_model = self._config_model()
+        account_id = self._account_id()
+        with self.Session.begin() as session:
+            session.add(config_model(instagram_account_id=account_id))
+        with self.assertRaises(IntegrityError):
+            with self.Session.begin() as session:
+                session.add(config_model(instagram_account_id=account_id))
+
+
+class TenantAutomationHelperTests(unittest.TestCase):
+    def _helpers(self):
+        spec = importlib.util.find_spec("database.tenant_automation")
+        self.assertIsNotNone(spec, "tenant automation helper module is required")
+        return importlib.import_module("database.tenant_automation")
+
+    def test_keyword_normalization_preserves_current_single_token_matching(self):
+        """Removing lowercase deduplication would change the future matching contract."""
+
+        helpers = self._helpers()
+        self.assertEqual(
+            helpers.normalize_trigger_keywords([" AI ", "prompt", "ai", "SEND"]),
+            ["ai", "prompt", "send"],
+        )
+        self.assertEqual(
+            helpers.current_default_trigger_keywords(),
+            ["access", "ai", "prompt", "prompts", "send"],
+        )
+
+    def test_keyword_normalization_rejects_malformed_or_phrase_values(self):
+        """Accepting empty, phrase, oversized, or non-list input must fail this test."""
+
+        helpers = self._helpers()
+        for value in (None, [], ["two words"], ["x" * 33], ["ai"] * 11):
+            with self.assertRaises(helpers.TenantAutomationConfigurationError):
+                helpers.normalize_trigger_keywords(value)
+
+    def test_current_public_reply_default_matches_existing_oauth_behavior(self):
+        """Changing the rollout copy must fail this behavior-preservation test."""
+
+        helpers = self._helpers()
+        self.assertEqual(
+            helpers.current_default_public_reply_text(),
+            "Your prompts are ready. Check your messages.",
+        )
+
+    def test_initial_enabled_state_uses_account_prerequisites_not_global_environment(self):
+        """Treating an environment kill switch as tenant config eligibility must fail."""
+
+        helpers = self._helpers()
+        now = datetime(2026, 8, 29, 12, tzinfo=timezone.utc)
+        account = InstagramAccount(
+            user_id="11111111-1111-1111-1111-111111111111",
+            instagram_user_id="17841438617458112",
+            provider="instagram",
+            connection_status="connected",
+            token_expires_at=now + timedelta(days=1),
+        )
+        credential = InstagramCredential(
+            token_ciphertext="encrypted-token",
+            encryption_key_id="TEST_KEY",
+            token_status="valid",
+            scopes=[
+                "instagram_business_manage_comments",
+                "instagram_business_manage_messages",
+            ],
+            expires_at=now + timedelta(days=1),
+        )
+        self.assertTrue(helpers.initial_automation_enabled(account, credential, now=now))
+        credential.scopes = ["instagram_business_manage_comments"]
+        self.assertFalse(helpers.initial_automation_enabled(account, credential, now=now))
+
+
+class TenantAutomationBackfillTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = TemporaryDirectory()
+        self.engine = create_engine(f"sqlite:///{self.temp_dir.name}/backfill.db")
+        Base.metadata.create_all(self.engine)
+        self.Session = sessionmaker(bind=self.engine)
+        self.now = datetime(2026, 8, 29, 12, tzinfo=timezone.utc)
+
+    def tearDown(self):
+        self.engine.dispose()
+        self.temp_dir.cleanup()
+
+    def _helpers(self):
+        spec = importlib.util.find_spec("database.tenant_automation")
+        self.assertIsNotNone(spec, "tenant automation helper module is required")
+        return importlib.import_module("database.tenant_automation")
+
+    def test_backfill_preserves_eligible_behavior_and_skips_legacy_or_existing_rows(self):
+        """Overwriting tenant choices or enabling unusable/legacy accounts must fail."""
+
+        helpers = self._helpers()
+        with self.Session.begin() as session:
+            owner = User(email="backfill-owner@example.test")
+            session.add(owner)
+            session.flush()
+            eligible = InstagramAccount(
+                user_id=owner.id,
+                instagram_user_id="17841438617458113",
+                provider="instagram",
+                connection_status="connected",
+                token_expires_at=self.now + timedelta(days=1),
+            )
+            unusable = InstagramAccount(
+                user_id=owner.id,
+                instagram_user_id="17841438617458114",
+                provider="instagram",
+                connection_status="connected",
+            )
+            legacy = InstagramAccount(
+                user_id=owner.id,
+                instagram_user_id="17841438617458115",
+                provider="instagram",
+                connection_status="environment_managed",
+            )
+            preserved = InstagramAccount(
+                user_id=owner.id,
+                instagram_user_id="17841438617458116",
+                provider="instagram",
+                connection_status="connected",
+            )
+            session.add_all([eligible, unusable, legacy, preserved])
+            session.flush()
+            session.add_all([
+                InstagramCredential(
+                    instagram_account_id=eligible.id,
+                    token_ciphertext="eligible-ciphertext",
+                    encryption_key_id="TEST_KEY",
+                    token_status="valid",
+                    scopes=[
+                        "instagram_business_manage_comments",
+                        "instagram_business_manage_messages",
+                    ],
+                    expires_at=self.now + timedelta(days=1),
+                ),
+                InstagramCredential(
+                    instagram_account_id=unusable.id,
+                    token_ciphertext="unusable-ciphertext",
+                    encryption_key_id="TEST_KEY",
+                    token_status="valid",
+                    scopes=["instagram_business_manage_comments"],
+                ),
+                InstagramAutomationConfig(
+                    instagram_account_id=preserved.id,
+                    enabled=False,
+                    trigger_keywords=["custom"],
+                    public_reply_enabled=False,
+                    public_reply_text="Custom tenant copy",
+                ),
+            ])
+            ids = {
+                "eligible": eligible.id,
+                "unusable": unusable.id,
+                "legacy": legacy.id,
+                "preserved": preserved.id,
+            }
+
+        with self.Session.begin() as session:
+            self.assertEqual(
+                helpers.backfill_oauth_automation_configs(session, now=self.now), 2
+            )
+            self.assertEqual(
+                helpers.backfill_oauth_automation_configs(session, now=self.now), 0
+            )
+
+        with self.Session() as session:
+            configs = {
+                config.instagram_account_id: config
+                for config in session.scalars(select(InstagramAutomationConfig)).all()
+            }
+        self.assertTrue(configs[ids["eligible"]].enabled)
+        self.assertEqual(
+            configs[ids["eligible"]].trigger_keywords,
+            ["access", "ai", "prompt", "prompts", "send"],
+        )
+        self.assertTrue(configs[ids["eligible"]].public_reply_enabled)
+        self.assertEqual(
+            configs[ids["eligible"]].public_reply_text,
+            "Your prompts are ready. Check your messages.",
+        )
+        self.assertFalse(configs[ids["unusable"]].enabled)
+        self.assertNotIn(ids["legacy"], configs)
+        self.assertEqual(configs[ids["preserved"]].trigger_keywords, ["custom"])
+        self.assertFalse(configs[ids["preserved"]].public_reply_enabled)
+        self.assertEqual(configs[ids["preserved"]].public_reply_text, "Custom tenant copy")
+
+
+if __name__ == "__main__":
+    unittest.main()
