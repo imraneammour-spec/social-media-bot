@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import re
+import uuid
+from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from .models import InstagramAccount, InstagramAutomationConfig, InstagramCredential
@@ -28,6 +30,15 @@ class TenantAutomationConfigurationError(ValueError):
     """Raised when tenant automation configuration values are malformed."""
 
 
+@dataclass(frozen=True)
+class OAuthAutomationRuntimeConfig:
+    """Validated, non-secret automation choices for one OAuth account."""
+
+    trigger_keywords: tuple[str, ...]
+    public_reply_enabled: bool
+    public_reply_text: str
+
+
 def normalize_trigger_keywords(value: object) -> list[str]:
     """Normalize a bounded list of single tokens for future OAuth matching."""
 
@@ -43,6 +54,43 @@ def normalize_trigger_keywords(value: object) -> list[str]:
     if not 1 <= len(normalized) <= 10:
         raise TenantAutomationConfigurationError("Invalid automation trigger keywords.")
     return normalized
+
+
+def oauth_automation_runtime_config(
+    session: Session,
+    *,
+    instagram_account_id: object,
+) -> OAuthAutomationRuntimeConfig | None:
+    """Return one enabled account's valid prompt-request settings, or nothing."""
+
+    try:
+        account_id = uuid.UUID(str(instagram_account_id))
+        config = session.scalar(select(InstagramAutomationConfig).where(
+            InstagramAutomationConfig.instagram_account_id == account_id
+        ))
+        if config is None or config.enabled is not True:
+            return None
+        keywords = tuple(normalize_trigger_keywords(config.trigger_keywords))
+        public_reply_enabled = config.public_reply_enabled
+        public_reply_text = config.public_reply_text
+        if not isinstance(public_reply_enabled, bool) or not isinstance(public_reply_text, str):
+            return None
+        public_reply_text = public_reply_text.strip()
+        if public_reply_enabled and not public_reply_text:
+            return None
+        return OAuthAutomationRuntimeConfig(
+            trigger_keywords=keywords,
+            public_reply_enabled=public_reply_enabled,
+            public_reply_text=public_reply_text,
+        )
+    except (
+        TenantAutomationConfigurationError,
+        SQLAlchemyError,
+        AttributeError,
+        TypeError,
+        ValueError,
+    ):
+        return None
 
 
 def current_default_trigger_keywords() -> list[str]:

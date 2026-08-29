@@ -56,6 +56,7 @@ from database.oauth_followups import (
     reap_expired_oauth_followup_leases,
     schedule_oauth_followup,
 )
+from database.tenant_automation import oauth_automation_runtime_config
 from auth import (
     configure_auth,
     csrf_token,
@@ -3773,10 +3774,21 @@ def _process_oauth_comment(value, route, entry_external_id, public_base_url, ses
     media_id = str(media.get("id") or "").strip()
     if not comment_id or not comment_text or not commenter_id or commenter_id == entry_external_id:
         return
+    with session_factory() as db_session:
+        automation_config = oauth_automation_runtime_config(
+            db_session,
+            instagram_account_id=route.instagram_account_id,
+        )
     with session_factory.begin() as db_session:
         if not claim_oauth_event(db_session, route.instagram_account_id, comment_id, "comment"):
             return
-    is_prompt_request = any(word in TRIGGER_WORDS for word in _oauth_words(comment_text))
+    is_prompt_request = bool(
+        automation_config is not None
+        and any(
+            word in automation_config.trigger_keywords
+            for word in _oauth_words(comment_text)
+        )
+    )
     try:
         if not is_prompt_request:
             cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
@@ -3808,8 +3820,9 @@ def _process_oauth_comment(value, route, entry_external_id, public_base_url, ses
         if not public_id:
             raise RuntimeError("oauth prompt extraction unavailable")
         page_url = f"{public_base_url.rstrip('/')}/p/o/{public_id}"
-        if not send_oauth_public_comment_reply(session_factory, instagram_account_id=route.instagram_account_id, instagram_user_id=entry_external_id, comment_id=comment_id, message="Your prompts are ready. Check your messages."):
-            raise RuntimeError("oauth public reply unavailable")
+        if automation_config.public_reply_enabled:
+            if not send_oauth_public_comment_reply(session_factory, instagram_account_id=route.instagram_account_id, instagram_user_id=entry_external_id, comment_id=comment_id, message=automation_config.public_reply_text):
+                raise RuntimeError("oauth public reply unavailable")
         recipient_id = send_oauth_private_access_reply(session_factory, instagram_account_id=route.instagram_account_id, instagram_user_id=entry_external_id, comment_id=comment_id)
         if not recipient_id:
             raise RuntimeError("oauth private reply unavailable")

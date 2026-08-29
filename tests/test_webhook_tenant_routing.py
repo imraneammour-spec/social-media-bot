@@ -9,7 +9,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from database.models import Base, InstagramAccount, User
+from sqlalchemy import select
+
+from database.account_runtime import InstagramAccountRoute
+from database.models import (
+    Base,
+    InstagramAccount,
+    InstagramAutomationConfig,
+    InstagramPendingAccess,
+    User,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -356,6 +365,190 @@ class WebhookTenantRoutingTest(unittest.TestCase):
         rendered = " ".join(str(argument) for call in log.call_args_list for argument in call.args)
         self.assertNotIn(sensitive_message, rendered)
         self.assertNotIn(sensitive_token, rendered)
+
+
+class OAuthCommentAutomationConfigTest(unittest.TestCase):
+    """Runtime coverage for account-scoped OAuth prompt-request settings."""
+
+    primary_external_id = "17841438617458902"
+    secondary_external_id = "17841438617458904"
+    _seed_accounts = WebhookTenantRoutingTest._seed_accounts
+
+    def setUp(self):
+        WebhookTenantRoutingTest.setUp(self)
+        with self.session_factory.begin() as session:
+            owner = session.scalar(select(User).where(
+                User.email == "oauth-route@example.test"
+            ))
+            session.add(InstagramAccount(
+                user_id=owner.id,
+                instagram_user_id=self.secondary_external_id,
+                connection_status="connected",
+                provider="instagram",
+            ))
+
+    def tearDown(self):
+        WebhookTenantRoutingTest.tearDown(self)
+
+    def _account(self, external_id):
+        with self.session_factory() as session:
+            return session.scalar(select(InstagramAccount).where(
+                InstagramAccount.instagram_user_id == external_id
+            ))
+
+    def _route(self, external_id):
+        account = self._account(external_id)
+        return InstagramAccountRoute(account.id, "oauth")
+
+    def _set_config(
+        self,
+        external_id,
+        *,
+        enabled=True,
+        trigger_keywords=None,
+        public_reply_enabled=True,
+        public_reply_text="Configured acknowledgement",
+    ):
+        account = self._account(external_id)
+        with self.session_factory.begin() as session:
+            session.add(InstagramAutomationConfig(
+                instagram_account_id=account.id,
+                enabled=enabled,
+                trigger_keywords=(trigger_keywords or ["launch"]),
+                public_reply_enabled=public_reply_enabled,
+                public_reply_text=public_reply_text,
+            ))
+
+    @staticmethod
+    def _comment(comment_id, text):
+        return {
+            "id": comment_id,
+            "text": text,
+            "from": {"id": "customer-1", "username": "customer"},
+            "media": {"id": "media-1"},
+        }
+
+    def _process(self, external_id, comment_id, text):
+        self.module._process_oauth_comment(
+            self._comment(comment_id, text),
+            self._route(external_id),
+            external_id,
+            "https://example.test",
+            self.session_factory,
+        )
+
+    def test_disabled_automation_skips_new_prompt_request_delivery(self):
+        self._set_config(
+            self.primary_external_id,
+            enabled=False,
+            trigger_keywords=["ai"],
+        )
+        with patch.object(self.module, "_oauth_prompt_post_for_comment") as prompt_page, patch.object(
+            self.module, "send_oauth_private_access_reply"
+        ) as private_reply:
+            self._process(self.primary_external_id, "disabled-comment", "AI please")
+
+        prompt_page.assert_not_called()
+        private_reply.assert_not_called()
+
+    def test_custom_account_keyword_starts_prompt_request_delivery(self):
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["launch"],
+        )
+        with patch.object(
+            self.module, "_oauth_prompt_post_for_comment", return_value="prompt-page"
+        ), patch.object(
+            self.module, "send_oauth_public_comment_reply", return_value=True
+        ), patch.object(
+            self.module, "send_oauth_private_access_reply", return_value="recipient-1"
+        ) as private_reply:
+            self._process(self.primary_external_id, "custom-keyword", "Please launch this")
+
+        private_reply.assert_called_once()
+        account = self._account(self.primary_external_id)
+        with self.session_factory() as session:
+            pending = session.scalar(select(InstagramPendingAccess).where(
+                InstagramPendingAccess.instagram_account_id == account.id,
+                InstagramPendingAccess.recipient_id == "recipient-1",
+            ))
+        self.assertIsNotNone(pending)
+
+    def test_prompt_request_uses_configured_public_reply_text(self):
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["ai"],
+            public_reply_text="Custom account acknowledgement",
+        )
+        with patch.object(
+            self.module, "_oauth_prompt_post_for_comment", return_value="prompt-page"
+        ), patch.object(
+            self.module, "send_oauth_public_comment_reply", return_value=True
+        ) as public_reply, patch.object(
+            self.module, "send_oauth_private_access_reply", return_value="recipient-1"
+        ):
+            self._process(self.primary_external_id, "custom-public-reply", "AI please")
+
+        self.assertEqual(
+            public_reply.call_args.kwargs["message"],
+            "Custom account acknowledgement",
+        )
+
+    def test_public_reply_disabled_keeps_private_prompt_delivery(self):
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["ai"],
+            public_reply_enabled=False,
+        )
+        with patch.object(
+            self.module, "_oauth_prompt_post_for_comment", return_value="prompt-page"
+        ), patch.object(
+            self.module, "send_oauth_public_comment_reply", return_value=True
+        ) as public_reply, patch.object(
+            self.module, "send_oauth_private_access_reply", return_value="recipient-1"
+        ) as private_reply:
+            self._process(self.primary_external_id, "private-only", "AI please")
+
+        public_reply.assert_not_called()
+        private_reply.assert_called_once()
+
+    def test_other_account_keywords_do_not_match_this_account(self):
+        self._set_config(self.primary_external_id, trigger_keywords=["alpha"])
+        self._set_config(self.secondary_external_id, trigger_keywords=["bravo"])
+        with patch.object(self.module, "generate_oauth_smart_reply", return_value=""), patch.object(
+            self.module, "_oauth_prompt_post_for_comment", return_value="prompt-page"
+        ), patch.object(
+            self.module, "send_oauth_public_comment_reply", return_value=True
+        ), patch.object(
+            self.module, "send_oauth_private_access_reply", return_value="recipient-1"
+        ) as private_reply:
+            self._process(self.primary_external_id, "other-account-keyword", "bravo")
+            self._process(self.secondary_external_id, "secondary-account-keyword", "bravo")
+            self._process(self.primary_external_id, "own-account-keyword", "alpha")
+
+        self.assertEqual(private_reply.call_count, 2)
+
+    def test_missing_runtime_config_skips_new_prompt_request_delivery(self):
+        with patch.object(self.module, "_oauth_prompt_post_for_comment") as prompt_page, patch.object(
+            self.module, "send_oauth_private_access_reply"
+        ) as private_reply:
+            self._process(self.primary_external_id, "missing-config", "AI please")
+
+        prompt_page.assert_not_called()
+        private_reply.assert_not_called()
+
+    def test_invalid_runtime_config_skips_new_prompt_request_delivery(self):
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["two words"],
+        )
+        with patch.object(self.module, "_oauth_prompt_post_for_comment") as prompt_page, patch.object(
+            self.module, "send_oauth_private_access_reply"
+        ) as private_reply:
+            self._process(self.primary_external_id, "invalid-config", "AI please")
+
+        prompt_page.assert_not_called()
+        private_reply.assert_not_called()
 
 
 if __name__ == "__main__":
