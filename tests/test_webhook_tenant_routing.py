@@ -171,7 +171,9 @@ class WebhookTenantRoutingTest(unittest.TestCase):
             self.module, "process_comment"
         ) as legacy_handler, patch.object(self.module, "_webhook_entry_identity_classification") as identity, patch.object(
             self.module, "_failed_route_comment_event"
-        ) as comment_event, patch.object(self.module, "_webhook_comment_test_reel_match") as reel_match:
+        ) as comment_event, patch.object(self.module, "_webhook_comment_test_reel_match") as reel_match, patch(
+            "builtins.print"
+        ) as log:
             self.module.process_webhook_background(payload, "http://localhost")
 
         oauth_handler.assert_called_once()
@@ -179,6 +181,59 @@ class WebhookTenantRoutingTest(unittest.TestCase):
         identity.assert_not_called()
         comment_event.assert_not_called()
         reel_match.assert_not_called()
+        messages = [call.args[0] for call in log.call_args_list]
+        self.assertEqual(messages.count("WEBHOOK ROUTING: oauth_route_selected=True"), 1)
+        rendered = " ".join(messages)
+        self.assertNotIn("17841438617458902", rendered)
+        self.assertNotIn(self.environment["INSTAGRAM_ACCESS_TOKEN"], rendered)
+
+    def test_legacy_route_does_not_log_oauth_route_confirmation(self):
+        payload = {
+            "entry": [{
+                "id": self.module.INSTAGRAM_USER_ID,
+                "changes": [{"field": "comments", "value": {"id": "legacy"}}],
+            }]
+        }
+        with patch.object(self.module, "process_comment") as legacy_handler, patch(
+            "builtins.print"
+        ) as log:
+            self.module.process_webhook_background(payload, "http://localhost")
+
+        legacy_handler.assert_called_once()
+        self.assertNotIn(
+            "WEBHOOK ROUTING: oauth_route_selected=True",
+            [call.args[0] for call in log.call_args_list],
+        )
+
+    def test_failed_route_keeps_diagnostics_without_oauth_route_confirmation(self):
+        payload = {
+            "entry": [{
+                "id": "17841438617458999",
+                "changes": [{"field": "comments", "value": {"id": "unknown"}}],
+            }]
+        }
+        with patch.object(
+            self.module, "_webhook_entry_identity_classification", return_value="unknown"
+        ), patch.object(
+            self.module, "_failed_route_comment_event", return_value=("comments", None)
+        ), patch("builtins.print") as log:
+            self.module.process_webhook_background(payload, "http://localhost")
+
+        messages = [call.args[0] for call in log.call_args_list]
+        self.assertNotIn("WEBHOOK ROUTING: oauth_route_selected=True", messages)
+        self.assertIn("WEBHOOK ROUTING DIAGNOSTIC: identity_classification=unknown", messages)
+        self.assertIn("WEBHOOK ROUTING: entry skipped (route unavailable).", messages)
+
+    def test_signed_oauth_webhook_acknowledgment_remains_200(self):
+        payload = {"entry": [{"id": "17841438617458902", "changes": []}]}
+        body, headers = self._signed_headers(payload)
+
+        with patch.object(self.module.threading, "Thread", _NoopThread):
+            response = self.client.post(
+                "/webhook", data=body, content_type="application/json", headers=headers
+            )
+
+        self.assertEqual(response.status_code, 200)
 
     def test_unknown_malformed_and_nonlegacy_environment_accounts_skip_without_legacy_fallback(self):
         payload = {

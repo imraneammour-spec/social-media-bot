@@ -4062,6 +4062,7 @@ def process_webhook_background(
             continue
 
         if route.connection_mode == "oauth":
+            print("WEBHOOK ROUTING: oauth_route_selected=True")
             try:
                 process_oauth_webhook_entry(entry, route, entry_external_id, public_base_url)
             except Exception:
