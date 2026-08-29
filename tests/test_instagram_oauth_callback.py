@@ -352,21 +352,27 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
 
     def test_discovery_uses_https_bearer_auth_minimal_fields_and_sanitizes_failures(self):
         long_token = "long-token-must-not-leak"
-        external_id = "17841438617458005"
+        app_scoped_id = "17841438617458005"
+        professional_id = "17841438617458006"
         token_result = InstagramOAuthTokenResult(long_token, None, None)
         with patch(
             "instagram_oauth.requests.get",
-            return_value=_ProviderResponse(payload={"id": external_id, "username": "discovered_account"}),
+            return_value=_ProviderResponse(payload={
+                "id": app_scoped_id,
+                "user_id": professional_id,
+                "username": "discovered_account",
+            }),
         ) as get:
             discovery = discover_instagram_account(token_result)
 
-        self.assertEqual(discovery.instagram_user_id, external_id)
+        self.assertEqual(discovery.instagram_user_id, professional_id)
+        self.assertNotEqual(discovery.instagram_user_id, app_scoped_id)
         self.assertEqual(discovery.username, "discovered_account")
         self.assertTrue(INSTAGRAM_OAUTH_ACCOUNT_DISCOVERY_URL.startswith("https://"))
         get.assert_called_once_with(
             INSTAGRAM_OAUTH_ACCOUNT_DISCOVERY_URL,
             headers={"Authorization": f"Bearer {long_token}"},
-            params={"fields": "id,username"},
+            params={"fields": "user_id,username"},
             timeout=INSTAGRAM_OAUTH_REQUEST_TIMEOUT_SECONDS,
         )
         self.assertNotIn(long_token, repr(discovery))
@@ -389,10 +395,13 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
             self.assertNotIn(long_token, str(error.exception))
             self.assertNotIn(sensitive_url, str(error.exception))
 
-        for malformed_id in ("", "not-a-numeric-instagram-id"):
+        for invalid_user_id in (None, "", "not-a-numeric-instagram-id", 17841438617458006):
             with patch(
                 "instagram_oauth.requests.get",
-                return_value=_ProviderResponse(payload={"id": malformed_id}),
+                return_value=_ProviderResponse(payload={
+                    "id": app_scoped_id,
+                    "user_id": invalid_user_id,
+                }),
             ):
                 with self.assertRaises(OAuthDiscoveryError) as error:
                     discover_instagram_account(token_result)

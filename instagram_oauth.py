@@ -379,7 +379,7 @@ def discover_instagram_account(token_result: InstagramOAuthTokenResult) -> Insta
         response = requests.get(
             INSTAGRAM_OAUTH_ACCOUNT_DISCOVERY_URL,
             headers={"Authorization": f"Bearer {token}"},
-            params={"fields": "id,username"},
+            params={"fields": "user_id,username"},
             timeout=INSTAGRAM_OAUTH_REQUEST_TIMEOUT_SECONDS,
         )
         if not bool(getattr(response, "ok", False)):
@@ -387,7 +387,7 @@ def discover_instagram_account(token_result: InstagramOAuthTokenResult) -> Insta
         payload = response.json()
         if not isinstance(payload, dict):
             raise _discovery_error()
-        instagram_user_id = payload.get("id")
+        instagram_user_id = payload.get("user_id")
         if (
             not isinstance(instagram_user_id, str)
             or not INSTAGRAM_OAUTH_EXTERNAL_ID_PATTERN.fullmatch(instagram_user_id)

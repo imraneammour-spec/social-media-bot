@@ -186,14 +186,14 @@ def webhook_identity_matches_single_connected_oauth_graph_profile(
         response = requests.get(
             OAUTH_GRAPH_PROFILE_URL,
             headers={"Authorization": f"Bearer {runtime.access_token}"},
-            params={"fields": "id"},
+            params={"fields": "user_id"},
             timeout=OAUTH_GRAPH_PROFILE_TIMEOUT_SECONDS,
         )
         if not bool(getattr(response, "ok", False)):
             return "indeterminate"
         payload = response.json()
         profile_external_id = _normalized_external_id(
-            payload.get("id") if isinstance(payload, dict) else None
+            payload.get("user_id") if isinstance(payload, dict) else None
         )
         if profile_external_id is None:
             return "indeterminate"
@@ -241,14 +241,14 @@ def classify_failed_webhook_identity(
             response = requests.get(
                 OAUTH_GRAPH_PROFILE_URL,
                 headers={"Authorization": f"Bearer {runtime.access_token}"},
-                params={"fields": "id"},
+                params={"fields": "user_id"},
                 timeout=OAUTH_GRAPH_PROFILE_TIMEOUT_SECONDS,
             )
             if not bool(getattr(response, "ok", False)):
                 return WEBHOOK_IDENTITY_CLASSIFICATION_INDETERMINATE
             payload = response.json()
             profile_external_id = _normalized_external_id(
-                payload.get("id") if isinstance(payload, dict) else None
+                payload.get("user_id") if isinstance(payload, dict) else None
             )
             if profile_external_id is None:
                 return WEBHOOK_IDENTITY_CLASSIFICATION_INDETERMINATE

@@ -16,9 +16,16 @@ from database.instagram_connection import (
     InstagramConnectionError,
     complete_discovered_instagram_connection,
     persist_discovered_instagram_connection,
+    repair_owned_oauth_connection_identity,
 )
 from database.oauth_webhook_subscription import OAuthWebhookSubscriptionError
-from database.models import Base, InstagramAccount, InstagramCredential, User
+from database.models import (
+    Base,
+    InstagramAccount,
+    InstagramCredential,
+    InstagramPendingAccess,
+    User,
+)
 from instagram_oauth import (
     InstagramAccountDiscovery,
     InstagramOAuthTokenResult,
@@ -98,6 +105,15 @@ class InstagramConnectionPersistenceTest(unittest.TestCase):
             now=now or datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
         )
 
+    def _repair(self, *, owner_id=None, keyring=None, now=None):
+        return repair_owned_oauth_connection_identity(
+            self.Session,
+            owner_id=owner_id or self.owner_id,
+            legacy_instagram_user_id="17841438617459999",
+            keyring=keyring or self.keyring,
+            now=now or datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
+        )
+
     def test_new_connection_creates_one_owned_account_and_one_encrypted_credential(self):
         connected = self._persist()
 
@@ -147,6 +163,191 @@ class InstagramConnectionPersistenceTest(unittest.TestCase):
             )
             self.assertEqual(credential.scopes, None)
             self.assertEqual(load_decrypted_access_token(session, account, self.keyring), replacement)
+
+    def test_explicit_owner_scoped_repair_replaces_only_app_scoped_identity(self):
+        app_scoped_id = "17841438617458003"
+        professional_id = "17841438617458004"
+        existing = self._persist(discovery=self._discovery(instagram_user_id=app_scoped_id))
+        with self.Session.begin() as session:
+            session.add(InstagramPendingAccess(
+                instagram_account_id=existing.id,
+                recipient_id="recipient-preserved",
+                page_url="https://example.test/preserved",
+            ))
+        with self.Session() as session:
+            account = session.get(InstagramAccount, existing.id)
+            credential = session.scalar(select(InstagramCredential).where(
+                InstagramCredential.instagram_account_id == existing.id
+            ))
+            before = (
+                account.id,
+                account.user_id,
+                account.connection_status,
+                account.token_expires_at,
+                credential.token_ciphertext,
+                credential.encryption_key_id,
+                list(credential.scopes),
+            )
+        response = type("ProfileResponse", (), {
+            "ok": True,
+            "json": lambda _self: {"id": app_scoped_id, "user_id": professional_id},
+        })()
+
+        with patch("database.instagram_connection.requests.get", return_value=response) as get:
+            repaired = self._repair()
+
+        self.assertEqual(repaired.id, existing.id)
+        get.assert_called_once()
+        with self.Session() as session:
+            account = session.get(InstagramAccount, existing.id)
+            credential = session.scalar(select(InstagramCredential).where(
+                InstagramCredential.instagram_account_id == existing.id
+            ))
+            self.assertEqual(account.instagram_user_id, professional_id)
+            self.assertEqual(
+                (
+                    account.id,
+                    account.user_id,
+                    account.connection_status,
+                    account.token_expires_at,
+                    credential.token_ciphertext,
+                    credential.encryption_key_id,
+                    list(credential.scopes),
+                ),
+                before,
+            )
+            self.assertEqual(
+                session.scalar(select(InstagramPendingAccess).where(
+                    InstagramPendingAccess.instagram_account_id == existing.id
+                )).recipient_id,
+                "recipient-preserved",
+            )
+            self.assertEqual(load_decrypted_access_token(session, account, self.keyring), self.token)
+            from database.account_runtime import resolve_instagram_account_route
+
+            route = resolve_instagram_account_route(
+                session,
+                instagram_user_id=professional_id,
+                legacy_instagram_user_id="17841438617459999",
+                now=datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
+            )
+            self.assertEqual(route.instagram_account_id, existing.id)
+            self.assertEqual(route.connection_mode, "oauth")
+
+    def test_repair_is_idempotent_when_the_professional_identity_is_already_stored(self):
+        professional_id = "17841438617458004"
+        existing = self._persist(discovery=self._discovery(instagram_user_id=professional_id))
+        response = type("ProfileResponse", (), {
+            "ok": True,
+            "json": lambda _self: {
+                "id": "17841438617458003",
+                "user_id": professional_id,
+            },
+        })()
+
+        with patch("database.instagram_connection.requests.get", return_value=response):
+            repaired = self._repair()
+
+        self.assertEqual(repaired.id, existing.id)
+        self.assertEqual(repaired.user_id, self.owner_id)
+        self.assertEqual(repaired.instagram_user_id, professional_id)
+        self.assertEqual(repaired.connection_status, "connected")
+
+    def test_repair_rejects_conflicting_professional_identity_without_mutation(self):
+        app_scoped_id = "17841438617458003"
+        professional_id = "17841438617458004"
+        existing = self._persist(discovery=self._discovery(instagram_user_id=app_scoped_id))
+        with self.Session.begin() as session:
+            session.add(InstagramAccount(
+                user_id=self.other_owner_id,
+                instagram_user_id=professional_id,
+                provider="instagram",
+                connection_status="connected",
+            ))
+        response = type("ProfileResponse", (), {
+            "ok": True,
+            "json": lambda _self: {"id": app_scoped_id, "user_id": professional_id},
+        })()
+
+        with patch("database.instagram_connection.requests.get", return_value=response):
+            with self.assertRaises(InstagramConnectionError):
+                self._repair()
+
+        with self.Session() as session:
+            self.assertEqual(session.get(InstagramAccount, existing.id).instagram_user_id, app_scoped_id)
+
+    def test_repair_rejects_ambiguous_or_legacy_candidates_before_profile_lookup(self):
+        self._persist()
+        self._persist(discovery=self._discovery(instagram_user_id="17841438617458004"))
+        with patch("database.instagram_connection.requests.get") as get:
+            with self.assertRaises(InstagramConnectionError):
+                self._repair()
+        get.assert_not_called()
+
+        with self.Session.begin() as session:
+            session.add(InstagramAccount(
+                user_id=self.other_owner_id,
+                instagram_user_id="17841438617459999",
+                provider="instagram",
+                connection_status="environment_managed",
+            ))
+        with patch("database.instagram_connection.requests.get") as get:
+            with self.assertRaises(InstagramConnectionError):
+                self._repair(owner_id=self.other_owner_id)
+        get.assert_not_called()
+
+    def test_repair_rejects_stale_or_malformed_provider_identity_without_mutation(self):
+        app_scoped_id = "17841438617458003"
+        professional_id = "17841438617458004"
+        existing = self._persist(discovery=self._discovery(instagram_user_id=app_scoped_id))
+
+        def stale_then_respond(*_args, **_kwargs):
+            with self.Session.begin() as session:
+                credential = session.scalar(select(InstagramCredential).where(
+                    InstagramCredential.instagram_account_id == existing.id
+                ))
+                credential.token_ciphertext = "changed-after-profile-read"
+            return type("ProfileResponse", (), {
+                "ok": True,
+                "json": lambda _self: {"id": app_scoped_id, "user_id": professional_id},
+            })()
+
+        with patch("database.instagram_connection.requests.get", side_effect=stale_then_respond):
+            with self.assertRaises(InstagramConnectionError):
+                self._repair()
+        with self.Session() as session:
+            self.assertEqual(session.get(InstagramAccount, existing.id).instagram_user_id, app_scoped_id)
+
+        with patch("database.instagram_connection.requests.get", return_value=type(
+            "MalformedProfileResponse", (), {
+                "ok": True,
+                "json": lambda _self: {"id": app_scoped_id, "user_id": None},
+            }
+        )()):
+            with self.assertRaises(InstagramConnectionError):
+                self._repair()
+        with self.Session() as session:
+            self.assertEqual(session.get(InstagramAccount, existing.id).instagram_user_id, app_scoped_id)
+
+    def test_repair_database_failure_rolls_back_without_secret_logging(self):
+        app_scoped_id = "17841438617458003"
+        professional_id = "17841438617458004"
+        existing = self._persist(discovery=self._discovery(instagram_user_id=app_scoped_id))
+        response = type("ProfileResponse", (), {
+            "ok": True,
+            "json": lambda _self: {"id": app_scoped_id, "user_id": professional_id},
+        })()
+
+        with patch("database.instagram_connection.requests.get", return_value=response), patch(
+            "sqlalchemy.orm.session.SessionTransaction.commit",
+            side_effect=SQLAlchemyError("database unavailable"),
+        ), patch("builtins.print") as log:
+            with self.assertRaises(InstagramConnectionError):
+                self._repair()
+
+        log.assert_not_called()
+        with self.Session() as session:
+            self.assertEqual(session.get(InstagramAccount, existing.id).instagram_user_id, app_scoped_id)
 
     def test_successful_subscription_commits_the_staged_credential_as_connected(self):
         """Removing the finalization step must leave a safe pending state instead of connected."""

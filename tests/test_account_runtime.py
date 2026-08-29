@@ -415,7 +415,10 @@ class AccountRuntimeResolverTest(unittest.TestCase):
         response = type(
             "GraphProfileResponse",
             (),
-            {"ok": True, "json": lambda _self: {"id": "17841438617458902"}},
+            {"ok": True, "json": lambda _self: {
+                "id": "17841438617458991",
+                "user_id": "17841438617458902",
+            }},
         )()
         with self.Session() as session, patch(
             "database.account_runtime.requests.get", return_value=response
@@ -430,25 +433,34 @@ class AccountRuntimeResolverTest(unittest.TestCase):
         graph_get.assert_called_once_with(
             OAUTH_GRAPH_PROFILE_URL,
             headers={"Authorization": f"Bearer {self.token_a}"},
-            params={"fields": "id"},
+            params={"fields": "user_id"},
             timeout=OAUTH_GRAPH_PROFILE_TIMEOUT_SECONDS,
         )
         self.assertFalse(log.called)
 
     def test_webhook_identity_graph_profile_diagnostic_reports_false_without_disclosing_identity(self):
-        from database.account_runtime import webhook_identity_matches_single_connected_oauth_graph_profile
+        from database.account_runtime import (
+            OAUTH_GRAPH_PROFILE_TIMEOUT_SECONDS,
+            OAUTH_GRAPH_PROFILE_URL,
+            webhook_identity_matches_single_connected_oauth_graph_profile,
+        )
 
         webhook_identity = "17841438617458999"
         response = type(
             "GraphProfileResponse",
             (),
-            {"ok": True, "json": lambda _self: {"id": "17841438617458902"}},
+            {"ok": True, "json": lambda _self: {
+                "id": "17841438617458991",
+                "user_id": "17841438617458902",
+            }},
         )()
         with self.Session.begin() as session:
             session.get(InstagramAccount, self.account_b_id).connection_status = "disconnected"
         with self.Session() as session, patch(
             "database.account_runtime.requests.get", return_value=response
-        ), patch("builtins.print") as log:
+        ) as get, patch(
+            "builtins.print"
+        ) as log:
             state = webhook_identity_matches_single_connected_oauth_graph_profile(
                 session,
                 instagram_user_id=webhook_identity,
@@ -456,6 +468,12 @@ class AccountRuntimeResolverTest(unittest.TestCase):
             )
 
         self.assertEqual(state, "False")
+        get.assert_called_once_with(
+            OAUTH_GRAPH_PROFILE_URL,
+            headers={"Authorization": f"Bearer {self.token_a}"},
+            params={"fields": "user_id"},
+            timeout=OAUTH_GRAPH_PROFILE_TIMEOUT_SECONDS,
+        )
         rendered = " ".join(
             str(argument) for call in log.call_args_list for argument in call.args
         )
@@ -485,18 +503,25 @@ class AccountRuntimeResolverTest(unittest.TestCase):
         self.assertEqual(state, "indeterminate")
 
     def test_webhook_identity_classification_reports_connected_oauth_from_a_verified_profile(self):
-        from database.account_runtime import classify_failed_webhook_identity
+        from database.account_runtime import (
+            OAUTH_GRAPH_PROFILE_TIMEOUT_SECONDS,
+            OAUTH_GRAPH_PROFILE_URL,
+            classify_failed_webhook_identity,
+        )
 
         with self.Session.begin() as session:
             session.get(InstagramAccount, self.account_b_id).connection_status = "disconnected"
         response = type(
             "GraphProfileResponse",
             (),
-            {"ok": True, "json": lambda _self: {"id": "17841438617458902"}},
+            {"ok": True, "json": lambda _self: {
+                "id": "17841438617458991",
+                "user_id": "17841438617458902",
+            }},
         )()
         with self.Session() as session, patch(
             "database.account_runtime.requests.get", return_value=response
-        ), patch("builtins.print") as log:
+        ) as get, patch("builtins.print") as log:
             classification = classify_failed_webhook_identity(
                 session,
                 instagram_user_id="17841438617458902",
@@ -504,6 +529,12 @@ class AccountRuntimeResolverTest(unittest.TestCase):
             )
 
         self.assertEqual(classification, "connected_oauth")
+        get.assert_called_once_with(
+            OAUTH_GRAPH_PROFILE_URL,
+            headers={"Authorization": f"Bearer {self.token_a}"},
+            params={"fields": "user_id"},
+            timeout=OAUTH_GRAPH_PROFILE_TIMEOUT_SECONDS,
+        )
         log.assert_not_called()
 
     def test_webhook_identity_classification_reports_other_known_for_a_non_oauth_persisted_identity(self):
@@ -525,8 +556,8 @@ class AccountRuntimeResolverTest(unittest.TestCase):
         from database.account_runtime import classify_failed_webhook_identity
 
         responses = [
-            type("GraphProfileResponseA", (), {"ok": True, "json": lambda _self: {"id": "17841438617458902"}})(),
-            type("GraphProfileResponseB", (), {"ok": True, "json": lambda _self: {"id": "17841438617458903"}})(),
+            type("GraphProfileResponseA", (), {"ok": True, "json": lambda _self: {"id": "17841438617458991", "user_id": "17841438617458902"}})(),
+            type("GraphProfileResponseB", (), {"ok": True, "json": lambda _self: {"id": "17841438617458992", "user_id": "17841438617458903"}})(),
         ]
         with self.Session() as session, patch(
             "database.account_runtime.requests.get", side_effect=responses

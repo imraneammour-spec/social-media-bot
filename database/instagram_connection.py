@@ -7,17 +7,27 @@ import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import requests
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 
-from instagram_oauth import InstagramAccountDiscovery, InstagramOAuthTokenResult, normalized_expires_in
+from instagram_oauth import (
+    INSTAGRAM_OAUTH_ACCOUNT_DISCOVERY_URL,
+    INSTAGRAM_OAUTH_REQUEST_TIMEOUT_SECONDS,
+    InstagramAccountDiscovery,
+    InstagramOAuthTokenResult,
+    normalized_expires_in,
+)
 
 from .credentials import (
     CredentialConfigurationError,
+    CredentialDecryptionError,
     CredentialEncryptionError,
+    CredentialNotFoundError,
     CredentialPersistenceError,
     CredentialKeyring,
+    decrypt_access_token,
     store_encrypted_credential,
 )
 from .models import InstagramAccount, InstagramCredential
@@ -31,6 +41,8 @@ from .oauth_webhook_subscription import (
 
 
 INSTAGRAM_EXTERNAL_ID_PATTERN = re.compile(r"^[0-9]{1,64}$")
+
+
 class InstagramConnectionError(ValueError):
     """Raised without account, token, provider, or database details."""
 
@@ -103,6 +115,199 @@ def _expiry_at(now: datetime, expires_in: int | None) -> datetime | None:
         return now + timedelta(seconds=expires_in)
     except (OverflowError, TypeError, ValueError):
         return None
+
+
+def _validated_external_identity(value: object) -> str:
+    if not isinstance(value, str) or not INSTAGRAM_EXTERNAL_ID_PATTERN.fullmatch(value):
+        raise _connection_error()
+    return value
+
+
+def _is_expired(value: datetime | None, *, now: datetime) -> bool:
+    if value is None:
+        return False
+    current = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+    return current <= now
+
+
+def _credential_is_usable_for_identity_repair(
+    account: InstagramAccount,
+    credential: InstagramCredential | None,
+    *,
+    now: datetime,
+) -> bool:
+    if credential is None:
+        return False
+    return bool(
+        account.provider == "instagram"
+        and account.connection_status == "connected"
+        and not str(account.last_connection_error_code or "").strip()
+        and not _is_expired(account.token_expires_at, now=now)
+        and credential.token_status == "valid"
+        and credential.revoked_at is None
+        and not str(credential.last_error_code or "").strip()
+        and isinstance(credential.token_ciphertext, str)
+        and bool(credential.token_ciphertext)
+        and isinstance(credential.encryption_key_id, str)
+        and bool(credential.encryption_key_id)
+        and not _is_expired(credential.expires_at, now=now)
+    )
+
+
+def _repair_candidate_snapshot(
+    session,
+    *,
+    owner_id: uuid.UUID,
+    legacy_instagram_user_id: object,
+    now: datetime,
+) -> tuple[uuid.UUID, str, uuid.UUID, str, str]:
+    """Read one repair-eligible OAuth account without changing state."""
+
+    legacy_id = str(legacy_instagram_user_id or "").strip()
+    candidates: list[tuple[InstagramAccount, InstagramCredential]] = []
+    for account in session.scalars(
+        select(InstagramAccount).where(InstagramAccount.user_id == owner_id)
+    ):
+        if account.connection_status == "environment_managed":
+            continue
+        if legacy_id and hmac.compare_digest(str(account.instagram_user_id), legacy_id):
+            continue
+        credential = session.scalar(
+            select(InstagramCredential).where(
+                InstagramCredential.instagram_account_id == account.id
+            )
+        )
+        if _credential_is_usable_for_identity_repair(account, credential, now=now):
+            candidates.append((account, credential))
+    if len(candidates) != 1:
+        raise _connection_error()
+    account, credential = candidates[0]
+    return (
+        account.id,
+        str(account.instagram_user_id),
+        credential.id,
+        credential.token_ciphertext,
+        credential.encryption_key_id,
+    )
+
+
+def _read_oauth_profile_identities(access_token: str) -> tuple[str, str]:
+    """Read app-scoped and professional identities without surfacing either."""
+
+    try:
+        response = requests.get(
+            INSTAGRAM_OAUTH_ACCOUNT_DISCOVERY_URL,
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"fields": "id,user_id"},
+            timeout=INSTAGRAM_OAUTH_REQUEST_TIMEOUT_SECONDS,
+        )
+        if not bool(getattr(response, "ok", False)):
+            raise _connection_error()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise _connection_error()
+        return (
+            _validated_external_identity(payload.get("id")),
+            _validated_external_identity(payload.get("user_id")),
+        )
+    except InstagramConnectionError:
+        raise
+    except (requests.RequestException, AttributeError, TypeError, ValueError):
+        raise _connection_error() from None
+
+
+def repair_owned_oauth_connection_identity(
+    session_factory: sessionmaker,
+    *,
+    owner_id: object,
+    legacy_instagram_user_id: object,
+    keyring: CredentialKeyring,
+    now: datetime | None = None,
+) -> InstagramAccount:
+    """Explicitly repair one owner's legacy app-scoped OAuth identity.
+
+    This maintenance-only function is never called from normal request,
+    callback, webhook, login, or startup flows.  It accepts no provider
+    identity from the caller: both identities are read from the existing,
+    encrypted OAuth credential immediately before the guarded single-column
+    update.
+    """
+
+    try:
+        normalized_owner_id = _normalized_user_id(owner_id)
+        current_time = _utc_now(now)
+        with session_factory() as read_session:
+            (
+                account_id,
+                stored_identity,
+                credential_id,
+                token_ciphertext,
+                encryption_key_id,
+            ) = _repair_candidate_snapshot(
+                read_session,
+                owner_id=normalized_owner_id,
+                legacy_instagram_user_id=legacy_instagram_user_id,
+                now=current_time,
+            )
+        access_token = decrypt_access_token(token_ciphertext, encryption_key_id, keyring)
+        app_scoped_id, professional_id = _read_oauth_profile_identities(access_token)
+        if hmac.compare_digest(stored_identity, professional_id):
+            with session_factory() as verify_session:
+                account = verify_session.scalar(
+                    select(InstagramAccount).where(
+                        InstagramAccount.id == account_id,
+                        InstagramAccount.user_id == normalized_owner_id,
+                        InstagramAccount.instagram_user_id == professional_id,
+                    )
+                )
+                if account is None:
+                    raise _connection_error()
+                return account
+        if not hmac.compare_digest(stored_identity, app_scoped_id):
+            raise _connection_error()
+
+        with session_factory.begin() as write_session:
+            account = write_session.scalar(
+                select(InstagramAccount).where(InstagramAccount.id == account_id).with_for_update()
+            )
+            credential = write_session.scalar(
+                select(InstagramCredential).where(
+                    InstagramCredential.instagram_account_id == account_id
+                ).with_for_update()
+            ) if account is not None else None
+            if (
+                account is None
+                or account.user_id != normalized_owner_id
+                or not hmac.compare_digest(str(account.instagram_user_id), stored_identity)
+                or credential is None
+                or credential.id != credential_id
+                or credential.token_ciphertext != token_ciphertext
+                or credential.encryption_key_id != encryption_key_id
+                or not _credential_is_usable_for_identity_repair(account, credential, now=current_time)
+            ):
+                raise _connection_error()
+            conflict = write_session.scalar(
+                select(InstagramAccount).where(
+                    InstagramAccount.instagram_user_id == professional_id
+                ).with_for_update()
+            )
+            if conflict is not None and conflict.id != account.id:
+                raise _connection_error()
+            account.instagram_user_id = professional_id
+            write_session.flush()
+            return account
+    except InstagramConnectionError:
+        raise
+    except (
+        CredentialConfigurationError,
+        CredentialDecryptionError,
+        CredentialNotFoundError,
+        SQLAlchemyError,
+        AttributeError,
+        TypeError,
+        ValueError,
+    ):
+        raise _connection_error() from None
 
 
 def _validated_connection_inputs(
