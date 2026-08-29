@@ -1,11 +1,22 @@
-"""Read-only authenticated OAuth tenant dashboard routes."""
+"""Authenticated OAuth tenant dashboard routes."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from functools import wraps
 
-from flask import Blueprint, current_app, jsonify, make_response, redirect, render_template, request, session as browser_session, url_for
+from flask import (
+    Blueprint,
+    current_app,
+    jsonify,
+    make_response,
+    redirect,
+    render_template,
+    request,
+    session as browser_session,
+    url_for,
+)
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from auth import (
@@ -20,19 +31,25 @@ from auth import (
     validate_csrf_token,
 )
 from database import tenant_dashboard as tenant_data
+from database.models import InstagramAutomationConfig
+from database.tenant_automation import normalize_trigger_keywords
 
 
-# Kept as a module-level boundary so server-side callers and focused tests use
-# the exact same opaque lead-reference format.
-lead_action_reference_for_prompt_request = tenant_data.lead_action_reference_for_prompt_request
+lead_action_reference_for_prompt_request = (
+    tenant_data.lead_action_reference_for_prompt_request
+)
 
 
 ACCOUNT_REFERENCE_PURPOSE = "tenant-dashboard-select"
 ACCOUNT_REFERENCE_ARGUMENT = "account"
+
 ACCOUNT_UNAVAILABLE_MESSAGE = "Selected account is unavailable."
 LEAD_UNAVAILABLE_MESSAGE = "Lead is unavailable."
 LEAD_UPDATE_ERROR_MESSAGE = "Lead update could not be completed."
+AUTOMATION_UPDATE_ERROR_MESSAGE = "Automation update could not be completed."
+
 MAX_INTERNAL_NOTE_LENGTH = 2000
+
 _DATABASE_UNAVAILABLE = object()
 
 
@@ -48,40 +65,114 @@ def _cache_control(response):
 
 def _tenant_context():
     if not authentication_available():
-        return None, None, _cache_control(redirect(url_for("login")))
+        return (
+            None,
+            None,
+            _cache_control(
+                redirect(
+                    url_for("login")
+                )
+            ),
+        )
+
     user = get_current_user()
+
     if user is None:
         if browser_session.get(USER_SESSION_KEY) is not None:
-            return None, None, _workspace_unavailable()
-        return None, None, _cache_control(redirect(url_for("login")))
+            return (
+                None,
+                None,
+                _workspace_unavailable(),
+            )
+
+        return (
+            None,
+            None,
+            _cache_control(
+                redirect(
+                    url_for("login")
+                )
+            ),
+        )
+
     if current_user_has_legacy_workspace_access():
-        return None, None, _cache_control(redirect(url_for("dashboard")))
+        return (
+            None,
+            None,
+            _cache_control(
+                redirect(
+                    url_for("dashboard")
+                )
+            ),
+        )
+
     state = _auth_state()
-    session_factory = getattr(state, "session_factory", None)
+
+    session_factory = getattr(
+        state,
+        "session_factory",
+        None,
+    )
+
     if session_factory is None:
-        return None, None, _workspace_unavailable()
+        return (
+            None,
+            None,
+            _workspace_unavailable(),
+        )
+
     try:
         with session_factory() as session:
             accounts = tenant_data.list_tenant_accounts(
                 session,
                 user_id=user.id,
-                legacy_instagram_user_id=getattr(state, "legacy_instagram_user_id", ""),
+                legacy_instagram_user_id=getattr(
+                    state,
+                    "legacy_instagram_user_id",
+                    "",
+                ),
             )
+
     except SQLAlchemyError:
-        return None, None, _workspace_unavailable()
+        return (
+            None,
+            None,
+            _workspace_unavailable(),
+        )
+
     if not accounts:
-        return None, None, _cache_control(redirect(url_for("onboarding")))
+        return (
+            None,
+            None,
+            _cache_control(
+                redirect(
+                    url_for("onboarding")
+                )
+            ),
+        )
+
     return user, accounts, None
 
 
 def _selected_account(user, accounts):
-    supplied_reference = request.args.get(ACCOUNT_REFERENCE_ARGUMENT)
+    supplied_reference = request.args.get(
+        ACCOUNT_REFERENCE_ARGUMENT
+    )
+
     if not supplied_reference:
         return accounts[0]
+
     state = _auth_state()
-    session_factory = getattr(state, "session_factory", None)
+
+    session_factory = getattr(
+        state,
+        "session_factory",
+        None,
+    )
+
     if session_factory is None:
         return _DATABASE_UNAVAILABLE
+
     try:
         with session_factory() as session:
             account = resolve_owned_account_action_reference(
@@ -91,67 +182,144 @@ def _selected_account(user, accounts):
                 purpose=ACCOUNT_REFERENCE_PURPOSE,
                 secret_key=current_app.secret_key,
             )
+
     except SQLAlchemyError:
         return _DATABASE_UNAVAILABLE
+
     if account is None:
         return None
-    return next((item for item in accounts if item.instagram_account_id == account.id), None)
+
+    return next(
+        (
+            item
+            for item in accounts
+            if item.instagram_account_id == account.id
+        ),
+        None,
+    )
 
 
 def _account_payload(user, accounts, selected):
-    return [
-        {
-            "username": account.username,
-            "selection_ref": action_reference_for_account(
-                user.id,
-                account.instagram_account_id,
-                ACCOUNT_REFERENCE_PURPOSE,
-                secret_key=current_app.secret_key,
-            ),
-            "connection_label": account.connection_label,
-            "connection_detail": account.connection_detail,
-            "activation_label": account.activation_label,
-            "activation_detail": account.activation_detail,
-            "is_selected": account.instagram_account_id == selected.instagram_account_id,
-            "can_reconnect": account.can_reconnect,
-            "can_disconnect": account.can_disconnect,
-        }
-        for account in accounts
-    ]
+    payload = []
+
+    for account in accounts:
+        payload.append(
+            {
+                "username": account.username,
+                "selection_ref": action_reference_for_account(
+                    user.id,
+                    account.instagram_account_id,
+                    ACCOUNT_REFERENCE_PURPOSE,
+                    secret_key=current_app.secret_key,
+                ),
+                "connection_label": account.connection_label,
+                "connection_detail": account.connection_detail,
+                "activation_label": account.activation_label,
+                "activation_detail": account.activation_detail,
+                "is_selected": (
+                    account.instagram_account_id
+                    == selected.instagram_account_id
+                ),
+                "can_reconnect": account.can_reconnect,
+                "can_disconnect": account.can_disconnect,
+            }
+        )
+
+    return payload
 
 
 def _safe_account_unavailable():
-    return _cache_control(jsonify(error=ACCOUNT_UNAVAILABLE_MESSAGE)), 404
+    return (
+        _cache_control(
+            jsonify(
+                error=ACCOUNT_UNAVAILABLE_MESSAGE
+            )
+        ),
+        404,
+    )
 
 
 def _workspace_unavailable():
-    return _cache_control(make_response("Workspace temporarily unavailable.", 503))
+    return _cache_control(
+        make_response(
+            "Workspace temporarily unavailable.",
+            503,
+        )
+    )
 
 
 def _safe_lead_unavailable():
-    return _cache_control(jsonify(error=LEAD_UNAVAILABLE_MESSAGE)), 404
+    return (
+        _cache_control(
+            jsonify(
+                error=LEAD_UNAVAILABLE_MESSAGE
+            )
+        ),
+        404,
+    )
 
 
 def _safe_lead_update_error():
-    return _cache_control(jsonify(error=LEAD_UPDATE_ERROR_MESSAGE)), 400
+    return (
+        _cache_control(
+            jsonify(
+                error=LEAD_UPDATE_ERROR_MESSAGE
+            )
+        ),
+        400,
+    )
 
 
-def _render_page(template_name, *, user, accounts, selected, **context):
-    account_payload = _account_payload(user, accounts, selected)
+def _safe_automation_update_error():
+    return (
+        _cache_control(
+            jsonify(
+                error=AUTOMATION_UPDATE_ERROR_MESSAGE
+            )
+        ),
+        400,
+    )
+
+
+def _render_page(
+    template_name,
+    *,
+    user,
+    accounts,
+    selected,
+    **context,
+):
+    account_payload = _account_payload(
+        user,
+        accounts,
+        selected,
+    )
+
     active_pages = {
         "tenant_dashboard.app_overview": "overview",
         "tenant_dashboard.app_accounts": "accounts",
         "tenant_dashboard.app_leads": "leads",
         "tenant_dashboard.app_activity": "activity",
         "tenant_dashboard.app_followups": "followups",
+        "tenant_dashboard.app_automations": "automations",
     }
+
+    selected_account = next(
+        item
+        for item in account_payload
+        if item["is_selected"]
+    )
+
     return _cache_control(
         render_template(
             template_name,
             current_user=user,
             accounts=account_payload,
-            selected_account=next(item for item in account_payload if item["is_selected"]),
-            active_page=active_pages.get(request.endpoint, ""),
+            selected_account=selected_account,
+            active_page=active_pages.get(
+                request.endpoint,
+                "",
+            ),
             csrf_token=csrf_token(),
             **context,
         )
@@ -162,25 +330,54 @@ def _require_tenant(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
         user, accounts, response = _tenant_context()
+
         if response is not None:
             return response
-        selected = _selected_account(user, accounts)
+
+        selected = _selected_account(
+            user,
+            accounts,
+        )
+
         if selected is _DATABASE_UNAVAILABLE:
             return _workspace_unavailable()
+
         if selected is None:
             return _safe_account_unavailable()
-        return view(user, accounts, selected, *args, **kwargs)
+
+        return view(
+            user,
+            accounts,
+            selected,
+            *args,
+            **kwargs,
+        )
 
     return wrapped
 
 
-def _query(selected, query, **kwargs):
-    session_factory = getattr(_auth_state(), "session_factory", None)
+def _query(
+    selected,
+    query,
+    **kwargs,
+):
+    session_factory = getattr(
+        _auth_state(),
+        "session_factory",
+        None,
+    )
+
     if session_factory is None:
         return _DATABASE_UNAVAILABLE
+
     try:
         with session_factory() as session:
-            return query(session, instagram_account_id=selected.instagram_account_id, **kwargs)
+            return query(
+                session,
+                instagram_account_id=selected.instagram_account_id,
+                **kwargs,
+            )
+
     except SQLAlchemyError:
         return _DATABASE_UNAVAILABLE
 
@@ -195,8 +392,13 @@ def _lead_filters():
     )
 
 
-def _lead_payload(user, selected, rows):
+def _lead_payload(
+    user,
+    selected,
+    rows,
+):
     payload = []
+
     for row in rows:
         payload.append(
             {
@@ -208,39 +410,50 @@ def _lead_payload(user, selected, rows):
                 "archived": row.archived,
                 "archived_label": row.archived_label,
                 "internal_note": row.internal_note,
-                "prompt_url": f"/p/o/{row.public_prompt_id}" if row.public_prompt_id else None,
-                "status_action": tenant_data.lead_action_reference_for_prompt_request(
-                    user.id,
-                    selected.instagram_account_id,
-                    row.prompt_request_id,
-                    "lead-status",
-                    secret_key=current_app.secret_key,
+                "prompt_url": (
+                    f"/p/o/{row.public_prompt_id}"
+                    if row.public_prompt_id
+                    else None
                 ),
-                "note_action": tenant_data.lead_action_reference_for_prompt_request(
-                    user.id,
-                    selected.instagram_account_id,
-                    row.prompt_request_id,
-                    "lead-note",
-                    secret_key=current_app.secret_key,
-                ),
-                "archive_action": tenant_data.lead_action_reference_for_prompt_request(
-                    user.id,
-                    selected.instagram_account_id,
-                    row.prompt_request_id,
-                    "lead-archive",
-                    secret_key=current_app.secret_key,
-                ),
+                "status_action":
+                    tenant_data.lead_action_reference_for_prompt_request(
+                        user.id,
+                        selected.instagram_account_id,
+                        row.prompt_request_id,
+                        "lead-status",
+                        secret_key=current_app.secret_key,
+                    ),
+                "note_action":
+                    tenant_data.lead_action_reference_for_prompt_request(
+                        user.id,
+                        selected.instagram_account_id,
+                        row.prompt_request_id,
+                        "lead-note",
+                        secret_key=current_app.secret_key,
+                    ),
+                "archive_action":
+                    tenant_data.lead_action_reference_for_prompt_request(
+                        user.id,
+                        selected.instagram_account_id,
+                        row.prompt_request_id,
+                        "lead-archive",
+                        secret_key=current_app.secret_key,
+                    ),
             }
         )
+
     return payload
 
 
 def _lead_redirect():
     view, stage, search, sort, page = _lead_filters()
+
     return redirect(
         url_for(
             "tenant_dashboard.app_leads",
-            account=request.args.get(ACCOUNT_REFERENCE_ARGUMENT),
+            account=request.args.get(
+                ACCOUNT_REFERENCE_ARGUMENT
+            ),
             view=view,
             stage=stage,
             q=search or None,
@@ -251,33 +464,172 @@ def _lead_redirect():
     )
 
 
-def _mutate_lead(user, selected, purpose, mutate):
+def _mutate_lead(
+    user,
+    selected,
+    purpose,
+    mutate,
+):
     state = _auth_state()
-    session_factory = getattr(state, "session_factory", None)
+
+    session_factory = getattr(
+        state,
+        "session_factory",
+        None,
+    )
+
     if session_factory is None:
         return _safe_lead_unavailable()
+
     try:
         with session_factory.begin() as session:
-            lead = tenant_data.resolve_tenant_lead_action_reference(
-                session,
-                user_id=user.id,
-                instagram_account_id=selected.instagram_account_id,
-                reference=request.form.get("lead_action"),
-                purpose=purpose,
-                secret_key=current_app.secret_key,
+            lead = (
+                tenant_data.resolve_tenant_lead_action_reference(
+                    session,
+                    user_id=user.id,
+                    instagram_account_id=selected.instagram_account_id,
+                    reference=request.form.get(
+                        "lead_action"
+                    ),
+                    purpose=purpose,
+                    secret_key=current_app.secret_key,
+                )
             )
+
             if lead is None:
                 return _safe_lead_unavailable()
+
             mutate(lead)
+
     except SQLAlchemyError:
         return _safe_lead_unavailable()
+
     return _lead_redirect()
 
 
-def register_tenant_dashboard(app) -> None:
-    """Register additive read-only OAuth tenant routes under ``/app``."""
+def _automation_config(selected):
+    session_factory = getattr(
+        _auth_state(),
+        "session_factory",
+        None,
+    )
 
-    dashboard = Blueprint("tenant_dashboard", __name__, url_prefix="/app")
+    if session_factory is None:
+        return _DATABASE_UNAVAILABLE
+
+    try:
+        with session_factory() as session:
+            config = session.scalar(
+                select(
+                    InstagramAutomationConfig
+                ).where(
+                    InstagramAutomationConfig.instagram_account_id
+                    == selected.instagram_account_id
+                )
+            )
+
+            if config is None:
+                return None
+
+            return {
+                "enabled": config.enabled,
+                "trigger_keywords": list(
+                    config.trigger_keywords
+                    or []
+                ),
+                "public_reply_enabled":
+                    config.public_reply_enabled,
+                "public_reply_text":
+                    config.public_reply_text
+                    or "",
+            }
+
+    except SQLAlchemyError:
+        return _DATABASE_UNAVAILABLE
+
+
+def _update_automation_config(selected):
+    session_factory = getattr(
+        _auth_state(),
+        "session_factory",
+        None,
+    )
+
+    if session_factory is None:
+        return _DATABASE_UNAVAILABLE
+
+    try:
+        raw_keywords = str(
+            request.form.get(
+                "trigger_keywords",
+                "",
+            )
+            or ""
+        )
+
+        keyword_items = [
+            item.strip()
+            for item in raw_keywords.split(",")
+            if item.strip()
+        ]
+
+        keywords = normalize_trigger_keywords(
+            keyword_items
+        )
+
+    except ValueError:
+        return False
+
+    try:
+        with session_factory.begin() as session:
+            config = session.scalar(
+                select(
+                    InstagramAutomationConfig
+                ).where(
+                    InstagramAutomationConfig.instagram_account_id
+                    == selected.instagram_account_id
+                )
+            )
+
+            if config is None:
+                return None
+
+            config.enabled = (
+                request.form.get("enabled")
+                == "on"
+            )
+
+            config.trigger_keywords = keywords
+
+            config.public_reply_enabled = (
+                request.form.get(
+                    "public_reply_enabled"
+                )
+                == "on"
+            )
+
+            config.public_reply_text = str(
+                request.form.get(
+                    "public_reply_text"
+                )
+                or ""
+            ).strip()
+
+            session.flush()
+
+    except SQLAlchemyError:
+        return _DATABASE_UNAVAILABLE
+
+    return True
+
+
+def register_tenant_dashboard(app) -> None:
+    dashboard = Blueprint(
+        "tenant_dashboard",
+        __name__,
+        url_prefix="/app",
+        template_folder="dashboard/templates",
+    )
 
     @dashboard.after_request
     def tenant_no_store(response):
@@ -285,21 +637,56 @@ def register_tenant_dashboard(app) -> None:
 
     @dashboard.get("")
     @_require_tenant
-    def app_overview(user, accounts, selected):
-        data = _query(selected, tenant_data.overview)
+    def app_overview(
+        user,
+        accounts,
+        selected,
+    ):
+        data = _query(
+            selected,
+            tenant_data.overview,
+        )
+
         if data is _DATABASE_UNAVAILABLE:
             return _workspace_unavailable()
-        return _render_page("app_overview.html", user=user, accounts=accounts, selected=selected, overview=data)
+
+        return _render_page(
+            "app_overview.html",
+            user=user,
+            accounts=accounts,
+            selected=selected,
+            overview=data,
+        )
 
     @dashboard.get("/accounts")
     @_require_tenant
-    def app_accounts(user, accounts, selected):
-        return _render_page("app_accounts.html", user=user, accounts=accounts, selected=selected)
+    def app_accounts(
+        user,
+        accounts,
+        selected,
+    ):
+        return _render_page(
+            "app_accounts.html",
+            user=user,
+            accounts=accounts,
+            selected=selected,
+        )
 
     @dashboard.get("/leads")
     @_require_tenant
-    def app_leads(user, accounts, selected):
-        view, stage, search, sort, page = _lead_filters()
+    def app_leads(
+        user,
+        accounts,
+        selected,
+    ):
+        (
+            view,
+            stage,
+            search,
+            sort,
+            page,
+        ) = _lead_filters()
+
         lead_page = _query(
             selected,
             tenant_data.leads,
@@ -309,14 +696,20 @@ def register_tenant_dashboard(app) -> None:
             sort=sort,
             page=page,
         )
+
         if lead_page is _DATABASE_UNAVAILABLE:
             return _workspace_unavailable()
+
         return _render_page(
             "app_leads.html",
             user=user,
             accounts=accounts,
             selected=selected,
-            leads=_lead_payload(user, selected, lead_page.leads),
+            leads=_lead_payload(
+                user,
+                selected,
+                lead_page.leads,
+            ),
             lead_page=lead_page,
             selected_view=view,
             selected_stage=stage,
@@ -327,37 +720,165 @@ def register_tenant_dashboard(app) -> None:
 
     @dashboard.get("/activity")
     @_require_tenant
-    def app_activity(user, accounts, selected):
-        rows = _query(selected, tenant_data.activity)
+    def app_activity(
+        user,
+        accounts,
+        selected,
+    ):
+        rows = _query(
+            selected,
+            tenant_data.activity,
+        )
+
         if rows is _DATABASE_UNAVAILABLE:
             return _workspace_unavailable()
-        return _render_page("app_activity.html", user=user, accounts=accounts, selected=selected, activity=rows)
+
+        return _render_page(
+            "app_activity.html",
+            user=user,
+            accounts=accounts,
+            selected=selected,
+            activity=rows,
+        )
 
     @dashboard.get("/followups")
     @_require_tenant
-    def app_followups(user, accounts, selected):
-        rows = _query(selected, tenant_data.followups)
+    def app_followups(
+        user,
+        accounts,
+        selected,
+    ):
+        rows = _query(
+            selected,
+            tenant_data.followups,
+        )
+
         if rows is _DATABASE_UNAVAILABLE:
             return _workspace_unavailable()
-        return _render_page("app_followups.html", user=user, accounts=accounts, selected=selected, followups=rows)
+
+        return _render_page(
+            "app_followups.html",
+            user=user,
+            accounts=accounts,
+            selected=selected,
+            followups=rows,
+        )
+
+    @dashboard.route(
+        "/automations",
+        methods=[
+            "GET",
+            "POST",
+        ],
+    )
+    @_require_tenant
+    def app_automations(
+        user,
+        accounts,
+        selected,
+    ):
+        if request.method == "POST":
+            if not validate_csrf_token(
+                request_csrf_token()
+            ):
+                return _safe_automation_update_error()
+
+            updated = _update_automation_config(
+                selected
+            )
+
+            if updated is _DATABASE_UNAVAILABLE:
+                return _workspace_unavailable()
+
+            if updated is None:
+                return _safe_account_unavailable()
+
+            if updated is False:
+                return _safe_automation_update_error()
+
+        automation = _automation_config(
+            selected
+        )
+
+        if automation is _DATABASE_UNAVAILABLE:
+            return _workspace_unavailable()
+
+        if automation is None:
+            return _safe_account_unavailable()
+
+        return _render_page(
+            "app_automations.html",
+            user=user,
+            accounts=accounts,
+            selected=selected,
+            automation=automation,
+        )
 
     @dashboard.get("/api/accounts")
     @_require_tenant
-    def app_api_accounts(user, accounts, selected):
-        return jsonify(accounts=_account_payload(user, accounts, selected))
+    def app_api_accounts(
+        user,
+        accounts,
+        selected,
+    ):
+        return jsonify(
+            accounts=_account_payload(
+                user,
+                accounts,
+                selected,
+            )
+        )
 
     @dashboard.get("/api/overview")
     @_require_tenant
-    def app_api_overview(user, accounts, selected):
-        data = _query(selected, tenant_data.overview)
+    def app_api_overview(
+        user,
+        accounts,
+        selected,
+    ):
+        data = _query(
+            selected,
+            tenant_data.overview,
+        )
+
         if data is _DATABASE_UNAVAILABLE:
             return _workspace_unavailable()
-        return jsonify(account=_account_payload(user, accounts, selected)[0] if len(accounts) == 1 else next(item for item in _account_payload(user, accounts, selected) if item["is_selected"]), overview=data)
+
+        payload = _account_payload(
+            user,
+            accounts,
+            selected,
+        )
+
+        if len(accounts) == 1:
+            account = payload[0]
+        else:
+            account = next(
+                item
+                for item in payload
+                if item["is_selected"]
+            )
+
+        return jsonify(
+            account=account,
+            overview=data,
+        )
 
     @dashboard.get("/api/leads")
     @_require_tenant
-    def app_api_leads(user, accounts, selected):
-        view, stage, search, sort, page = _lead_filters()
+    def app_api_leads(
+        user,
+        accounts,
+        selected,
+    ):
+        (
+            view,
+            stage,
+            search,
+            sort,
+            page,
+        ) = _lead_filters()
+
         lead_page = _query(
             selected,
             tenant_data.leads,
@@ -367,78 +888,177 @@ def register_tenant_dashboard(app) -> None:
             sort=sort,
             page=page,
         )
+
         if lead_page is _DATABASE_UNAVAILABLE:
             return _workspace_unavailable()
+
         return jsonify(
-            leads=_lead_payload(user, selected, lead_page.leads),
-            filters={"view": view, "stage": stage, "q": search, "sort": sort},
+            leads=_lead_payload(
+                user,
+                selected,
+                lead_page.leads,
+            ),
+            filters={
+                "view": view,
+                "stage": stage,
+                "q": search,
+                "sort": sort,
+            },
             pagination={
                 "page": lead_page.page,
-                "has_previous": lead_page.has_previous,
-                "has_next": lead_page.has_next,
+                "has_previous":
+                    lead_page.has_previous,
+                "has_next":
+                    lead_page.has_next,
             },
         )
 
     @dashboard.get("/api/activity")
     @_require_tenant
-    def app_api_activity(user, accounts, selected):
-        rows = _query(selected, tenant_data.activity)
+    def app_api_activity(
+        user,
+        accounts,
+        selected,
+    ):
+        rows = _query(
+            selected,
+            tenant_data.activity,
+        )
+
         if rows is _DATABASE_UNAVAILABLE:
             return _workspace_unavailable()
-        return jsonify(activity=rows)
+
+        return jsonify(
+            activity=rows
+        )
 
     @dashboard.get("/api/followups")
     @_require_tenant
-    def app_api_followups(user, accounts, selected):
-        rows = _query(selected, tenant_data.followups)
+    def app_api_followups(
+        user,
+        accounts,
+        selected,
+    ):
+        rows = _query(
+            selected,
+            tenant_data.followups,
+        )
+
         if rows is _DATABASE_UNAVAILABLE:
             return _workspace_unavailable()
-        return jsonify(followups=rows)
+
+        return jsonify(
+            followups=rows
+        )
 
     @dashboard.post("/leads/status")
     @_require_tenant
-    def app_lead_status(user, accounts, selected):
-        if not validate_csrf_token(request_csrf_token()):
+    def app_lead_status(
+        user,
+        accounts,
+        selected,
+    ):
+        if not validate_csrf_token(
+            request_csrf_token()
+        ):
             return _safe_lead_update_error()
-        status = str(request.form.get("lead_status") or "").strip().lower()
+
+        status = str(
+            request.form.get(
+                "lead_status"
+            )
+            or ""
+        ).strip().lower()
+
         if status not in tenant_data.LEAD_STATUSES:
             return _safe_lead_update_error()
+
         return _mutate_lead(
             user,
             selected,
             "lead-status",
-            lambda lead: setattr(lead, "lead_status", status),
+            lambda lead: setattr(
+                lead,
+                "lead_status",
+                status,
+            ),
         )
 
     @dashboard.post("/leads/note")
     @_require_tenant
-    def app_lead_note(user, accounts, selected):
-        if not validate_csrf_token(request_csrf_token()):
+    def app_lead_note(
+        user,
+        accounts,
+        selected,
+    ):
+        if not validate_csrf_token(
+            request_csrf_token()
+        ):
             return _safe_lead_update_error()
-        note = str(request.form.get("internal_note") or "").strip()
+
+        note = str(
+            request.form.get(
+                "internal_note"
+            )
+            or ""
+        ).strip()
+
         if len(note) > MAX_INTERNAL_NOTE_LENGTH:
             return _safe_lead_update_error()
+
         return _mutate_lead(
             user,
             selected,
             "lead-note",
-            lambda lead: setattr(lead, "internal_note", note or None),
+            lambda lead: setattr(
+                lead,
+                "internal_note",
+                note or None,
+            ),
         )
 
     @dashboard.post("/leads/archive")
     @_require_tenant
-    def app_lead_archive(user, accounts, selected):
-        if not validate_csrf_token(request_csrf_token()):
+    def app_lead_archive(
+        user,
+        accounts,
+        selected,
+    ):
+        if not validate_csrf_token(
+            request_csrf_token()
+        ):
             return _safe_lead_update_error()
-        operation = str(request.form.get("operation") or "").strip().lower()
-        if operation not in {"archive", "unarchive"}:
+
+        operation = str(
+            request.form.get(
+                "operation"
+            )
+            or ""
+        ).strip().lower()
+
+        if operation not in {
+            "archive",
+            "unarchive",
+        }:
             return _safe_lead_update_error()
-        archived_at = datetime.now(timezone.utc) if operation == "archive" else None
+
+        archived_at = (
+            datetime.now(timezone.utc)
+            if operation == "archive"
+            else None
+        )
+
         return _mutate_lead(
             user,
             selected,
             "lead-archive",
-            lambda lead: setattr(lead, "lead_archived_at", archived_at),
+            lambda lead: setattr(
+                lead,
+                "lead_archived_at",
+                archived_at,
+            ),
         )
 
-    app.register_blueprint(dashboard)
+    app.register_blueprint(
+        dashboard
+    )

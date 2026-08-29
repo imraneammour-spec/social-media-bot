@@ -1,0 +1,78 @@
+{% extends "app_base.html" %}
+
+{% block content %}
+
+<section class="app-panel">
+
+    <h1>Automations</h1>
+
+    <p>
+        Automation settings for
+        <strong>{{ selected_account.username }}</strong>
+    </p>
+
+    <form method="post">
+
+        <input
+            type="hidden"
+            name="csrf_token"
+            value="{{ csrf_token }}"
+        >
+
+        <div>
+            <label>
+                <input
+                    type="checkbox"
+                    name="enabled"
+                    {% if automation.enabled %}checked{% endif %}
+                >
+                Enabled
+            </label>
+        </div>
+
+        <div>
+            <label for="trigger_keywords">
+                Trigger keywords
+            </label>
+
+            <input
+                id="trigger_keywords"
+                name="trigger_keywords"
+                type="text"
+                value="{{ automation.trigger_keywords | join(', ') }}"
+            >
+        </div>
+
+        <div>
+            <label>
+                <input
+                    type="checkbox"
+                    name="public_reply_enabled"
+                    {% if automation.public_reply_enabled %}checked{% endif %}
+                >
+                Public reply enabled
+            </label>
+        </div>
+
+        <div>
+            <label for="public_reply_text">
+                Public reply text
+            </label>
+
+            <input
+                id="public_reply_text"
+                name="public_reply_text"
+                type="text"
+                value="{{ automation.public_reply_text }}"
+            >
+        </div>
+
+        <button type="submit">
+            Save
+        </button>
+
+    </form>
+
+</section>
+
+{% endblock %}
