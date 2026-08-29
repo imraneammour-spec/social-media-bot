@@ -6,41 +6,72 @@
     <title>{% block title %}Workspace{% endblock %} | Imran Prompts</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='tenant_dashboard.css') }}">
 </head>
+
 <body class="tenant-dashboard">
     <div class="app-shell">
+
         <aside class="app-sidebar" aria-label="Workspace navigation">
+
             <a class="app-brand" href="{{ url_for('tenant_dashboard.app_overview', account=selected_account.selection_ref) }}">Imran Prompts</a>
+
             <nav class="workspace-nav" aria-label="Workspace sections">
+
                 <a href="{{ url_for('tenant_dashboard.app_overview', account=selected_account.selection_ref) }}" {% if active_page == 'overview' %}aria-current="page"{% endif %}>Home</a>
+
                 <span class="workspace-nav-unavailable" aria-disabled="true">Content <small>Coming soon</small></span>
-                <span class="workspace-nav-unavailable" aria-disabled="true">Automations <small>Coming soon</small></span>
+
+                <a href="{{ url_for('tenant_dashboard.app_automations', account=selected_account.selection_ref) }}" {% if active_page == 'automations' %}aria-current="page"{% endif %}>Automations</a>
+
                 <a href="{{ url_for('tenant_dashboard.app_leads', account=selected_account.selection_ref) }}" {% if active_page == 'leads' %}aria-current="page"{% endif %}>Leads</a>
+
                 <span class="workspace-nav-unavailable" aria-disabled="true">Messages <small>Coming soon</small></span>
+
                 <span class="workspace-nav-unavailable" aria-disabled="true">Scheduler <small>Coming soon</small></span>
+
                 <span class="workspace-nav-unavailable" aria-disabled="true">Analytics <small>Coming soon</small></span>
+
                 <a href="{{ url_for('tenant_dashboard.app_accounts', account=selected_account.selection_ref) }}" {% if active_page == 'accounts' %}aria-current="page"{% endif %}>Accounts</a>
+
             </nav>
+
             <nav class="workspace-nav workspace-nav-secondary" aria-label="Operational pages">
+
                 <a href="{{ url_for('tenant_dashboard.app_activity', account=selected_account.selection_ref) }}" {% if active_page == 'activity' %}aria-current="page"{% endif %}>Activity</a>
+
                 <a href="{{ url_for('tenant_dashboard.app_followups', account=selected_account.selection_ref) }}" {% if active_page == 'followups' %}aria-current="page"{% endif %}>Follow-ups</a>
+
             </nav>
+
         </aside>
+
         <main class="app-main">
+
             <header class="app-header">
+
                 <div>
                     <p class="eyebrow">Instagram workspace</p>
+
                     <h1>{% block heading %}Instagram workspace{% endblock %}</h1>
+
                     <p class="muted">{{ current_user.display_name }}, viewing {{ selected_account.username }}.</p>
                 </div>
+
                 <nav class="account-switcher" aria-label="Choose an owned Instagram account">
+
                     <span class="account-switcher-label">Account</span>
+
                     {% for account in accounts %}
                         <a href="{{ url_for('tenant_dashboard.app_overview', account=account.selection_ref) }}" {% if account.is_selected %}aria-current="true"{% endif %}>{{ account.username }}</a>
                     {% endfor %}
+
                 </nav>
+
             </header>
+
             {% block content %}{% endblock %}
+
         </main>
+
     </div>
 </body>
 </html>
