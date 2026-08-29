@@ -32,6 +32,7 @@ def normalize_trigger_keywords(value: object) -> list[str]:
     """Normalize a bounded list of single tokens for future OAuth matching."""
 
     if not isinstance(value, list) or not (1 <= len(value) <= 10):
+        raise TenantAutomationConfigurationError("Invalid automation trigger keywords.")
     normalized: list[str] = []
     for item in value:
         keyword = item.strip().lower() if isinstance(item, str) else ""
