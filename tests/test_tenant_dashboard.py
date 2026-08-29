@@ -39,7 +39,7 @@ class TenantDashboardTest(unittest.TestCase):
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
         template_dir = Path(__file__).resolve().parents[1] / "dashboard" / "templates"
-        static_dir = Path(__file__).resolve().parents[1] / "static"
+        static_dir = Path(__file__).resolve().parents[1] / "dashboard" / "static"
         self.app = Flask(
             __name__,
             template_folder=str(template_dir),
