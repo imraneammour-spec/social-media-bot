@@ -2,9 +2,9 @@
 {% block title %}Accounts{% endblock %}
 {% block heading %}Accounts{% endblock %}
 {% block content %}
-<section class="account-list" aria-label="Owned Instagram accounts">
+<section class="account-list page-stack" aria-label="Owned Instagram accounts">
 {% for account in accounts %}
-    <article class="card {% if account.is_selected %}active{% endif %}">
+    <article class="card account-card {% if account.is_selected %}active{% endif %}">
         <h2><a href="{{ url_for('tenant_dashboard.app_accounts', account=account.selection_ref) }}">{{ account.username }}</a></h2>
         {% if account.is_selected %}<p><strong>Selected account</strong></p>{% endif %}
         <p><strong>Connection health:</strong> {{ account.connection_label }}</p>

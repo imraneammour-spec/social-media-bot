@@ -39,7 +39,12 @@ class TenantDashboardTest(unittest.TestCase):
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
         template_dir = Path(__file__).resolve().parents[1] / "dashboard" / "templates"
-        self.app = Flask(__name__, template_folder=str(template_dir))
+        static_dir = Path(__file__).resolve().parents[1] / "static"
+        self.app = Flask(
+            __name__,
+            template_folder=str(template_dir),
+            static_folder=str(static_dir),
+        )
         self.app.config["TESTING"] = True
         configure_auth(
             self.app,
@@ -498,3 +503,67 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.get_data(as_text=True), "Workspace temporarily unavailable.")
         self.assertNotIn("private database details", response.get_data(as_text=True))
+
+    def test_authenticated_oauth_user_sees_shell_with_safe_navigation(self):
+        self._login_as(self.owner_a)
+
+        page = self.client.get("/app").get_data(as_text=True)
+
+        self.assertIn('class="app-shell"', page)
+        self.assertIn('class="app-sidebar"', page)
+        self.assertIn('/static/tenant_dashboard.css', page)
+        self.assertIn('aria-current="page">Home</a>', page)
+        self.assertIn('href="/app/leads', page)
+        self.assertIn('href="/app/accounts', page)
+        for label in ("Content", "Automations", "Messages", "Scheduler", "Analytics"):
+            self.assertIn(f">{label} <small>Coming soon</small>", page)
+        self.assertEqual(page.count("Coming soon"), 5)
+        self.assertNotIn('href="/dashboard', page)
+        self.assertNotIn('href="/api/', page)
+
+    def test_shell_active_navigation_remains_page_specific_and_opaque(self):
+        self._login_as(self.owner_a)
+        selected = self._reference(self.owner_a, self.account_a2)
+
+        leads = self.client.get(f"/app/leads?account={selected}").get_data(as_text=True)
+        accounts = self.client.get(f"/app/accounts?account={selected}").get_data(as_text=True)
+
+        self.assertIn('aria-current="page">Leads</a>', leads)
+        self.assertNotIn('aria-current="page">Home</a>', leads)
+        self.assertIn('aria-current="page">Accounts</a>', accounts)
+        self.assertNotIn(str(self.account_a2.id), leads)
+        self.assertNotIn(self.account_a2.instagram_user_id, leads)
+
+    def test_home_renders_existing_sanitized_status_and_summary_data(self):
+        self._login_as(self.owner_a)
+
+        page = self.client.get("/app").get_data(as_text=True)
+
+        self.assertIn("Connection health", page)
+        self.assertIn("Reconnect required", page)
+        self.assertIn("Automation is not active", page)
+        self.assertIn("Prompt posts", page)
+        self.assertIn("Recent activity", page)
+        self.assertNotIn("Instagram engagement automation is active.", page)
+        for forbidden in (
+            self.account_a1.instagram_user_id,
+            "ciphertext-a-secret",
+            "KEY_2026_01",
+            "provider-event-a-secret",
+        ):
+            self.assertNotIn(forbidden, page)
+
+        empty_account = self._reference(self.owner_a, self.account_a2)
+        empty_page = self.client.get(f"/app?account={empty_account}").get_data(as_text=True)
+        self.assertIn("No activity yet.", empty_page)
+
+    def test_tenant_dashboard_stylesheet_is_served_without_legacy_routes(self):
+        response = self.client.get("/static/tenant_dashboard.css")
+
+        self.assertEqual(response.status_code, 200)
+        stylesheet = response.get_data(as_text=True)
+        self.assertIn(".app-shell", stylesheet)
+        self.assertIn("@media", stylesheet)
+        self.assertNotIn("/dashboard", stylesheet)
+        self.assertNotIn("/api/", stylesheet)
+        response.close()
