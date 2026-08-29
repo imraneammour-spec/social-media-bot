@@ -169,18 +169,13 @@ class WebhookTenantRoutingTest(unittest.TestCase):
         payload = {"entry": [{"id": "17841438617458902", "changes": [{"field": "comments", "value": {"id": "oauth"}}]}]}
         with patch.object(self.module, "process_oauth_webhook_entry") as oauth_handler, patch.object(
             self.module, "process_comment"
-        ) as legacy_handler, patch.object(self.module, "_webhook_entry_identity_classification") as identity, patch.object(
-            self.module, "_failed_route_comment_event"
-        ) as comment_event, patch.object(self.module, "_webhook_comment_test_reel_match") as reel_match, patch(
+        ) as legacy_handler, patch(
             "builtins.print"
         ) as log:
             self.module.process_webhook_background(payload, "http://localhost")
 
         oauth_handler.assert_called_once()
         legacy_handler.assert_not_called()
-        identity.assert_not_called()
-        comment_event.assert_not_called()
-        reel_match.assert_not_called()
         messages = [call.args[0] for call in log.call_args_list]
         self.assertEqual(messages.count("WEBHOOK ROUTING: oauth_route_selected=True"), 1)
         rendered = " ".join(messages)
@@ -205,23 +200,18 @@ class WebhookTenantRoutingTest(unittest.TestCase):
             [call.args[0] for call in log.call_args_list],
         )
 
-    def test_failed_route_keeps_diagnostics_without_oauth_route_confirmation(self):
+    def test_failed_route_keeps_generic_routing_message_without_oauth_route_confirmation(self):
         payload = {
             "entry": [{
                 "id": "17841438617458999",
                 "changes": [{"field": "comments", "value": {"id": "unknown"}}],
             }]
         }
-        with patch.object(
-            self.module, "_webhook_entry_identity_classification", return_value="unknown"
-        ), patch.object(
-            self.module, "_failed_route_comment_event", return_value=("comments", None)
-        ), patch("builtins.print") as log:
+        with patch("builtins.print") as log:
             self.module.process_webhook_background(payload, "http://localhost")
 
         messages = [call.args[0] for call in log.call_args_list]
         self.assertNotIn("WEBHOOK ROUTING: oauth_route_selected=True", messages)
-        self.assertIn("WEBHOOK ROUTING DIAGNOSTIC: identity_classification=unknown", messages)
         self.assertIn("WEBHOOK ROUTING: entry skipped (route unavailable).", messages)
 
     def test_signed_oauth_webhook_acknowledgment_remains_200(self):
@@ -282,254 +272,29 @@ class WebhookTenantRoutingTest(unittest.TestCase):
 
         process_comment.assert_called_once_with({"id": "good"}, "http://localhost")
 
-    def test_route_failure_diagnostic_reports_matching_identity_without_leaking_data(self):
-        entry_id = "17841438617458902"
-        sensitive_token = self.environment["INSTAGRAM_ACCESS_TOKEN"]
-        sensitive_payload = "private-message-content"
-        payload = {
-            "entry": [{
-                "id": entry_id,
-                "changes": [{"field": "comments", "value": {"text": sensitive_payload}}],
-            }]
-        }
-        with patch.object(
-            self.module,
-            "_resolve_webhook_entry_route",
-            side_effect=RuntimeError("forced route failure"),
-        ), patch.object(
-            self.module, "_webhook_entry_identity_classification", return_value="connected_oauth"
-        ) as classify, patch.object(self.module, "process_comment") as legacy_handler, patch.object(
-            self.module, "process_oauth_webhook_entry"
-        ) as oauth_handler, patch("builtins.print") as log:
-            self.module.process_webhook_background(payload, "http://localhost")
-
-        rendered = " ".join(
-            str(argument) for call in log.call_args_list for argument in call.args
-        )
-        self.assertIn(
-            "WEBHOOK ROUTING DIAGNOSTIC: identity_classification=connected_oauth", rendered
-        )
-        self.assertIn("WEBHOOK ROUTING: entry skipped (route unavailable).", rendered)
-        for secret_or_identifier in (entry_id, sensitive_payload, sensitive_token):
-            self.assertNotIn(secret_or_identifier, rendered)
-        classify.assert_called_once_with(entry_id)
-        legacy_handler.assert_not_called()
-        oauth_handler.assert_not_called()
-
-    def test_route_failure_diagnostic_reports_false_for_unknown_identity(self):
+    def test_failed_route_does_not_make_a_diagnostic_graph_call(self):
         payload = {
             "entry": [{
                 "id": "17841438617458999",
-                "changes": [{"field": "comments", "value": {}}],
+                "changes": [{"field": "comments", "value": {
+                    "id": "17900000000000001",
+                    "media": {"id": "17890000000000001"},
+                }}],
             }]
         }
         with patch.object(
-            self.module, "_webhook_entry_identity_classification", return_value="unknown"
-        ) as classify, patch("builtins.print") as log, patch.object(
-            self.module, "process_comment"
-        ) as legacy_handler:
+            self.module, "_resolve_webhook_entry_route", side_effect=RuntimeError("route failed")
+        ), patch.object(self.module.requests, "get") as graph_get, patch(
+            "builtins.print"
+        ) as log:
             self.module.process_webhook_background(payload, "http://localhost")
 
-        rendered = " ".join(
-            str(argument) for call in log.call_args_list for argument in call.args
-        )
-        self.assertIn("WEBHOOK ROUTING DIAGNOSTIC: identity_classification=unknown", rendered)
-        self.assertIn("WEBHOOK ROUTING: entry skipped (route unavailable).", rendered)
-        self.assertNotIn("17841438617458999", rendered)
-        classify.assert_called_once_with("17841438617458999")
-        legacy_handler.assert_not_called()
-
-    def test_route_failure_logs_one_safe_identity_classification_without_changing_dispatch(self):
-        entry_id = "17841438617458999"
-        sensitive_token = self.environment["INSTAGRAM_ACCESS_TOKEN"]
-        sensitive_payload = "private-message-content"
-        sensitive_username = "private-provider-username"
-        payload = {
-            "entry": [{
-                "id": entry_id,
-                "changes": [{
-                    "field": "comments",
-                    "value": {
-                        "text": sensitive_payload,
-                        "from": {"username": sensitive_username},
-                    },
-                }],
-            }]
-        }
-        with patch.object(
-            self.module,
-            "_resolve_webhook_entry_route",
-            side_effect=RuntimeError("forced route failure"),
-        ), patch.object(
-            self.module,
-            "_webhook_entry_identity_classification",
-            return_value="unknown",
-        ) as classify, patch("builtins.print") as log, patch.object(
-            self.module, "process_comment"
-        ) as legacy_handler, patch.object(self.module, "process_oauth_webhook_entry") as oauth_handler:
-            self.module.process_webhook_background(payload, "http://localhost")
-
-        rendered = " ".join(
-            str(argument) for call in log.call_args_list for argument in call.args
-        )
-        self.assertIn("WEBHOOK ROUTING DIAGNOSTIC: identity_classification=unknown", rendered)
-        self.assertNotIn("identity_match=", rendered)
-        self.assertNotIn("webhook_matches_graph_profile=", rendered)
-        for secret_or_identifier in (
-            entry_id,
-            sensitive_token,
-            sensitive_payload,
-            sensitive_username,
-        ):
-            self.assertNotIn(secret_or_identifier, rendered)
-        classify.assert_called_once_with(entry_id)
-        legacy_handler.assert_not_called()
-        oauth_handler.assert_not_called()
-
-    def test_route_failure_diagnostic_logs_other_known_without_disclosing_data(self):
-        entry_id = "17841438617458999"
-        sensitive_token = self.environment["INSTAGRAM_ACCESS_TOKEN"]
-        payload = {
-            "entry": [{
-                "id": entry_id,
-                "changes": [{"field": "comments", "value": {"text": "private-message-content"}}],
-            }]
-        }
-        with patch.object(
-            self.module, "_resolve_webhook_entry_route", side_effect=RuntimeError("forced route failure")
-        ), patch.object(
-            self.module, "_webhook_entry_identity_classification", return_value="other_known"
-        ) as classify, patch("builtins.print") as log, patch.object(
-            self.module, "process_comment"
-        ) as legacy_handler, patch.object(self.module, "process_oauth_webhook_entry") as oauth_handler:
-            self.module.process_webhook_background(payload, "http://localhost")
-
-        rendered = " ".join(
-            str(argument) for call in log.call_args_list for argument in call.args
-        )
+        graph_get.assert_not_called()
         self.assertIn(
-            "WEBHOOK ROUTING DIAGNOSTIC: identity_classification=other_known", rendered
+            "WEBHOOK ROUTING: entry skipped (route unavailable).",
+            [call.args[0] for call in log.call_args_list],
         )
-        self.assertIn("WEBHOOK ROUTING: entry skipped (route unavailable).", rendered)
-        for secret_or_identifier in (entry_id, sensitive_token, "private-message-content"):
-            self.assertNotIn(secret_or_identifier, rendered)
-        classify.assert_called_once_with(entry_id)
-        legacy_handler.assert_not_called()
-        oauth_handler.assert_not_called()
-
-    def test_route_failure_diagnostic_classifies_every_route_failure_once(self):
-        payload = {"entry": [{"id": "17841438617458902", "changes": []}]}
-        with patch.object(
-            self.module, "_resolve_webhook_entry_route", side_effect=RuntimeError("forced route failure")
-        ), patch.object(
-            self.module, "_webhook_entry_identity_classification", return_value="unknown"
-        ) as classify:
-            self.module.process_webhook_background(payload, "http://localhost")
-
-        classify.assert_called_once_with("17841438617458902")
-
-    def test_route_failure_diagnostic_reports_indeterminate_when_lookup_is_unavailable(self):
-        auth_state = self.module.app.extensions["phase3a_auth"]
-        session_factory = auth_state.session_factory
-        auth_state.session_factory = None
-        payload = {
-            "entry": [{
-                "id": "17841438617458902",
-                "changes": [{"field": "comments", "value": {}}],
-            }]
-        }
-        try:
-            with patch("builtins.print") as log, patch.object(
-                self.module, "process_comment"
-            ) as legacy_handler:
-                self.module.process_webhook_background(payload, "http://localhost")
-        finally:
-            auth_state.session_factory = session_factory
-
-        rendered = " ".join(
-            str(argument) for call in log.call_args_list for argument in call.args
-        )
-        self.assertIn(
-            "WEBHOOK ROUTING DIAGNOSTIC: identity_classification=indeterminate", rendered
-        )
-        self.assertIn("WEBHOOK ROUTING: entry skipped (route unavailable).", rendered)
-        self.assertNotIn("17841438617458902", rendered)
-        legacy_handler.assert_not_called()
-
-    def test_failed_route_comment_event_parser_accepts_only_documented_comment_media(self):
-        self.assertEqual(
-            self.module._failed_route_comment_event({
-                "changes": [{"field": "comments", "value": {"media": {"id": "17890000000000001"}}}],
-            }),
-            ("comments", "17890000000000001"),
-        )
-        self.assertEqual(
-            self.module._failed_route_comment_event({"changes": [{"field": "messages", "value": {}}]}),
-            ("non_comments", None),
-        )
-        self.assertEqual(
-            self.module._failed_route_comment_event({"changes": [{"field": "comments", "value": {}}]}),
-            ("comments", None),
-        )
-        self.assertEqual(self.module._failed_route_comment_event({"changes": "invalid"}), ("indeterminate", None))
-
-    def test_failed_comment_route_logs_match_and_never_discloses_identifiers(self):
-        entry_id = "17841438617458999"
-        media_id = "17890000000000001"
-        comment_id = "17900000000000001"
-        sensitive_token = self.environment["INSTAGRAM_ACCESS_TOKEN"]
-        sensitive_username = "private-provider-username"
-        payload = {"entry": [{
-            "id": entry_id,
-            "changes": [{"field": "comments", "value": {
-                "id": comment_id,
-                "media": {"id": media_id},
-                "from": {"username": sensitive_username},
-            }}],
-        }]}
-        with patch.object(self.module, "_resolve_webhook_entry_route", side_effect=RuntimeError("route failed")), patch.object(
-            self.module, "_webhook_entry_identity_classification", return_value="unknown"
-        ) as identity, patch.object(
-            self.module, "_webhook_comment_test_reel_match", return_value="True"
-        ) as reel_match, patch("builtins.print") as log, patch.object(
-            self.module, "process_comment"
-        ) as legacy_handler, patch.object(self.module, "process_oauth_webhook_entry") as oauth_handler:
-            self.module.process_webhook_background(payload, "http://localhost")
-
-        rendered = " ".join(str(argument) for call in log.call_args_list for argument in call.args)
-        self.assertIn("WEBHOOK ROUTING DIAGNOSTIC: identity_classification=unknown", rendered)
-        self.assertIn("WEBHOOK ROUTING DIAGNOSTIC: event_type=comments", rendered)
-        self.assertIn("WEBHOOK ROUTING DIAGNOSTIC: test_reel_match=True", rendered)
-        for sensitive_value in (entry_id, media_id, comment_id, sensitive_token, sensitive_username):
-            self.assertNotIn(sensitive_value, rendered)
-        identity.assert_called_once_with(entry_id)
-        reel_match.assert_called_once_with(media_id)
-        legacy_handler.assert_not_called()
-        oauth_handler.assert_not_called()
-
-    def test_failed_route_non_comment_or_missing_media_stays_indeterminate_without_reel_lookup(self):
-        cases = [
-            ({"changes": [{"field": "messages", "value": {}}]}, "non_comments"),
-            ({"changes": [{"field": "comments", "value": {}}]}, "comments"),
-            ({"changes": "invalid"}, "indeterminate"),
-        ]
-        for entry, expected_event_type in cases:
-            with self.subTest(expected_event_type=expected_event_type), patch.object(
-                self.module, "_resolve_webhook_entry_route", side_effect=RuntimeError("route failed")
-            ), patch.object(
-                self.module, "_webhook_entry_identity_classification", return_value="unknown"
-            ), patch.object(self.module, "_webhook_comment_test_reel_match") as reel_match, patch(
-                "builtins.print"
-            ) as log:
-                entry["id"] = "17841438617458999"
-                self.module.process_webhook_background({"entry": [entry]}, "http://localhost")
-
-            rendered = " ".join(str(argument) for call in log.call_args_list for argument in call.args)
-            self.assertIn(f"WEBHOOK ROUTING DIAGNOSTIC: event_type={expected_event_type}", rendered)
-            self.assertIn("WEBHOOK ROUTING DIAGNOSTIC: test_reel_match=indeterminate", rendered)
-            reel_match.assert_not_called()
-
-    def test_route_failure_diagnostic_does_not_change_webhook_acknowledgment(self):
+    def test_route_failure_does_not_change_webhook_acknowledgment(self):
         payload = {"entry": [{"id": "17841438617458999", "changes": []}]}
         with patch.object(self.module.threading, "Thread", _NoopThread):
             body, headers = self._signed_headers(payload)

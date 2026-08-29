@@ -23,8 +23,6 @@ from database.cli import register_database_commands
 from database.config import database_url_from_environment
 from database.account_runtime import (
     RuntimeAccountRouteUnavailableError,
-    classify_failed_webhook_identity,
-    failed_comment_media_matches_known_reel,
     resolve_instagram_account_route,
 )
 from database.oauth_engagement import (
@@ -3625,76 +3623,6 @@ def _resolve_webhook_entry_route(entry_external_id):
         )
 
 
-def _webhook_entry_identity_classification(entry_external_id):
-    """Return a finite in-memory identity classification for a failed route."""
-
-    if not isinstance(entry_external_id, str) or not WEBHOOK_EXTERNAL_ID_PATTERN.fullmatch(
-        entry_external_id
-    ):
-        return "indeterminate"
-    try:
-        auth_state = app.extensions.get("phase3a_auth")
-        session_factory = getattr(auth_state, "session_factory", None)
-        if session_factory is None:
-            return "indeterminate"
-        with session_factory() as db_session:
-            return classify_failed_webhook_identity(
-                db_session,
-                instagram_user_id=entry_external_id,
-            )
-    except Exception:
-        return "indeterminate"
-
-
-FAILED_WEBHOOK_TEST_REEL_SHORTCODE = "DTyjh_MCOkk"
-
-
-def _failed_route_comment_event(entry):
-    """Return finite failed-route comment metadata without retaining identifiers."""
-
-    if not isinstance(entry, dict):
-        return "indeterminate", None
-    changes = entry.get("changes")
-    if not isinstance(changes, list):
-        return "indeterminate", None
-    comment_changes = []
-    for change in changes:
-        if not isinstance(change, dict) or not isinstance(change.get("field"), str):
-            return "indeterminate", None
-        if change["field"] == "comments":
-            comment_changes.append(change)
-    if not comment_changes:
-        return "non_comments", None
-    if len(comment_changes) != 1:
-        return "indeterminate", None
-    value = comment_changes[0].get("value")
-    media = value.get("media") if isinstance(value, dict) else None
-    media_id = media.get("id") if isinstance(media, dict) else None
-    if not isinstance(media_id, str) or not WEBHOOK_EXTERNAL_ID_PATTERN.fullmatch(media_id.strip()):
-        return "comments", None
-    return "comments", media_id.strip()
-
-
-def _webhook_comment_test_reel_match(media_id):
-    """Return a finite server-only known-Reel comparison for a failed route."""
-
-    if not isinstance(media_id, str) or not WEBHOOK_EXTERNAL_ID_PATTERN.fullmatch(media_id):
-        return "indeterminate"
-    try:
-        auth_state = app.extensions.get("phase3a_auth")
-        session_factory = getattr(auth_state, "session_factory", None)
-        if session_factory is None:
-            return "indeterminate"
-        with session_factory() as db_session:
-            return failed_comment_media_matches_known_reel(
-                db_session,
-                media_id=media_id,
-                reel_shortcode=FAILED_WEBHOOK_TEST_REEL_SHORTCODE,
-            )
-    except Exception:
-        return "indeterminate"
-
-
 def _messaging_event_matches_entry(event, entry_external_id):
     """Require a supplied messaging recipient to agree with its envelope ID."""
 
@@ -4045,19 +3973,6 @@ def process_webhook_background(
         try:
             route = _resolve_webhook_entry_route(entry_external_id)
         except Exception:
-            classification = _webhook_entry_identity_classification(entry_external_id)
-            event_type, media_id = _failed_route_comment_event(entry)
-            test_reel_match = (
-                _webhook_comment_test_reel_match(media_id)
-                if event_type == "comments" and media_id is not None
-                else "indeterminate"
-            )
-            print(
-                "WEBHOOK ROUTING DIAGNOSTIC: "
-                f"identity_classification={classification}"
-            )
-            print(f"WEBHOOK ROUTING DIAGNOSTIC: event_type={event_type}")
-            print(f"WEBHOOK ROUTING DIAGNOSTIC: test_reel_match={test_reel_match}")
             print("WEBHOOK ROUTING: entry skipped (route unavailable).")
             continue
 
