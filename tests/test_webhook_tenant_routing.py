@@ -235,6 +235,48 @@ class WebhookTenantRoutingTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
 
+    def test_webhook_prefers_configured_public_https_base_url(self):
+        payload = {"entry": []}
+        body, headers = self._signed_headers(payload)
+        with patch.object(self.module, "PUBLIC_BASE_URL", "https://public.example/app/", create=True), patch.object(
+            self.module.threading, "Thread"
+        ) as worker:
+            response = self.client.post(
+                "/webhook", data=body, content_type="application/json", headers=headers,
+                base_url="http://internal.example",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(worker.call_args.kwargs["args"][1], "https://public.example/app")
+
+    def test_webhook_normalizes_proxied_http_base_to_https_in_deployed_environment(self):
+        payload = {"entry": []}
+        body, headers = self._signed_headers(payload)
+        with patch.object(self.module, "PUBLIC_BASE_URL", "", create=True), patch.object(
+            self.module, "IS_PRODUCTION", True
+        ), patch.object(self.module.threading, "Thread") as worker:
+            response = self.client.post(
+                "/webhook", data=body, content_type="application/json", headers=headers,
+                base_url="http://staging.example",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(worker.call_args.kwargs["args"][1], "https://staging.example")
+
+    def test_webhook_keeps_local_http_base_url_for_local_development(self):
+        payload = {"entry": []}
+        body, headers = self._signed_headers(payload)
+        with patch.object(self.module, "PUBLIC_BASE_URL", "", create=True), patch.object(
+            self.module, "IS_PRODUCTION", False
+        ), patch.object(self.module.threading, "Thread") as worker:
+            response = self.client.post(
+                "/webhook", data=body, content_type="application/json", headers=headers,
+                base_url="http://localhost:5000",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(worker.call_args.kwargs["args"][1], "http://localhost:5000")
+
     def test_unknown_malformed_and_nonlegacy_environment_accounts_skip_without_legacy_fallback(self):
         payload = {
             "entry": [

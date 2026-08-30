@@ -288,6 +288,40 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
         button.assert_called_once()
         self.assertEqual(button.call_args.kwargs["page_url"], "https://example.test/p/o/a")
 
+    def test_oauth_access_message_failure_keeps_generic_log_without_temporary_stage(self):
+        from database.oauth_engagement import save_oauth_pending_access
+
+        event = {"sender": {"id": "customer"}, "message": {"mid": "button-mid", "text": "ACCESS"}}
+        with self.Session.begin() as session:
+            save_oauth_pending_access(session, self.account_a_id, "customer", "http://internal.test/p/o/prompt")
+        with patch.object(self.module, "send_oauth_prompt_access_button", return_value=False), patch(
+            "builtins.print"
+        ) as log:
+            self.module._process_oauth_message(
+                event, self._route(self.account_a_id), "17841438617458101", self.Session
+            )
+
+        log.assert_called_once_with(
+            "OAUTH ENGAGEMENT: message processing unavailable."
+        )
+
+    def test_oauth_access_message_reaches_button_dispatch_for_https_pending_url(self):
+        from database import oauth_graph
+        from database.oauth_engagement import save_oauth_pending_access
+
+        event = {"sender": {"id": "customer"}, "message": {"mid": "https-mid", "text": "ACCESS"}}
+        with self.Session.begin() as session:
+            save_oauth_pending_access(session, self.account_a_id, "customer", "https://example.test/p/o/prompt")
+        with patch.object(oauth_graph, "_request_with_runtime", return_value={}) as graph_request:
+            self.module._process_oauth_message(
+                event, self._route(self.account_a_id), "17841438617458101", self.Session
+            )
+
+        self.assertEqual(
+            graph_request.call_args.kwargs["json_body"]["message"]["attachment"]["payload"]["buttons"][0]["url"],
+            "https://example.test/p/o/prompt",
+        )
+
     def test_oauth_access_message_schedules_one_delayed_job_and_normal_message_cancels_only_its_account(self):
         from database.models import InstagramOAuthFollowupJob
         from database.oauth_engagement import save_oauth_pending_access

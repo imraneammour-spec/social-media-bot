@@ -7,6 +7,7 @@ import hmac
 import threading
 import uuid
 import time
+from urllib.parse import urlsplit, urlunsplit
 from pathlib import Path
 from io import BytesIO
 from datetime import datetime, timezone, timedelta
@@ -159,6 +160,7 @@ APP_ENVIRONMENT = os.getenv("APP_ENV", os.getenv("FLASK_ENV", "")).strip().lower
 IS_PRODUCTION = APP_ENVIRONMENT in {"production", "prod"} or bool(
     os.getenv("RAILWAY_ENVIRONMENT_NAME", "").strip()
 )
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip()
 ALLOW_UNSIGNED_WEBHOOKS = os.getenv("ALLOW_UNSIGNED_WEBHOOKS", "").strip().lower() in {
     "1",
     "true",
@@ -4010,6 +4012,49 @@ def process_webhook_background(
             print("WEBHOOK ROUTING: entry skipped (legacy processing failed).")
 
 
+def _configured_public_base_url() -> str | None:
+    """Return a safe configured HTTPS base URL, if this deployment provides one."""
+    try:
+        parsed = urlsplit(PUBLIC_BASE_URL)
+        if (
+            parsed.scheme != "https"
+            or not parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            return None
+        _ = parsed.port
+    except (TypeError, ValueError):
+        return None
+    return urlunsplit(("https", parsed.netloc, parsed.path.rstrip("/"), "", ""))
+
+
+def _public_webhook_base_url() -> str:
+    """Keep generated links public when a production proxy terminates TLS."""
+    configured = _configured_public_base_url()
+    if configured is not None:
+        return configured
+    request_base = request.host_url.rstrip("/")
+    if not IS_PRODUCTION:
+        return request_base
+    try:
+        parsed = urlsplit(request_base)
+        hostname = (parsed.hostname or "").lower()
+        if (
+            parsed.scheme == "http"
+            and parsed.netloc
+            and hostname
+            and hostname not in {"localhost", "127.0.0.1", "::1"}
+            and not hostname.endswith((".local", ".internal"))
+        ):
+            return urlunsplit(("https", parsed.netloc, parsed.path.rstrip("/"), "", ""))
+    except (TypeError, ValueError):
+        pass
+    return request_base
+
+
 # ==================================================
 # RECEIVE WEBHOOK
 # ==================================================
@@ -4031,10 +4076,7 @@ def receive_webhook():
         silent=True
     ) or {}
 
-    public_base_url = (
-        request.host_url
-        .rstrip("/")
-    )
+    public_base_url = _public_webhook_base_url()
 
     worker = threading.Thread(
 
