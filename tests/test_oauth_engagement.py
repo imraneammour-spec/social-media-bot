@@ -118,6 +118,87 @@ class OAuthEngagementModelTest(unittest.TestCase):
                 oauth_graph.lookup_oauth_media(lambda: self.Session(), instagram_account_id=self.account_a_id, instagram_user_id="17841438617458001", media_id="media")
         self.assertNotIn(secret_token, str(raised.exception))
 
+    def test_prompt_access_button_logs_sanitized_provider_rejection_details(self):
+        from database import oauth_graph
+
+        secret_token = "oauth-token-that-must-not-leak"
+        secret_recipient = "recipient-id-must-not-leak"
+        secret_url = "https://example.test/p/o/secret-page"
+        response = Mock(ok=False, status_code=400)
+        response.json.return_value = {
+            "error": {
+                "code": 100,
+                "error_subcode": 2018278,
+                "message": (
+                    "Template attachment rejected for "
+                    f"{secret_recipient} at {secret_url} with {secret_token}"
+                ),
+            }
+        }
+        runtime = InstagramAccountRuntime(
+            self.account_a_id, "17841438617458001", "oauth", secret_token
+        )
+        with patch.object(oauth_graph, "oauth_engagement_capability_state", return_value="active"), patch.object(
+            oauth_graph, "resolve_oauth_instagram_account_runtime", return_value=runtime
+        ), patch.object(oauth_graph.requests, "request", return_value=response) as graph_request, patch(
+            "builtins.print"
+        ) as log:
+            sent = oauth_graph.send_oauth_prompt_access_button(
+                lambda: self.Session(),
+                instagram_account_id=self.account_a_id,
+                instagram_user_id="17841438617458001",
+                recipient_id=secret_recipient,
+                page_url=secret_url,
+            )
+
+        self.assertFalse(sent)
+        self.assertEqual(graph_request.call_args.args[0], "POST")
+        self.assertTrue(
+            graph_request.call_args.args[1].endswith("/17841438617458001/messages")
+        )
+        log.assert_called_once_with(
+            "OAUTH PROMPT BUTTON: delivery_failed "
+            "status=400 code=100 subcode=2018278 message=template_rejected"
+        )
+        rendered = " ".join(
+            str(argument) for call in log.call_args_list for argument in call.args
+        )
+        for sensitive_value in (
+            secret_token,
+            secret_recipient,
+            secret_url,
+            str(self.account_a_id),
+            "17841438617458001",
+        ):
+            self.assertNotIn(sensitive_value, rendered)
+
+    def test_prompt_access_button_logs_finite_fallback_when_error_body_is_invalid(self):
+        from database import oauth_graph
+
+        response = Mock(ok=False, status_code=500)
+        response.json.side_effect = ValueError("response body must not leak")
+        runtime = InstagramAccountRuntime(
+            self.account_a_id, "17841438617458001", "oauth", "safe-test-token"
+        )
+        with patch.object(oauth_graph, "oauth_engagement_capability_state", return_value="active"), patch.object(
+            oauth_graph, "resolve_oauth_instagram_account_runtime", return_value=runtime
+        ), patch.object(oauth_graph.requests, "request", return_value=response), patch(
+            "builtins.print"
+        ) as log:
+            sent = oauth_graph.send_oauth_prompt_access_button(
+                lambda: self.Session(),
+                instagram_account_id=self.account_a_id,
+                instagram_user_id="17841438617458001",
+                recipient_id="recipient",
+                page_url="https://example.test/p/o/page",
+            )
+
+        self.assertFalse(sent)
+        log.assert_called_once_with(
+            "OAUTH PROMPT BUTTON: delivery_failed "
+            "status=500 code=none subcode=none message=provider_rejected"
+        )
+
 
 class OAuthWebhookEngagementTest(unittest.TestCase):
     def setUp(self):

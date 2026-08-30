@@ -8,6 +8,7 @@ decrypted only while making the individual HTTPS request.
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any, Callable
 
@@ -24,9 +25,79 @@ GRAPH_ROOT = "https://graph.instagram.com"
 class OAuthGraphOperationError(ValueError):
     """Generic, credential-safe error for an OAuth Graph operation."""
 
+    def __init__(
+        self,
+        *,
+        http_status: str = "none",
+        provider_code: str = "none",
+        provider_subcode: str = "none",
+        provider_message: str = "provider_rejected",
+    ) -> None:
+        self.http_status = http_status
+        self.provider_code = provider_code
+        self.provider_subcode = provider_subcode
+        self.provider_message = provider_message
+        super().__init__("Instagram engagement is temporarily unavailable.")
+
 
 def _unavailable() -> OAuthGraphOperationError:
-    return OAuthGraphOperationError("Instagram engagement is temporarily unavailable.")
+    return OAuthGraphOperationError()
+
+
+def _safe_error_number(value: object) -> str:
+    if isinstance(value, bool):
+        return "none"
+    if isinstance(value, int) and 0 <= value <= 2_147_483_647:
+        return str(value)
+    if isinstance(value, str) and re.fullmatch(r"[0-9]{1,10}", value):
+        return value
+    return "none"
+
+
+def _safe_http_status(value: object) -> str:
+    status = _safe_error_number(value)
+    return status if status != "none" and 100 <= int(status) <= 599 else "none"
+
+
+def _safe_provider_message(value: object) -> str:
+    if not isinstance(value, str):
+        return "provider_rejected"
+    message = value.lower()
+    if "template" in message:
+        return "template_rejected"
+    if "attachment" in message:
+        return "attachment_rejected"
+    if "messaging_type" in message:
+        return "messaging_type_rejected"
+    if "recipient" in message:
+        return "recipient_rejected"
+    if "permission" in message:
+        return "permission_rejected"
+    if "window" in message:
+        return "messaging_window_rejected"
+    return "provider_rejected"
+
+
+def _provider_rejected(response: object) -> OAuthGraphOperationError:
+    status = _safe_http_status(getattr(response, "status_code", None))
+    code = "none"
+    subcode = "none"
+    message = "provider_rejected"
+    try:
+        payload = response.json()
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if isinstance(error, dict):
+            code = _safe_error_number(error.get("code"))
+            subcode = _safe_error_number(error.get("error_subcode"))
+            message = _safe_provider_message(error.get("message"))
+    except (AttributeError, TypeError, ValueError):
+        pass
+    return OAuthGraphOperationError(
+        http_status=status,
+        provider_code=code,
+        provider_subcode=subcode,
+        provider_message=message,
+    )
 
 
 def _account_id(value: object) -> uuid.UUID:
@@ -95,11 +166,13 @@ def _request_with_runtime(
                 timeout=timeout,
             )
         if not response.ok:
-            raise _unavailable()
+            raise _provider_rejected(response)
         payload = response.json()
         if not isinstance(payload, dict):
             raise _unavailable()
         return payload
+    except OAuthGraphOperationError:
+        raise
     except (RuntimeCredentialUnavailableError, requests.RequestException, ValueError, TypeError):
         raise _unavailable() from None
 
@@ -151,7 +224,12 @@ def send_oauth_prompt_access_button(session_factory: Callable[[], Any], *, insta
     try:
         _request_with_runtime(session_factory, instagram_account_id=instagram_account_id, instagram_user_id=instagram_user_id, method="POST", path=f"/{instagram_user_id}/messages", json_body=body)
         return True
-    except OAuthGraphOperationError:
+    except OAuthGraphOperationError as error:
+        print(
+            "OAUTH PROMPT BUTTON: delivery_failed "
+            f"status={error.http_status} code={error.provider_code} "
+            f"subcode={error.provider_subcode} message={error.provider_message}"
+        )
         return False
 
 
