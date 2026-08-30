@@ -1,4 +1,5 @@
 import inspect
+import re
 import tempfile
 import unittest
 import uuid
@@ -285,6 +286,106 @@ class TenantDashboardTest(unittest.TestCase):
         responses = [self.client.get(f"/app/api/overview?account={reference}") for reference in references]
         self.assertEqual([response.status_code for response in responses], [404, 404, 404, 404])
         self.assertEqual({response.get_json()["error"] for response in responses}, {"Selected account is unavailable."})
+
+    def test_accounts_reject_cross_owner_account_reference(self):
+        self._login_as(self.owner_a)
+        foreign_reference = self._reference(self.owner_b, self.account_b)
+
+        response = self.client.get(f"/app/accounts?account={foreign_reference}")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.get_json()["error"], "Selected account is unavailable.")
+
+        owner_a_page = self.client.get("/app/accounts").get_data(as_text=True)
+        owner_a_disconnect_action = re.search(
+            r'name="account_action" value="([^"]+)"',
+            owner_a_page,
+        )
+        self.assertIsNotNone(owner_a_disconnect_action)
+
+        self._login_as(self.owner_b)
+        owner_b_page = self.client.get("/app/accounts").get_data(as_text=True)
+        owner_b_csrf_token = re.search(
+            r'name="csrf_token" value="([^"]+)"',
+            owner_b_page,
+        )
+        self.assertIsNotNone(owner_b_csrf_token)
+        response = self.client.post(
+            "/connect/instagram/disconnect",
+            data={
+                "csrf_token": owner_b_csrf_token.group(1),
+                "account_action": owner_a_disconnect_action.group(1),
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        with self.Session() as session:
+            self.assertEqual(
+                session.get(InstagramAccount, self.account_a1.id).connection_status,
+                "connected",
+            )
+            self.assertEqual(
+                session.get(InstagramAccount, self.account_b.id).connection_status,
+                "connected",
+            )
+
+    def test_accounts_disconnect_actions_are_not_exposed_by_account_api(self):
+        self._login_as(self.owner_a)
+
+        payload = self.client.get("/app/api/accounts").get_json()
+
+        self.assertTrue(payload["accounts"])
+        self.assertTrue(
+            all("disconnect_action" not in account for account in payload["accounts"])
+        )
+
+    def test_accounts_show_reconnect_only_for_reconnectable_accounts(self):
+        with self.Session.begin() as session:
+            account = session.get(InstagramAccount, self.account_a1.id)
+            account.connection_status = "reconnect_required"
+
+        self._login_as(self.owner_a)
+        page = self.client.get("/app/accounts").get_data(as_text=True)
+
+        self.assertEqual(page.count(">Reconnect Instagram</button>"), 1)
+        self.assertIn('action="/connect/instagram"', page)
+
+    def test_accounts_show_disconnect_only_for_disconnectable_accounts(self):
+        with self.Session.begin() as session:
+            account = session.get(InstagramAccount, self.account_a2.id)
+            account.connection_status = "disconnected"
+
+        self._login_as(self.owner_a)
+        page = self.client.get("/app/accounts").get_data(as_text=True)
+
+        self.assertEqual(page.count("Disconnect from this app"), 1)
+        self.assertEqual(page.count('action="/connect/instagram/disconnect"'), 1)
+
+    def test_accounts_state_changing_actions_require_csrf_tokens(self):
+        with self.Session.begin() as session:
+            account = session.get(InstagramAccount, self.account_a1.id)
+            account.connection_status = "reconnect_required"
+
+        self._login_as(self.owner_a)
+        page = self.client.get("/app/accounts").get_data(as_text=True)
+        disconnect_reference = re.search(
+            r'name="account_action" value="([^"]+)"',
+            page,
+        )
+
+        self.assertIsNotNone(disconnect_reference)
+        self.assertEqual(
+            len(re.findall(r'name="csrf_token" value="[^"]+"', page)),
+            3,
+        )
+        self.assertEqual(self.client.post("/connect/instagram").status_code, 400)
+        self.assertEqual(
+            self.client.post(
+                "/connect/instagram/disconnect",
+                data={"account_action": disconnect_reference.group(1)},
+            ).status_code,
+            400,
+        )
 
     def test_account_scoped_feeds_and_html_never_leak_private_data(self):
         self._login_as(self.owner_a)

@@ -199,31 +199,43 @@ def _selected_account(user, accounts):
     )
 
 
-def _account_payload(user, accounts, selected):
+def _account_payload(
+    user,
+    accounts,
+    selected,
+    *,
+    include_disconnect_actions=False,
+):
     payload = []
 
     for account in accounts:
-        payload.append(
-            {
-                "username": account.username,
-                "selection_ref": action_reference_for_account(
-                    user.id,
-                    account.instagram_account_id,
-                    ACCOUNT_REFERENCE_PURPOSE,
-                    secret_key=current_app.secret_key,
-                ),
-                "connection_label": account.connection_label,
-                "connection_detail": account.connection_detail,
-                "activation_label": account.activation_label,
-                "activation_detail": account.activation_detail,
-                "is_selected": (
-                    account.instagram_account_id
-                    == selected.instagram_account_id
-                ),
-                "can_reconnect": account.can_reconnect,
-                "can_disconnect": account.can_disconnect,
-            }
-        )
+        item = {
+            "username": account.username,
+            "selection_ref": action_reference_for_account(
+                user.id,
+                account.instagram_account_id,
+                ACCOUNT_REFERENCE_PURPOSE,
+                secret_key=current_app.secret_key,
+            ),
+            "connection_label": account.connection_label,
+            "connection_detail": account.connection_detail,
+            "activation_label": account.activation_label,
+            "activation_detail": account.activation_detail,
+            "is_selected": (
+                account.instagram_account_id
+                == selected.instagram_account_id
+            ),
+            "can_reconnect": account.can_reconnect,
+            "can_disconnect": account.can_disconnect,
+        }
+        if include_disconnect_actions and account.can_disconnect:
+            item["disconnect_action"] = action_reference_for_account(
+                user.id,
+                account.instagram_account_id,
+                "disconnect",
+                secret_key=current_app.secret_key,
+            )
+        payload.append(item)
 
     return payload
 
@@ -287,12 +299,14 @@ def _render_page(
     user,
     accounts,
     selected,
+    include_disconnect_actions=False,
     **context,
 ):
     account_payload = _account_payload(
         user,
         accounts,
         selected,
+        include_disconnect_actions=include_disconnect_actions,
     )
 
     active_pages = {
@@ -670,6 +684,7 @@ def register_tenant_dashboard(app) -> None:
             user=user,
             accounts=accounts,
             selected=selected,
+            include_disconnect_actions=True,
         )
 
     @dashboard.get("/leads")
