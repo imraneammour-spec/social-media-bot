@@ -31,10 +31,12 @@
 {% for lead in leads %}
 <article class="card lead-card">
     <h2>{{ lead.username }}</h2>
+    {% if lead.cover_url %}<img class="lead-source-preview" src="{{ lead.cover_url }}" alt="Source Instagram post preview" loading="lazy" referrerpolicy="no-referrer">{% endif %}
     <details><summary>Lead details</summary><p>Requested at {{ lead.requested_at }}.</p>{% if lead.internal_note %}<p>Internal note saved.</p>{% endif %}</details>
     <p>{{ lead.prompt_state }} · {{ lead.base_stage_label }} · {{ lead.archived_label }}</p>
     <p class="muted">{{ lead.requested_at }}</p>
     {% if lead.prompt_url %}<p><a href="{{ lead.prompt_url }}">View prepared prompts</a></p>{% endif %}
+    {% if lead.post_permalink %}<p><a href="{{ lead.post_permalink }}" target="_blank" rel="noopener noreferrer">View Instagram Post</a></p>{% endif %}
     <form method="post" class="lead-action" action="{{ url_for('tenant_dashboard.app_lead_status', account=selected_account.selection_ref) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="lead_action" value="{{ lead.status_action }}">

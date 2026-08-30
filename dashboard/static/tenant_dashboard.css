@@ -71,6 +71,7 @@ h2 { margin-bottom: 8px; font-size: 1.05rem; }
 .lead-filters, .activity-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
 .lead-filters button, .activity-filters button { align-self: end; }
 .lead-card { margin-bottom: 14px; }
+.lead-source-preview { display: block; width: min(100%, 160px); aspect-ratio: 1; margin: 12px 0; border: 1px solid #34435c; border-radius: 10px; object-fit: cover; background: #0f1520; }
 .lead-action { display: grid; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid #2a3445; }
 label { display: grid; gap: 6px; color: #c7d0df; font-size: .9rem; }
 input, select, textarea, button { width: 100%; border: 1px solid #3a465c; border-radius: 8px; background: #0f1520; color: #edf2fb; font: inherit; }

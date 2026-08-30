@@ -434,6 +434,8 @@ def _lead_payload(
                     if row.public_prompt_id
                     else None
                 ),
+                "post_permalink": row.post_permalink,
+                "cover_url": row.cover_url,
                 "status_action":
                     tenant_data.lead_action_reference_for_prompt_request(
                         user.id,

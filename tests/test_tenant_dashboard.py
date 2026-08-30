@@ -594,6 +594,92 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertIn("sort=oldest", page)
         self.assertIn('aria-current="page"', page)
 
+    def test_leads_render_only_same_account_public_source_post_context(self):
+        with self.Session.begin() as session:
+            primary_post = session.scalar(
+                select(InstagramPromptPost).where(
+                    InstagramPromptPost.instagram_account_id == self.account_a1.id,
+                    InstagramPromptPost.media_id == "media-a-secret",
+                )
+            )
+            primary_post.permalink = "https://www.instagram.com/p/public-alpha/"
+            primary_post.cover_url = "https://cdn.instagram.com/public-alpha.jpg"
+            session.add_all([
+                InstagramPromptPost(
+                    instagram_account_id=self.account_a1.id,
+                    media_id="media-partial-secret",
+                    public_id="opaque-prompt-partial",
+                    prompts=[{"text": "Partial prompt"}],
+                ),
+                InstagramPromptRequest(
+                    instagram_account_id=self.account_a1.id,
+                    media_id="media-partial-secret",
+                    comment_id="comment-partial-secret",
+                    recipient_id="recipient-partial-secret",
+                    username="lead_partial",
+                    page_url="https://internal.example.invalid/partial",
+                ),
+                InstagramPromptPost(
+                    instagram_account_id=self.account_b.id,
+                    media_id="media-cross-account-secret",
+                    public_id="opaque-prompt-cross-account",
+                    prompts=[{"text": "Other account prompt"}],
+                    permalink="https://www.instagram.com/p/cross-owner/",
+                    cover_url="https://cdn.instagram.com/cross-owner.jpg",
+                ),
+                InstagramPromptRequest(
+                    instagram_account_id=self.account_a1.id,
+                    media_id="media-cross-account-secret",
+                    comment_id="comment-cross-account-secret",
+                    recipient_id="recipient-cross-account-secret",
+                    username="lead_cross_account",
+                    page_url="https://internal.example.invalid/cross-account",
+                ),
+            ])
+
+        self._login_as(self.owner_a)
+        account = self._reference(self.owner_a, self.account_a1)
+        payload = self.client.get(
+            f"/app/api/leads?account={account}&view=all"
+        ).get_json()["leads"]
+        leads = {lead["username"]: lead for lead in payload}
+
+        self.assertEqual(leads["lead_alpha"]["prompt_url"], "/p/o/opaque-prompt-a")
+        self.assertEqual(
+            leads["lead_alpha"].get("post_permalink"),
+            "https://www.instagram.com/p/public-alpha/",
+        )
+        self.assertEqual(
+            leads["lead_alpha"].get("cover_url"),
+            "https://cdn.instagram.com/public-alpha.jpg",
+        )
+        self.assertEqual(leads["lead_partial"]["prompt_url"], "/p/o/opaque-prompt-partial")
+        self.assertIsNone(leads["lead_partial"].get("post_permalink"))
+        self.assertIsNone(leads["lead_partial"].get("cover_url"))
+        self.assertIsNone(leads["lead_cross_account"]["prompt_url"])
+        self.assertIsNone(leads["lead_cross_account"].get("post_permalink"))
+        self.assertIsNone(leads["lead_cross_account"].get("cover_url"))
+
+        page = self.client.get(
+            f"/app/leads?account={account}&view=all"
+        ).get_data(as_text=True)
+        self.assertIn('href="/p/o/opaque-prompt-a">View prepared prompts</a>', page)
+        self.assertIn('href="https://www.instagram.com/p/public-alpha/"', page)
+        self.assertIn("View Instagram Post", page)
+        self.assertIn('src="https://cdn.instagram.com/public-alpha.jpg"', page)
+        self.assertNotIn("https://www.instagram.com/p/cross-owner/", page)
+        self.assertNotIn("https://cdn.instagram.com/cross-owner.jpg", page)
+        for forbidden in (
+            "media-a-secret",
+            "media-partial-secret",
+            "media-cross-account-secret",
+            "comment-partial-secret",
+            "recipient-partial-secret",
+            "https://internal.example.invalid/partial",
+            "https://internal.example.invalid/cross-account",
+        ):
+            self.assertNotIn(forbidden, page)
+
     def test_polished_pages_show_owned_accounts_and_sanitized_empty_activation_states(self):
         self._login_as(self.owner_a)
         account_a2 = self._reference(self.owner_a, self.account_a2)

@@ -5,10 +5,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
 import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -81,6 +83,8 @@ class TenantLead:
     archived_label: str
     internal_note: str | None
     public_prompt_id: str | None
+    post_permalink: str | None
+    cover_url: str | None
 
 
 @dataclass(frozen=True)
@@ -100,6 +104,50 @@ def _timestamp(value: datetime | None) -> str | None:
 def _username(value: object) -> str:
     name = str(value or "").strip()
     return name if name else "Instagram user"
+
+
+def _public_https_url(value: object) -> str | None:
+    """Return a render-safe public HTTPS URL, or no URL."""
+
+    url = str(value or "").strip()
+    if not url or len(url) > 2048:
+        return None
+    try:
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").lower()
+    except ValueError:
+        return None
+    if (
+        parsed.scheme != "https"
+        or not host
+        or parsed.username is not None
+        or parsed.password is not None
+        or host == "localhost"
+        or host.endswith(".local")
+        or host.endswith(".internal")
+        or host.endswith(".invalid")
+    ):
+        return None
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return url
+    if address.is_private or address.is_loopback or address.is_link_local or address.is_reserved or address.is_unspecified:
+        return None
+    return url
+
+
+def _instagram_permalink(value: object) -> str | None:
+    """Return a public Instagram permalink only."""
+
+    url = _public_https_url(value)
+    if url is None:
+        return None
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return None
+    return url if host == "instagram.com" or host.endswith(".instagram.com") else None
 
 
 def _uuid(value: object) -> uuid.UUID | None:
@@ -459,7 +507,7 @@ def leads(
     requests = requests[:LEADS_PER_PAGE]
     media_ids = [request.media_id for request in requests]
     prompt_posts = {
-        post.media_id: post.public_id
+        post.media_id: post
         for post in session.scalars(
             select(InstagramPromptPost).where(
                 InstagramPromptPost.instagram_account_id == instagram_account_id,
@@ -479,7 +527,21 @@ def leads(
                 archived=request.lead_archived_at is not None,
                 archived_label="Archived" if request.lead_archived_at is not None else "Active",
                 internal_note=request.internal_note or None,
-                public_prompt_id=prompt_posts.get(request.media_id),
+                public_prompt_id=(
+                    prompt_posts[request.media_id].public_id
+                    if request.media_id in prompt_posts
+                    else None
+                ),
+                post_permalink=(
+                    _instagram_permalink(prompt_posts[request.media_id].permalink)
+                    if request.media_id in prompt_posts
+                    else None
+                ),
+                cover_url=(
+                    _public_https_url(prompt_posts[request.media_id].cover_url)
+                    if request.media_id in prompt_posts
+                    else None
+                ),
             )
             for request in requests
         ],
