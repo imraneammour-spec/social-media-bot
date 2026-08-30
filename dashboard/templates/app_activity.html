@@ -2,6 +2,15 @@
 {% block title %}Activity{% endblock %}
 {% block heading %}Activity{% endblock %}
 {% block content %}
+<form method="get" action="{{ url_for('tenant_dashboard.app_activity') }}" class="card activity-filters" aria-label="Activity filters">
+    <input type="hidden" name="account" value="{{ selected_account.selection_ref }}">
+    <label>Show
+        <select name="event_type">
+            {% for value, label in activity_filters %}<option value="{{ value }}" {% if selected_event_type == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+        </select>
+    </label>
+    <button type="submit">Apply filter</button>
+</form>
 <section class="page-stack" aria-label="Account activity">
 {% for item in activity %}<article class="card activity-card"><h2>{{ item.type }}</h2><p>{{ item.state }}</p>{% if item.username %}<p>{{ item.username }}</p>{% endif %}<p class="muted">{{ item.occurred_at }}</p></article>{% else %}<p class="empty-state">No activity yet. New Instagram activity will appear here when engagement automation is activated.</p>{% endfor %}
 </section>

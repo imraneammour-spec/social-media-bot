@@ -37,6 +37,20 @@ MAX_LEAD_SEARCH_LENGTH = 80
 LEAD_ACTION_REFERENCE_VERSION = "v1"
 LEAD_ACTION_REFERENCE_TTL_SECONDS = 900
 LEAD_ACTION_PURPOSES = {"lead-status", "lead-note", "lead-archive"}
+ACTIVITY_EVENT_TYPES = (
+    "all",
+    "prompt_requests",
+    "smart_replies",
+    "webhook_events",
+    "followups",
+)
+ACTIVITY_EVENT_TYPE_LABELS = (
+    ("all", "All activity"),
+    ("prompt_requests", "Prompt requests"),
+    ("smart_replies", "Smart replies"),
+    ("webhook_events", "Webhook events"),
+    ("followups", "Follow-ups"),
+)
 
 
 @dataclass(frozen=True)
@@ -140,6 +154,13 @@ def lead_filters(
         normalized_sort,
         normalized_page,
     )
+
+
+def activity_filter(value: object = None) -> str:
+    """Normalize the finite Activity event-type filter."""
+
+    normalized = str(value or "all").strip().lower()
+    return normalized if normalized in ACTIVITY_EVENT_TYPES else "all"
 
 
 def _lead_action_payload(
@@ -469,49 +490,82 @@ def leads(
 
 
 def activity(
-    session: Session, *, instagram_account_id: uuid.UUID, limit: int = 100
+    session: Session,
+    *,
+    instagram_account_id: uuid.UUID,
+    event_type: object = None,
+    limit: int = 100,
 ) -> list[dict[str, str]]:
     """Build a generic activity feed without provider IDs or message content."""
 
+    selected_event_type = activity_filter(event_type)
     records: list[dict[str, str]] = []
-    for request in session.scalars(
-        select(InstagramPromptRequest)
-        .where(InstagramPromptRequest.instagram_account_id == instagram_account_id)
-        .order_by(InstagramPromptRequest.created_at.desc())
-        .limit(limit)
-    ):
-        records.append({
-            "occurred_at": _timestamp(request.created_at) or "",
-            "type": "Prompt request",
-            "state": "Completed",
-            "username": _username(request.username),
-        })
-    for reply in session.scalars(
-        select(InstagramSmartReplyActivity)
-        .where(InstagramSmartReplyActivity.instagram_account_id == instagram_account_id)
-        .order_by(InstagramSmartReplyActivity.created_at.desc())
-        .limit(limit)
-    ):
-        records.append({
-            "occurred_at": _timestamp(reply.created_at) or "",
-            "type": "Reply sent",
-            "state": "Completed",
-            "username": _username(reply.username),
-        })
+    if selected_event_type in {"all", "prompt_requests"}:
+        for request in session.scalars(
+            select(InstagramPromptRequest)
+            .where(InstagramPromptRequest.instagram_account_id == instagram_account_id)
+            .order_by(InstagramPromptRequest.created_at.desc())
+            .limit(limit)
+        ):
+            records.append({
+                "occurred_at": _timestamp(request.created_at) or "",
+                "type": "Prompt request",
+                "state": "Completed",
+                "username": _username(request.username),
+            })
+    if selected_event_type in {"all", "smart_replies"}:
+        for reply in session.scalars(
+            select(InstagramSmartReplyActivity)
+            .where(InstagramSmartReplyActivity.instagram_account_id == instagram_account_id)
+            .order_by(InstagramSmartReplyActivity.created_at.desc())
+            .limit(limit)
+        ):
+            records.append({
+                "occurred_at": _timestamp(reply.created_at) or "",
+                "type": "Reply sent",
+                "state": "Completed",
+                "username": _username(reply.username),
+            })
     state_labels = {"done": "Completed", "processing": "Waiting", "failed": "Unavailable"}
     type_labels = {"comment": "Comment received", "message": "Message received"}
-    for event in session.scalars(
-        select(InstagramEngagementEvent)
-        .where(InstagramEngagementEvent.instagram_account_id == instagram_account_id)
-        .order_by(InstagramEngagementEvent.created_at.desc())
-        .limit(limit)
-    ):
-        records.append({
-            "occurred_at": _timestamp(event.created_at) or "",
-            "type": type_labels.get(event.event_type, "Engagement activity"),
-            "state": state_labels.get(event.state, "Unavailable"),
-            "username": "",
-        })
+    if selected_event_type in {"all", "webhook_events"}:
+        for event in session.scalars(
+            select(InstagramEngagementEvent)
+            .where(InstagramEngagementEvent.instagram_account_id == instagram_account_id)
+            .order_by(InstagramEngagementEvent.created_at.desc())
+            .limit(limit)
+        ):
+            records.append({
+                "occurred_at": _timestamp(event.created_at) or "",
+                "type": type_labels.get(event.event_type, "Engagement activity"),
+                "state": state_labels.get(event.state, "Unavailable"),
+                "username": "",
+            })
+    if selected_event_type in {"all", "followups"}:
+        followup_labels = {
+            "pending": ("Follow-up scheduled", "Waiting", None),
+            "processing": ("Follow-up scheduled", "Waiting", None),
+            "sent": ("Follow-up sent", "Completed", "sent_at"),
+            "cancelled": ("Follow-up cancelled", "Completed", "cancelled_at"),
+            "failed": ("Follow-up failed", "Unavailable", "failed_at"),
+        }
+        for job in session.scalars(
+            select(InstagramOAuthFollowupJob)
+            .where(InstagramOAuthFollowupJob.instagram_account_id == instagram_account_id)
+            .order_by(InstagramOAuthFollowupJob.created_at.desc())
+            .limit(limit)
+        ):
+            label = followup_labels.get(str(job.state or "").strip().lower())
+            if label is None:
+                continue
+            event_name, state, completed_at = label
+            occurred_at = getattr(job, completed_at) if completed_at else None
+            records.append({
+                "occurred_at": _timestamp(occurred_at or job.created_at) or "",
+                "type": event_name,
+                "state": state,
+                "username": "",
+            })
     return sorted(records, key=lambda record: record["occurred_at"], reverse=True)[:limit]
 
 

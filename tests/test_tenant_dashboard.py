@@ -465,9 +465,10 @@ class TenantDashboardTest(unittest.TestCase):
             "requests.",
             "load_json",
             "save_json",
-            "webhook",
         ):
             self.assertNotIn(forbidden, source)
+        self.assertNotIn("from webhook", source)
+        self.assertNotIn("import webhook", source)
 
     def _add_polish_records(self):
         """Create a fixed, account-A-only dataset for Phase 5C behaviors."""
@@ -612,6 +613,54 @@ class TenantDashboardTest(unittest.TestCase):
             response = self.client.get(path)
             self.assertEqual(response.status_code, 200)
             self.assertIn(message, response.get_data(as_text=True))
+
+    def test_activity_followups_are_scoped_filtered_normalized_and_sanitized(self):
+        self._add_polish_records()
+        self._login_as(self.owner_a)
+        account = self._reference(self.owner_a, self.account_a1)
+
+        response = self.client.get(
+            f"/app/api/activity?account={account}&event_type=followups"
+        )
+        self.assertEqual(response.status_code, 200)
+        activity = response.get_json()["activity"]
+        self.assertEqual(len(activity), 4)
+        self.assertEqual(
+            {(item["type"], item["state"]) for item in activity},
+            {
+                ("Follow-up scheduled", "Waiting"),
+                ("Follow-up sent", "Completed"),
+                ("Follow-up cancelled", "Completed"),
+                ("Follow-up failed", "Unavailable"),
+            },
+        )
+        self.assertTrue(all(not item["username"] for item in activity))
+
+        rendered = self.client.get(
+            f"/app/activity?account={account}&event_type=followups"
+        ).get_data(as_text=True)
+        self.assertIn("Follow-ups", rendered)
+        self.assertIn('value="followups" selected', rendered)
+        for forbidden in (
+            "source-message-a-secret",
+            "recipient-shared-secret",
+            "https://internal.example.invalid/a",
+            "lease-a-secret",
+            "provider-internal-secret",
+            "phase5c-source-sent",
+            "phase5c-followup-sent",
+            "https://example.invalid/phase5c-followup",
+        ):
+            self.assertNotIn(forbidden, rendered)
+
+        all_activity = self.client.get(
+            f"/app/api/activity?account={account}&event_type=all"
+        ).get_json()["activity"]
+        all_types = {item["type"] for item in all_activity}
+        self.assertIn("Prompt request", all_types)
+        self.assertIn("Reply sent", all_types)
+        self.assertIn("Message received", all_types)
+        self.assertIn("Follow-up scheduled", all_types)
 
     def test_database_failure_returns_one_generic_workspace_message(self):
         self._login_as(self.owner_a)

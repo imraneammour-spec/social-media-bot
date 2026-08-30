@@ -407,6 +407,10 @@ def _lead_filters():
     )
 
 
+def _activity_filter():
+    return tenant_data.activity_filter(request.args.get("event_type"))
+
+
 def _lead_payload(
     user,
     selected,
@@ -742,9 +746,11 @@ def register_tenant_dashboard(app) -> None:
         accounts,
         selected,
     ):
+        selected_event_type = _activity_filter()
         rows = _query(
             selected,
             tenant_data.activity,
+            event_type=selected_event_type,
         )
 
         if rows is _DATABASE_UNAVAILABLE:
@@ -756,6 +762,8 @@ def register_tenant_dashboard(app) -> None:
             accounts=accounts,
             selected=selected,
             activity=rows,
+            activity_filters=tenant_data.ACTIVITY_EVENT_TYPE_LABELS,
+            selected_event_type=selected_event_type,
         )
 
     @dashboard.get("/followups")
@@ -940,6 +948,7 @@ def register_tenant_dashboard(app) -> None:
         rows = _query(
             selected,
             tenant_data.activity,
+            event_type=_activity_filter(),
         )
 
         if rows is _DATABASE_UNAVAILABLE:
