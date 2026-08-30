@@ -215,6 +215,30 @@ def send_oauth_private_access_reply(session_factory: Callable[[], Any], *, insta
         return None
 
 
+def send_oauth_private_prompt_button(session_factory: Callable[[], Any], *, instagram_account_id: object, instagram_user_id: object, comment_id: object, page_url: object) -> str | None:
+    """Deliver the prepared prompt page directly as a private comment reply.
+
+    The URL check intentionally mirrors the recipient-message helper below:
+    OAuth prompt pages must never be delivered through an insecure URL.
+    """
+    comment = str(comment_id or "").strip()
+    url = str(page_url or "").strip()
+    if not comment or not url.startswith("https://"):
+        return None
+    body = {"recipient": {"comment_id": comment}, "message": {"attachment": {"type": "template", "payload": {"template_type": "button", "text": "Your requested prompts are ready.", "buttons": [{"type": "web_url", "url": url, "title": "View prompts"}]}}}}
+    try:
+        payload = _request_with_runtime(session_factory, instagram_account_id=instagram_account_id, instagram_user_id=instagram_user_id, method="POST", path=f"/{instagram_user_id}/messages", json_body=body)
+        recipient = payload.get("recipient_id")
+        return str(recipient).strip() if recipient is not None and str(recipient).strip() else None
+    except OAuthGraphOperationError as error:
+        print(
+            "OAUTH PROMPT BUTTON: delivery_failed "
+            f"status={error.http_status} code={error.provider_code} "
+            f"subcode={error.provider_subcode} message={error.provider_message}"
+        )
+        return None
+
+
 def send_oauth_prompt_access_button(session_factory: Callable[[], Any], *, instagram_account_id: object, instagram_user_id: object, recipient_id: object, page_url: object) -> bool:
     recipient = str(recipient_id or "").strip()
     url = str(page_url or "").strip()

@@ -199,6 +199,34 @@ class OAuthEngagementModelTest(unittest.TestCase):
             "status=500 code=none subcode=none message=provider_rejected"
         )
 
+    def test_private_prompt_button_uses_comment_recipient_and_omits_access_intermediate_copy(self):
+        from database import oauth_graph
+
+        with patch.object(oauth_graph, "_request_with_runtime", return_value={
+            "recipient_id": "recipient-1"
+        }) as graph_request:
+            recipient = oauth_graph.send_oauth_private_prompt_button(
+                lambda: self.Session(),
+                instagram_account_id=self.account_a_id,
+                instagram_user_id="17841438617458001",
+                comment_id="comment-direct-button",
+                page_url="https://example.test/p/o/opaque-public-id",
+            )
+
+        self.assertEqual(recipient, "recipient-1")
+        body = graph_request.call_args.kwargs["json_body"]
+        self.assertEqual(body["recipient"], {"comment_id": "comment-direct-button"})
+        template = body["message"]["attachment"]["payload"]
+        self.assertEqual(template["text"], "Your requested prompts are ready.")
+        self.assertEqual(template["buttons"][0], {
+            "type": "web_url",
+            "url": "https://example.test/p/o/opaque-public-id",
+            "title": "View prompts",
+        })
+        self.assertNotIn("messaging_type", body)
+        self.assertNotIn("quick_replies", body["message"])
+        self.assertNotIn("ACCESS", str(body).upper())
+
 
 class OAuthWebhookEngagementTest(unittest.TestCase):
     def setUp(self):

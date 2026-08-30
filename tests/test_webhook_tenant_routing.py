@@ -16,8 +16,10 @@ from database.models import (
     Base,
     InstagramAccount,
     InstagramAutomationConfig,
+    InstagramOAuthFollowupJob,
     InstagramOAuthWebhookWorkItem,
     InstagramPendingAccess,
+    InstagramPromptRequest,
     User,
 )
 
@@ -576,7 +578,7 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
             trigger_keywords=["ai"],
         )
         with patch.object(self.module, "_oauth_prompt_post_for_comment") as prompt_page, patch.object(
-            self.module, "send_oauth_private_access_reply"
+            self.module, "send_oauth_private_prompt_button"
         ) as private_reply:
             self._process(self.primary_external_id, "disabled-comment", "AI please")
 
@@ -593,18 +595,79 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
         ), patch.object(
             self.module, "send_oauth_public_comment_reply", return_value=True
         ), patch.object(
-            self.module, "send_oauth_private_access_reply", return_value="recipient-1"
-        ) as private_reply:
+            self.module, "send_oauth_private_prompt_button", return_value="recipient-1"
+        ) as private_button:
             self._process(self.primary_external_id, "custom-keyword", "Please launch this")
 
-        private_reply.assert_called_once()
+        private_button.assert_called_once()
+        self.assertEqual(
+            private_button.call_args.kwargs["page_url"],
+            "https://example.test/p/o/prompt-page",
+        )
         account = self._account(self.primary_external_id)
         with self.session_factory() as session:
-            pending = session.scalar(select(InstagramPendingAccess).where(
-                InstagramPendingAccess.instagram_account_id == account.id,
-                InstagramPendingAccess.recipient_id == "recipient-1",
-            ))
-        self.assertIsNotNone(pending)
+            requests = session.query(InstagramPromptRequest).filter_by(
+                instagram_account_id=account.id, comment_id="custom-keyword"
+            ).all()
+            followups = session.query(InstagramOAuthFollowupJob).filter_by(
+                instagram_account_id=account.id, source_message_id="custom-keyword"
+            ).all()
+            pending_access = session.query(InstagramPendingAccess).filter_by(
+                instagram_account_id=account.id, recipient_id="recipient-1"
+            ).all()
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(len(followups), 1)
+        self.assertEqual(len(pending_access), 0)
+
+    def test_duplicate_trigger_comment_sends_one_direct_prompt_button_and_followup(self):
+        self._set_config(self.primary_external_id, trigger_keywords=["ai"])
+        with patch.object(
+            self.module, "_oauth_prompt_post_for_comment", return_value="prompt-page"
+        ), patch.object(
+            self.module, "send_oauth_public_comment_reply", return_value=True
+        ), patch.object(
+            self.module, "send_oauth_private_prompt_button", return_value="recipient-1"
+        ) as private_button:
+            self._process(self.primary_external_id, "duplicate-comment", "AI please")
+            self._process(self.primary_external_id, "duplicate-comment", "AI please")
+
+        private_button.assert_called_once()
+        account = self._account(self.primary_external_id)
+        with self.session_factory() as session:
+            self.assertEqual(session.query(InstagramPromptRequest).filter_by(
+                instagram_account_id=account.id, comment_id="duplicate-comment"
+            ).count(), 1)
+            self.assertEqual(session.query(InstagramOAuthFollowupJob).filter_by(
+                instagram_account_id=account.id, source_message_id="duplicate-comment"
+            ).count(), 1)
+
+    def test_direct_prompt_delivery_and_followups_remain_account_scoped(self):
+        self._set_config(self.primary_external_id, trigger_keywords=["alpha"])
+        self._set_config(self.secondary_external_id, trigger_keywords=["bravo"])
+        with patch.object(
+            self.module, "_oauth_prompt_post_for_comment", return_value="prompt-page"
+        ), patch.object(
+            self.module, "send_oauth_public_comment_reply", return_value=True
+        ), patch.object(
+            self.module, "send_oauth_private_prompt_button",
+            side_effect=["recipient-primary", "recipient-secondary"],
+        ) as private_button:
+            self._process(self.primary_external_id, "primary-comment", "alpha")
+            self._process(self.secondary_external_id, "secondary-comment", "bravo")
+
+        primary = self._account(self.primary_external_id)
+        secondary = self._account(self.secondary_external_id)
+        self.assertEqual(
+            [call.kwargs["instagram_account_id"] for call in private_button.call_args_list],
+            [primary.id, secondary.id],
+        )
+        with self.session_factory() as session:
+            self.assertEqual(session.query(InstagramOAuthFollowupJob).filter_by(
+                instagram_account_id=primary.id, source_message_id="primary-comment"
+            ).count(), 1)
+            self.assertEqual(session.query(InstagramOAuthFollowupJob).filter_by(
+                instagram_account_id=secondary.id, source_message_id="secondary-comment"
+            ).count(), 1)
 
     def test_prompt_request_uses_configured_public_reply_text(self):
         self._set_config(
@@ -617,7 +680,7 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
         ), patch.object(
             self.module, "send_oauth_public_comment_reply", return_value=True
         ) as public_reply, patch.object(
-            self.module, "send_oauth_private_access_reply", return_value="recipient-1"
+            self.module, "send_oauth_private_prompt_button", return_value="recipient-1"
         ):
             self._process(self.primary_external_id, "custom-public-reply", "AI please")
 
@@ -637,12 +700,12 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
         ), patch.object(
             self.module, "send_oauth_public_comment_reply", return_value=True
         ) as public_reply, patch.object(
-            self.module, "send_oauth_private_access_reply", return_value="recipient-1"
-        ) as private_reply:
+            self.module, "send_oauth_private_prompt_button", return_value="recipient-1"
+        ) as private_button:
             self._process(self.primary_external_id, "private-only", "AI please")
 
         public_reply.assert_not_called()
-        private_reply.assert_called_once()
+        private_button.assert_called_once()
 
     def test_other_account_keywords_do_not_match_this_account(self):
         self._set_config(self.primary_external_id, trigger_keywords=["alpha"])
@@ -652,17 +715,17 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
         ), patch.object(
             self.module, "send_oauth_public_comment_reply", return_value=True
         ), patch.object(
-            self.module, "send_oauth_private_access_reply", return_value="recipient-1"
-        ) as private_reply:
+            self.module, "send_oauth_private_prompt_button", return_value="recipient-1"
+        ) as private_button:
             self._process(self.primary_external_id, "other-account-keyword", "bravo")
             self._process(self.secondary_external_id, "secondary-account-keyword", "bravo")
             self._process(self.primary_external_id, "own-account-keyword", "alpha")
 
-        self.assertEqual(private_reply.call_count, 2)
+        self.assertEqual(private_button.call_count, 2)
 
     def test_missing_runtime_config_skips_new_prompt_request_delivery(self):
         with patch.object(self.module, "_oauth_prompt_post_for_comment") as prompt_page, patch.object(
-            self.module, "send_oauth_private_access_reply"
+            self.module, "send_oauth_private_prompt_button"
         ) as private_reply:
             self._process(self.primary_external_id, "missing-config", "AI please")
 
@@ -697,7 +760,7 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
         ), patch.object(
             self.module, "send_oauth_public_comment_reply", return_value=True
         ), patch.object(
-            self.module, "send_oauth_private_access_reply", return_value="recipient-1"
+            self.module, "send_oauth_private_prompt_button", return_value="recipient-1"
         ), patch("builtins.print") as log:
             self._process(self.primary_external_id, "matched-decision", "testauto")
 
@@ -739,7 +802,7 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
             trigger_keywords=["two words"],
         )
         with patch.object(self.module, "_oauth_prompt_post_for_comment") as prompt_page, patch.object(
-            self.module, "send_oauth_private_access_reply"
+            self.module, "send_oauth_private_prompt_button"
         ) as private_reply:
             self._process(self.primary_external_id, "invalid-config", "AI please")
 

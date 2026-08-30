@@ -39,13 +39,12 @@ from database.oauth_engagement import (
     pop_oauth_pending_access,
     record_oauth_request,
     record_oauth_smart_reply,
-    save_oauth_pending_access,
 )
 from database.oauth_graph import (
     lookup_oauth_media,
     oauth_engagement_capability_state,
     send_oauth_delayed_followup,
-    send_oauth_private_access_reply,
+    send_oauth_private_prompt_button,
     send_oauth_prompt_access_button,
     send_oauth_public_comment_reply,
 )
@@ -3903,12 +3902,24 @@ def _process_oauth_comment(value, route, entry_external_id, public_base_url, ses
         if automation_config.public_reply_enabled:
             if not send_oauth_public_comment_reply(session_factory, instagram_account_id=route.instagram_account_id, instagram_user_id=entry_external_id, comment_id=comment_id, message=automation_config.public_reply_text):
                 raise RuntimeError("oauth public reply unavailable")
-        recipient_id = send_oauth_private_access_reply(session_factory, instagram_account_id=route.instagram_account_id, instagram_user_id=entry_external_id, comment_id=comment_id)
+        recipient_id = send_oauth_private_prompt_button(
+            session_factory,
+            instagram_account_id=route.instagram_account_id,
+            instagram_user_id=entry_external_id,
+            comment_id=comment_id,
+            page_url=page_url,
+        )
         if not recipient_id:
             raise RuntimeError("oauth private reply unavailable")
         with session_factory.begin() as db_session:
-            save_oauth_pending_access(db_session, route.instagram_account_id, recipient_id, page_url)
             record_oauth_request(db_session, route.instagram_account_id, media_id, comment_id, recipient_id, username, page_url)
+            schedule_oauth_followup(
+                db_session,
+                instagram_account_id=route.instagram_account_id,
+                source_message_id=comment_id,
+                recipient_id=recipient_id,
+                page_url=page_url,
+            )
             complete_oauth_event(db_session, route.instagram_account_id, comment_id, "comment")
     except Exception:
         _oauth_complete(session_factory, route.instagram_account_id, comment_id, "comment", failed=True)
