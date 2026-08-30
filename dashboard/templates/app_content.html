@@ -1,0 +1,32 @@
+{% extends "app_base.html" %}
+{% block title %}Content{% endblock %}
+{% block heading %}Content{% endblock %}
+{% block content %}
+<p class="muted">Instagram posts with prepared prompts for the selected account.</p>
+<form method="get" action="{{ url_for('tenant_dashboard.app_content') }}" class="card activity-filters" aria-label="Content filters">
+    <input type="hidden" name="account" value="{{ selected_account.selection_ref }}">
+    <label>Show
+        <select name="filter">
+            {% for value, label in content_filters %}<option value="{{ value }}" {% if selected_filter == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+        </select>
+    </label>
+    <button type="submit">Apply filter</button>
+</form>
+<section class="page-stack" aria-label="Account content">
+{% for item in content_items %}
+<article class="card lead-card">
+    <h2>{{ item.prompt_state }}</h2>
+    {% if item.cover_url %}<img class="lead-source-preview" src="{{ item.cover_url }}" alt="Instagram post preview" loading="lazy" referrerpolicy="no-referrer">{% endif %}
+    <p>{{ item.prompt_count }} prompt(s)</p>
+    <p class="muted">{{ item.created_at }}</p>
+    {% if item.prompt_url %}<p><a href="{{ item.prompt_url }}">View prepared prompts</a></p>{% endif %}
+    {% if item.permalink %}<p><a href="{{ item.permalink }}" target="_blank" rel="noopener noreferrer">View Instagram Post</a></p>{% endif %}
+</article>
+{% else %}<p class="empty-state">No content yet. Instagram posts with extracted prompts will appear here.</p>{% endfor %}
+</section>
+<nav aria-label="Content pagination">
+    {% if content_page.has_previous %}<a href="{{ url_for('tenant_dashboard.app_content', account=selected_account.selection_ref, filter=selected_filter, page=content_page.page - 1) }}">Previous</a>{% endif %}
+    <span>Page {{ content_page.page }}</span>
+    {% if content_page.has_next %}<a href="{{ url_for('tenant_dashboard.app_content', account=selected_account.selection_ref, filter=selected_filter, page=content_page.page + 1) }}">Next</a>{% endif %}
+</nav>
+{% endblock %}

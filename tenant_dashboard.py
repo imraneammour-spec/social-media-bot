@@ -317,6 +317,8 @@ def _render_page(
         "tenant_dashboard.app_activity": "activity",
         "tenant_dashboard.app_followups": "followups",
         "tenant_dashboard.app_automations": "automations",
+        "tenant_dashboard.app_messages": "messages",
+        "tenant_dashboard.app_content": "content",
     }
 
     selected_account = next(
@@ -791,6 +793,66 @@ def register_tenant_dashboard(app) -> None:
             followups=rows,
         )
 
+    @dashboard.get("/messages")
+    @_require_tenant
+    def app_messages(
+        user,
+        accounts,
+        selected,
+    ):
+        selected_filter = tenant_data.message_filter(request.args.get("filter"))
+        page = request.args.get("page")
+        message_page = _query(
+            selected,
+            tenant_data.messages,
+            filter_value=selected_filter,
+            page=page,
+        )
+
+        if message_page is _DATABASE_UNAVAILABLE:
+            return _workspace_unavailable()
+
+        return _render_page(
+            "app_messages.html",
+            user=user,
+            accounts=accounts,
+            selected=selected,
+            messages=message_page.messages,
+            message_page=message_page,
+            message_filters=tenant_data.MESSAGE_FILTER_LABELS,
+            selected_filter=selected_filter,
+        )
+
+    @dashboard.get("/content")
+    @_require_tenant
+    def app_content(
+        user,
+        accounts,
+        selected,
+    ):
+        selected_filter = tenant_data.content_filter(request.args.get("filter"))
+        page = request.args.get("page")
+        content_page = _query(
+            selected,
+            tenant_data.content,
+            filter_value=selected_filter,
+            page=page,
+        )
+
+        if content_page is _DATABASE_UNAVAILABLE:
+            return _workspace_unavailable()
+
+        return _render_page(
+            "app_content.html",
+            user=user,
+            accounts=accounts,
+            selected=selected,
+            content_items=content_page.content,
+            content_page=content_page,
+            content_filters=tenant_data.CONTENT_FILTER_LABELS,
+            selected_filter=selected_filter,
+        )
+
     @dashboard.route(
         "/automations",
         methods=[
@@ -977,6 +1039,62 @@ def register_tenant_dashboard(app) -> None:
 
         return jsonify(
             followups=rows
+        )
+
+    @dashboard.get("/api/messages")
+    @_require_tenant
+    def app_api_messages(
+        user,
+        accounts,
+        selected,
+    ):
+        selected_filter = tenant_data.message_filter(request.args.get("filter"))
+        page = request.args.get("page")
+        message_page = _query(
+            selected,
+            tenant_data.messages,
+            filter_value=selected_filter,
+            page=page,
+        )
+
+        if message_page is _DATABASE_UNAVAILABLE:
+            return _workspace_unavailable()
+
+        return jsonify(
+            messages=message_page.messages,
+            pagination={
+                "page": message_page.page,
+                "has_previous": message_page.has_previous,
+                "has_next": message_page.has_next,
+            },
+        )
+
+    @dashboard.get("/api/content")
+    @_require_tenant
+    def app_api_content(
+        user,
+        accounts,
+        selected,
+    ):
+        selected_filter = tenant_data.content_filter(request.args.get("filter"))
+        page = request.args.get("page")
+        content_page = _query(
+            selected,
+            tenant_data.content,
+            filter_value=selected_filter,
+            page=page,
+        )
+
+        if content_page is _DATABASE_UNAVAILABLE:
+            return _workspace_unavailable()
+
+        return jsonify(
+            content=content_page.content,
+            pagination={
+                "page": content_page.page,
+                "has_previous": content_page.has_previous,
+                "has_next": content_page.has_next,
+            },
         )
 
     @dashboard.post("/leads/status")

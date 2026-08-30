@@ -655,3 +655,246 @@ def followups(session: Session, *, instagram_account_id: uuid.UUID) -> list[dict
         }
         for job in jobs
     ]
+
+
+# ---------------------------------------------------------------------------
+# Phase 5C — Messages & Content view models
+# ---------------------------------------------------------------------------
+
+MESSAGE_FILTERS = ("all", "prompt", "messages", "followups", "smart_replies")
+MESSAGE_FILTER_LABELS = (
+    ("all", "All"),
+    ("prompt", "Prompt interactions"),
+    ("messages", "Messages"),
+    ("followups", "Follow-ups"),
+    ("smart_replies", "Smart replies"),
+)
+MESSAGES_PER_PAGE = 25
+MAX_MESSAGE_PAGE = 1000
+
+CONTENT_FILTERS = ("all", "prompt_enabled")
+CONTENT_FILTER_LABELS = (
+    ("all", "All"),
+    ("prompt_enabled", "Prompt-enabled"),
+)
+CONTENT_PER_PAGE = 25
+MAX_CONTENT_PAGE = 1000
+
+
+def message_filter(value: object = None) -> str:
+    """Normalize the finite Messages interaction-type filter."""
+
+    normalized = str(value or "all").strip().lower()
+    return normalized if normalized in MESSAGE_FILTERS else "all"
+
+
+def _message_page(value: object) -> int:
+    try:
+        page = int(str(value or "1").strip())
+    except (TypeError, ValueError):
+        page = 1
+    return min(max(page, 1), MAX_MESSAGE_PAGE)
+
+
+@dataclass(frozen=True)
+class TenantMessagePage:
+    """A bounded, account-scoped page of sanitized interaction records."""
+
+    messages: list[dict[str, str]]
+    page: int
+    has_previous: bool
+    has_next: bool
+
+
+def messages(
+    session: Session,
+    *,
+    instagram_account_id: uuid.UUID,
+    filter_value: object = None,
+    page: object = None,
+) -> TenantMessagePage:
+    """Return sanitized interaction records for exactly one owned account.
+
+    The backend does not persist inbound Instagram message text, so this is
+    a *persisted-interaction* view — not a true inbox.  Each row is built from
+    engagement events, prompt requests, smart replies, and follow-up jobs
+    that are already scoped by ``instagram_account_id``.
+    """
+
+    selected_filter = message_filter(filter_value)
+    selected_page = _message_page(page)
+    limit = MESSAGES_PER_PAGE
+    offset = (selected_page - 1) * limit
+
+    records: list[dict[str, str]] = []
+
+    if selected_filter in {"all", "prompt"}:
+        for request in session.scalars(
+            select(InstagramPromptRequest)
+            .where(InstagramPromptRequest.instagram_account_id == instagram_account_id)
+            .order_by(InstagramPromptRequest.created_at.desc())
+            .limit(limit + 1)
+            .offset(offset)
+        ):
+            records.append({
+                "occurred_at": _timestamp(request.created_at) or "",
+                "type": "Prompt request",
+                "status": "Completed",
+                "username": _username(request.username),
+                "detail": "Trigger comment received",
+            })
+
+    if selected_filter in {"all", "smart_replies"}:
+        for reply in session.scalars(
+            select(InstagramSmartReplyActivity)
+            .where(InstagramSmartReplyActivity.instagram_account_id == instagram_account_id)
+            .order_by(InstagramSmartReplyActivity.created_at.desc())
+            .limit(limit + 1)
+            .offset(offset)
+        ):
+            records.append({
+                "occurred_at": _timestamp(reply.created_at) or "",
+                "type": "Smart reply",
+                "status": "Completed",
+                "username": _username(reply.username),
+                "detail": "Automated reply sent",
+            })
+
+    if selected_filter in {"all", "messages"}:
+        type_labels = {"comment": "Comment received", "message": "Incoming message"}
+        state_labels = {"done": "Completed", "processing": "Processing", "failed": "Failed"}
+        for event in session.scalars(
+            select(InstagramEngagementEvent)
+            .where(InstagramEngagementEvent.instagram_account_id == instagram_account_id)
+            .order_by(InstagramEngagementEvent.created_at.desc())
+            .limit(limit + 1)
+            .offset(offset)
+        ):
+            records.append({
+                "occurred_at": _timestamp(event.created_at) or "",
+                "type": type_labels.get(event.event_type, "Engagement event"),
+                "status": state_labels.get(event.state, "Unknown"),
+                "username": "",
+                "detail": "",
+            })
+
+    if selected_filter in {"all", "followups"}:
+        followup_labels = {
+            "pending": ("Follow-up scheduled", "Waiting"),
+            "processing": ("Follow-up scheduled", "Sending"),
+            "sent": ("Follow-up sent", "Completed"),
+            "cancelled": ("Follow-up cancelled", "Cancelled"),
+            "failed": ("Follow-up failed", "Failed"),
+        }
+        for job in session.scalars(
+            select(InstagramOAuthFollowupJob)
+            .where(InstagramOAuthFollowupJob.instagram_account_id == instagram_account_id)
+            .order_by(InstagramOAuthFollowupJob.created_at.desc())
+            .limit(limit + 1)
+            .offset(offset)
+        ):
+            label = followup_labels.get(str(job.state or "").strip().lower())
+            if label is None:
+                continue
+            event_name, state = label
+            records.append({
+                "occurred_at": _timestamp(job.created_at) or "",
+                "type": event_name,
+                "status": state,
+                "username": "",
+                "detail": "",
+            })
+
+    records.sort(key=lambda record: record["occurred_at"], reverse=True)
+    has_next = len(records) > limit
+    records = records[:limit]
+    return TenantMessagePage(
+        messages=records,
+        page=selected_page,
+        has_previous=selected_page > 1,
+        has_next=has_next,
+    )
+
+
+def content_filter(value: object = None) -> str:
+    """Normalize the finite Content filter."""
+
+    normalized = str(value or "all").strip().lower()
+    return normalized if normalized in CONTENT_FILTERS else "all"
+
+
+def _content_page(value: object) -> int:
+    try:
+        page = int(str(value or "1").strip())
+    except (TypeError, ValueError):
+        page = 1
+    return min(max(page, 1), MAX_CONTENT_PAGE)
+
+
+@dataclass(frozen=True)
+class TenantContentPage:
+    """A bounded, account-scoped page of sanitized content records."""
+
+    content: list[dict[str, str | None]]
+    page: int
+    has_previous: bool
+    has_next: bool
+
+
+def content(
+    session: Session,
+    *,
+    instagram_account_id: uuid.UUID,
+    filter_value: object = None,
+    page: object = None,
+) -> TenantContentPage:
+    """Return sanitized prompt-post content records for one owned account.
+
+    Only ``InstagramPromptPost`` records are shown — these are Instagram posts
+    for which the bot has extracted and prepared prompts.  No draft or
+    scheduled-post models exist in the current schema, so those filters are
+    not offered.  External URLs are sanitized via the existing URL safety
+    helpers already used in Leads.
+    """
+
+    selected_filter = content_filter(filter_value)
+    selected_page = _content_page(page)
+    limit = CONTENT_PER_PAGE
+    offset = (selected_page - 1) * limit
+
+    query = select(InstagramPromptPost).where(
+        InstagramPromptPost.instagram_account_id == instagram_account_id
+    )
+    if selected_filter == "prompt_enabled":
+        query = query.where(InstagramPromptPost.prompts.isnot(None))
+
+    posts = list(
+        session.scalars(
+            query
+            .order_by(InstagramPromptPost.created_at.desc(), InstagramPromptPost.id.desc())
+            .limit(limit + 1)
+            .offset(offset)
+        )
+    )
+    has_next = len(posts) > limit
+    posts = posts[:limit]
+
+    content_rows = []
+    for post in posts:
+        prompt_count = len(post.prompts) if isinstance(post.prompts, list) else 0
+        content_rows.append({
+            "prompt_url": f"/p/o/{post.public_id}",
+            "public_id": post.public_id,
+            "permalink": _instagram_permalink(post.permalink),
+            "cover_url": _public_https_url(post.cover_url),
+            "prompt_count": str(prompt_count),
+            "prompt_state": "Prompts prepared" if prompt_count > 0 else "No prompts",
+            "created_at": _timestamp(post.created_at) or "",
+        })
+
+    return TenantContentPage(
+        content=content_rows,
+        page=selected_page,
+        has_previous=selected_page > 1,
+        has_next=has_next,
+    )

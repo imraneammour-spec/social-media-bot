@@ -413,7 +413,7 @@ class TenantDashboardTest(unittest.TestCase):
     def test_account_scoped_feeds_and_html_never_leak_private_data(self):
         self._login_as(self.owner_a)
         html_responses = []
-        for path in ("/app", "/app/accounts", "/app/leads", "/app/activity", "/app/followups"):
+        for path in ("/app", "/app/accounts", "/app/leads", "/app/activity", "/app/followups", "/app/messages", "/app/content"):
             response = self.client.get(path)
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.headers["Cache-Control"], "no-store")
@@ -775,9 +775,11 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertIn('href="/app/leads', page)
         self.assertIn('href="/app/automations', page)
         self.assertIn('href="/app/accounts', page)
-        for label in ("Content", "Messages", "Scheduler", "Analytics"):
+        self.assertIn('href="/app/messages', page)
+        self.assertIn('href="/app/content', page)
+        for label in ("Scheduler", "Analytics"):
             self.assertIn(f">{label} <small>Coming soon</small>", page)
-        self.assertEqual(page.count("Coming soon"), 4)
+        self.assertEqual(page.count("Coming soon"), 2)
         self.assertNotIn('href="/dashboard', page)
         self.assertNotIn('href="/api/', page)
 

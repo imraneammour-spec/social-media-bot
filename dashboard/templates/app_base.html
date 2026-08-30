@@ -18,13 +18,13 @@
 
                 <a href="{{ url_for('tenant_dashboard.app_overview', account=selected_account.selection_ref) }}" {% if active_page == 'overview' %}aria-current="page"{% endif %}>Home</a>
 
-                <span class="workspace-nav-unavailable" aria-disabled="true">Content <small>Coming soon</small></span>
+                <a href="{{ url_for('tenant_dashboard.app_content', account=selected_account.selection_ref) }}" {% if active_page == 'content' %}aria-current="page"{% endif %}>Content</a>
 
                 <a href="{{ url_for('tenant_dashboard.app_automations', account=selected_account.selection_ref) }}" {% if active_page == 'automations' %}aria-current="page"{% endif %}>Automations</a>
 
                 <a href="{{ url_for('tenant_dashboard.app_leads', account=selected_account.selection_ref) }}" {% if active_page == 'leads' %}aria-current="page"{% endif %}>Leads</a>
 
-                <span class="workspace-nav-unavailable" aria-disabled="true">Messages <small>Coming soon</small></span>
+                <a href="{{ url_for('tenant_dashboard.app_messages', account=selected_account.selection_ref) }}" {% if active_page == 'messages' %}aria-current="page"{% endif %}>Messages</a>
 
                 <span class="workspace-nav-unavailable" aria-disabled="true">Scheduler <small>Coming soon</small></span>
 
