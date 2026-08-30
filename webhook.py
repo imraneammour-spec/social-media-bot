@@ -39,12 +39,13 @@ from database.oauth_engagement import (
     pop_oauth_pending_access,
     record_oauth_request,
     record_oauth_smart_reply,
+    save_oauth_pending_access,
 )
 from database.oauth_graph import (
     lookup_oauth_media,
     oauth_engagement_capability_state,
     send_oauth_delayed_followup,
-    send_oauth_private_prompt_button,
+    send_oauth_initial_private_dm,
     send_oauth_prompt_access_button,
     send_oauth_public_comment_reply,
 )
@@ -841,7 +842,7 @@ def send_followup_message(recipient_id):
         "message": {
             "text": (
                 "Hope the prompts helped ✨ If you want another set, "
-                "comment AI on any post and I’ll send it to you."
+                "comment AI on any post and I'll send it to you."
             )
         }
     }
@@ -3105,7 +3106,7 @@ def send_access_request(
             "text": (
                 "Hey! 👋\n\n"
                 "Your AI prompts are ready ✨\n\n"
-                "Tap below and I’ll send you the access."
+                "Tap below and I'll send you the access."
             ),
             "quick_replies": [
                 {
@@ -3155,7 +3156,7 @@ def send_access_request(
                 "text": (
                     "Hey! 👋\n\n"
                     "Your AI prompts are ready ✨\n\n"
-                    "Reply ACCESS and I’ll send you "
+                    "Reply ACCESS and I'll send you "
                     "a button to open them."
                 )
             }
@@ -3902,16 +3903,23 @@ def _process_oauth_comment(value, route, entry_external_id, public_base_url, ses
         if automation_config.public_reply_enabled:
             if not send_oauth_public_comment_reply(session_factory, instagram_account_id=route.instagram_account_id, instagram_user_id=entry_external_id, comment_id=comment_id, message=automation_config.public_reply_text):
                 raise RuntimeError("oauth public reply unavailable")
-        recipient_id = send_oauth_private_prompt_button(
+        # Two-step DM flow:
+        # 1. Send a plain-text initial DM (no URL, no button, no ACCESS/SEND).
+        # 2. Save pending access with the prompt page URL so that ANY subsequent
+        #    inbound reply from this recipient unlocks the View-prompts button.
+        recipient_id = send_oauth_initial_private_dm(
             session_factory,
             instagram_account_id=route.instagram_account_id,
             instagram_user_id=entry_external_id,
             comment_id=comment_id,
-            page_url=page_url,
         )
+        # The comment webhook also contains the commenter's Instagram-scoped ID,
+        # so use it as a fallback if Meta did not return recipient_id.
+        recipient_id = recipient_id or commenter_id
         if not recipient_id:
             raise RuntimeError("oauth private reply unavailable")
         with session_factory.begin() as db_session:
+            save_oauth_pending_access(db_session, route.instagram_account_id, recipient_id, page_url)
             record_oauth_request(db_session, route.instagram_account_id, media_id, comment_id, recipient_id, username, page_url)
             schedule_oauth_followup(
                 db_session,
@@ -3938,10 +3946,14 @@ def _process_oauth_message(event, route, entry_external_id, session_factory):
     with session_factory.begin() as db_session:
         if not claim_oauth_event(db_session, route.instagram_account_id, message_id, "message"):
             return
-    quick = message.get("quick_reply") if isinstance(message.get("quick_reply"), dict) else {}
-    words = _oauth_words(message.get("text"))
-    wants_access = "access" in words or "send" in words or str(quick.get("payload") or "").strip().upper() == "VIEW_AI_PROMPTS"
-    if not wants_access:
+    # Check for pending prompt access for this account + sender.
+    # If pending access exists, ANY ordinary inbound reply unlocks the
+    # View-prompts button — no ACCESS/SEND keyword requirement.
+    with session_factory() as db_session:
+        page_url = get_oauth_pending_access(db_session, route.instagram_account_id, sender_id)
+    if not page_url:
+        # No pending access: this is a normal user reply.  Cancel any queued
+        # follow-up because the person has already re-engaged naturally.
         with session_factory.begin() as db_session:
             cancel_oauth_followups(
                 db_session,
@@ -3951,13 +3963,9 @@ def _process_oauth_message(event, route, entry_external_id, session_factory):
             complete_oauth_event(db_session, route.instagram_account_id, message_id, "message")
         return
     try:
-        with session_factory() as db_session:
-            page_url = get_oauth_pending_access(db_session, route.instagram_account_id, sender_id)
-        if not page_url:
-            _oauth_complete(session_factory, route.instagram_account_id, message_id, "message")
-            return
         if not send_oauth_prompt_access_button(session_factory, instagram_account_id=route.instagram_account_id, instagram_user_id=entry_external_id, recipient_id=sender_id, page_url=page_url):
             raise RuntimeError("oauth prompt access unavailable")
+        # Only consume pending access after successful button delivery.
         with session_factory.begin() as db_session:
             pop_oauth_pending_access(db_session, route.instagram_account_id, sender_id)
             schedule_oauth_followup(
