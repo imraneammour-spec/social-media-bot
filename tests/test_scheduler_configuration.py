@@ -140,6 +140,7 @@ class SchedulerConfigurationTest(unittest.TestCase):
             runtime["process_daily_auto_story"] = lambda: calls.append("daily")
             runtime["process_due_scheduled_stories"] = lambda: calls.append("stories")
             runtime["process_due_followups"] = lambda: calls.append("followups")
+            runtime["process_due_oauth_webhook_work"] = lambda: calls.append("oauth_ingress")
             runtime["process_due_oauth_followups"] = lambda: calls.append("oauth_followups")
             runtime["time"] = SimpleNamespace(
                 sleep=lambda seconds: (_ for _ in ()).throw(StopSchedulerLoop(seconds))
@@ -149,7 +150,9 @@ class SchedulerConfigurationTest(unittest.TestCase):
                 runtime["dashboard_scheduler_loop"]()
 
             self.assertEqual(stopped.exception.args, (15,))
-            self.assertEqual(calls, ["daily", "stories", "followups", "oauth_followups"])
+            self.assertEqual(calls, [
+                "daily", "stories", "followups", "oauth_ingress", "oauth_followups",
+            ])
 
 
 if __name__ == "__main__":

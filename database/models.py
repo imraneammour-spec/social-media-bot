@@ -269,6 +269,40 @@ class InstagramOAuthFollowupJob(TimestampMixin, Base):
     last_error_code: Mapped[str | None] = mapped_column(String(128))
 
 
+class InstagramOAuthWebhookWorkItem(TimestampMixin, Base):
+    """Minimal durable OAuth webhook ingress, before engagement processing."""
+
+    __tablename__ = "instagram_oauth_webhook_work_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "instagram_account_id", "provider_event_id", "event_type",
+            name="uq_oauth_webhook_work_account_event_type",
+        ),
+        Index("ix_oauth_webhook_work_state_lease", "state", "lease_expires_at"),
+        Index("ix_oauth_webhook_work_account_state", "instagram_account_id", "state"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    instagram_account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("instagram_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    instagram_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    public_base_url: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="pending", server_default="pending"
+    )
+    lease_token: Mapped[str | None] = mapped_column(String(128))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
+
 class MigrationRun(TimestampMixin, Base):
     """Auditable record for a future JSON-to-PostgreSQL migration, not data itself."""
 

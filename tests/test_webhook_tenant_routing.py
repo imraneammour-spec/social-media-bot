@@ -16,6 +16,7 @@ from database.models import (
     Base,
     InstagramAccount,
     InstagramAutomationConfig,
+    InstagramOAuthWebhookWorkItem,
     InstagramPendingAccess,
     User,
 )
@@ -234,6 +235,94 @@ class WebhookTenantRoutingTest(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
+
+    def _oauth_comment_payload(self, *, comment_id="17900000000000001"):
+        return {
+            "entry": [{
+                "id": "17841438617458902",
+                "changes": [{"field": "comments", "value": {
+                    "id": comment_id,
+                    "text": "private comment body",
+                    "from": {"id": "17900000000000002", "username": "lead"},
+                    "media": {"id": "17900000000000003"},
+                }}],
+            }],
+        }
+
+    def test_valid_oauth_webhook_is_persisted_before_fast_acknowledgment(self):
+        payload = self._oauth_comment_payload()
+        body, headers = self._signed_headers(payload)
+        with patch.object(self.module.threading, "Thread", _NoopThread), patch.object(
+            self.module, "process_oauth_webhook_entry"
+        ) as oauth_handler:
+            response = self.client.post(
+                "/webhook", data=body, content_type="application/json", headers=headers,
+                base_url="https://public.example",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        oauth_handler.assert_not_called()
+        with self.session_factory() as session:
+            work = session.scalar(select(InstagramOAuthWebhookWorkItem))
+        self.assertIsNotNone(work)
+        self.assertEqual(work.state, "pending")
+
+    def test_duplicate_oauth_delivery_creates_one_logical_work_item(self):
+        payload = self._oauth_comment_payload()
+        body, headers = self._signed_headers(payload)
+        with patch.object(self.module.threading, "Thread", _NoopThread):
+            first = self.client.post(
+                "/webhook", data=body, content_type="application/json", headers=headers,
+                base_url="https://public.example",
+            )
+            second = self.client.post(
+                "/webhook", data=body, content_type="application/json", headers=headers,
+                base_url="https://public.example",
+            )
+
+        self.assertEqual((first.status_code, second.status_code), (200, 200))
+        with self.session_factory() as session:
+            self.assertEqual(
+                len(session.scalars(select(InstagramOAuthWebhookWorkItem)).all()), 1
+            )
+
+    def test_oauth_ingress_persistence_failure_returns_non_success_without_worker(self):
+        payload = self._oauth_comment_payload()
+        body, headers = self._signed_headers(payload)
+        with patch.object(
+            self.module, "persist_oauth_webhook_ingress", side_effect=RuntimeError("unavailable")
+        ), patch.object(self.module.threading, "Thread") as worker:
+            response = self.client.post(
+                "/webhook", data=body, content_type="application/json", headers=headers,
+                base_url="https://public.example",
+            )
+
+        self.assertEqual(response.status_code, 503)
+        worker.assert_not_called()
+
+    def test_pending_oauth_work_is_processed_once_after_restart_simulation(self):
+        payload = self._oauth_comment_payload()
+        body, headers = self._signed_headers(payload)
+        with patch.object(self.module.threading, "Thread", _NoopThread):
+            response = self.client.post(
+                "/webhook", data=body, content_type="application/json", headers=headers,
+                base_url="https://public.example",
+            )
+        self.assertEqual(response.status_code, 200)
+
+        with patch.object(self.module, "process_oauth_webhook_entry") as oauth_handler:
+            self.module.process_due_oauth_webhook_work()
+            self.module.process_due_oauth_webhook_work()
+
+        oauth_handler.assert_called_once()
+        route = oauth_handler.call_args.args[1]
+        with self.session_factory() as session:
+            account = session.scalar(select(InstagramAccount).where(
+                InstagramAccount.instagram_user_id == "17841438617458902"
+            ))
+            work = session.scalar(select(InstagramOAuthWebhookWorkItem))
+        self.assertEqual(route.instagram_account_id, account.id)
+        self.assertEqual(work.state, "completed")
 
     def test_webhook_prefers_configured_public_https_base_url(self):
         payload = {"entry": []}

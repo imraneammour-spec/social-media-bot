@@ -23,6 +23,7 @@ from werkzeug.utils import secure_filename
 from database.cli import register_database_commands
 from database.config import database_url_from_environment
 from database.account_runtime import (
+    InstagramAccountRoute,
     RuntimeAccountRouteUnavailableError,
     resolve_instagram_account_route,
 )
@@ -56,6 +57,13 @@ from database.oauth_followups import (
     oauth_followup_account_external_id,
     reap_expired_oauth_followup_leases,
     schedule_oauth_followup,
+)
+from database.oauth_webhook_ingress import (
+    claim_due_oauth_webhook_work,
+    complete_oauth_webhook_work,
+    enqueue_oauth_webhook_work,
+    fail_oauth_webhook_work,
+    oauth_webhook_work_account_matches,
 )
 from database.tenant_automation import oauth_automation_runtime_config
 from auth import (
@@ -3679,6 +3687,57 @@ def _process_legacy_webhook_entry(entry, entry_external_id, public_base_url):
                 process_message_event(event)
 
 
+def persist_oauth_webhook_ingress(data, public_base_url):
+    """Queue normalized OAuth work before acknowledgement; legacy work stays untouched."""
+    session_factory = _oauth_session_factory()
+    entries = data.get("entry", []) if isinstance(data, dict) else []
+    if session_factory is None or not isinstance(entries, list):
+        return 0
+    persisted = 0
+    for entry in entries:
+        entry_external_id = _webhook_entry_external_id(entry)
+        if entry_external_id is None:
+            continue
+        try:
+            route = _resolve_webhook_entry_route(entry_external_id)
+        except Exception:
+            # Preserve the existing fail-closed route behavior: an unknown or
+            # currently unavailable account is not allowed into a legacy path.
+            continue
+        if route.connection_mode != "oauth":
+            continue
+        changes = entry.get("changes", []) if isinstance(entry, dict) else []
+        messaging_events = entry.get("messaging", []) if isinstance(entry, dict) else []
+        with session_factory.begin() as db_session:
+            if isinstance(changes, list):
+                for change in changes:
+                    if not isinstance(change, dict) or change.get("field") != "comments":
+                        continue
+                    if enqueue_oauth_webhook_work(
+                        db_session,
+                        instagram_account_id=route.instagram_account_id,
+                        instagram_user_id=entry_external_id,
+                        event_type="comment",
+                        value=change.get("value"),
+                        public_base_url=public_base_url,
+                    ):
+                        persisted += 1
+            if isinstance(messaging_events, list):
+                for event in messaging_events:
+                    if not _messaging_event_matches_entry(event, entry_external_id):
+                        continue
+                    if enqueue_oauth_webhook_work(
+                        db_session,
+                        instagram_account_id=route.instagram_account_id,
+                        instagram_user_id=entry_external_id,
+                        event_type="message",
+                        value=event,
+                        public_base_url=public_base_url,
+                    ):
+                        persisted += 1
+    return persisted
+
+
 def _oauth_session_factory():
     """Return the configured database factory without a legacy fallback."""
     auth_state = app.extensions.get("phase3a_auth")
@@ -3989,9 +4048,72 @@ def process_oauth_webhook_entry(entry, route, entry_external_id, public_base_url
                 _process_oauth_message(event, route, entry_external_id, session_factory)
 
 
+def _oauth_webhook_entry_from_work(work):
+    if work.event_type == "comment":
+        return {
+            "id": work.instagram_user_id,
+            "changes": [{"field": "comments", "value": work.payload}],
+        }
+    if work.event_type == "message":
+        return {"id": work.instagram_user_id, "messaging": [work.payload]}
+    return None
+
+
+def process_due_oauth_webhook_work(now=None):
+    """Consume durable ingress without replaying terminal or ambiguous work."""
+    session_factory = _oauth_session_factory()
+    if session_factory is None:
+        return
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    try:
+        with session_factory.begin() as db_session:
+            claimed_work = claim_due_oauth_webhook_work(db_session, now=current)
+    except Exception:
+        print("OAUTH INGRESS: work claim unavailable.")
+        return
+
+    for work in claimed_work:
+        try:
+            with session_factory() as db_session:
+                account_matches = oauth_webhook_work_account_matches(
+                    db_session,
+                    instagram_account_id=work.instagram_account_id,
+                    instagram_user_id=work.instagram_user_id,
+                )
+            entry = _oauth_webhook_entry_from_work(work)
+            if not account_matches or entry is None:
+                raise RuntimeError("OAuth ingress account binding unavailable")
+            route = InstagramAccountRoute(work.instagram_account_id, "oauth")
+            process_oauth_webhook_entry(
+                entry, route, work.instagram_user_id, work.public_base_url
+            )
+        except Exception:
+            try:
+                with session_factory.begin() as db_session:
+                    fail_oauth_webhook_work(
+                        db_session, work.id, work.lease_token, now=current
+                    )
+            except Exception:
+                pass
+            print("OAUTH INGRESS: work processing unavailable.")
+            continue
+        try:
+            with session_factory.begin() as db_session:
+                complete_oauth_webhook_work(
+                    db_session, work.id, work.lease_token, now=current
+                )
+        except Exception:
+            print("OAUTH INGRESS: work completion unavailable.")
+
+
 def process_webhook_background(
     data,
-    public_base_url
+    public_base_url,
+    *,
+    process_oauth=True,
+    process_durable_oauth=True,
 ):
     """Dispatch each signed entry independently, with no cross-tenant fallback."""
 
@@ -4012,6 +4134,8 @@ def process_webhook_background(
 
         if route.connection_mode == "oauth":
             print("WEBHOOK ROUTING: oauth_route_selected=True")
+            if not process_oauth:
+                continue
             try:
                 process_oauth_webhook_entry(entry, route, entry_external_id, public_base_url)
             except Exception:
@@ -4021,6 +4145,8 @@ def process_webhook_background(
             _process_legacy_webhook_entry(entry, entry_external_id, public_base_url)
         except Exception:
             print("WEBHOOK ROUTING: entry skipped (legacy processing failed).")
+    if not process_oauth and process_durable_oauth:
+        process_due_oauth_webhook_work()
 
 
 def _configured_public_base_url() -> str | None:
@@ -4089,6 +4215,13 @@ def receive_webhook():
 
     public_base_url = _public_webhook_base_url()
 
+    try:
+        oauth_work_persisted = persist_oauth_webhook_ingress(data, public_base_url)
+    except Exception:
+        # Meta must redeliver if a routed OAuth event could not be made durable.
+        print("OAUTH INGRESS: persistence unavailable.")
+        return "Webhook ingress is temporarily unavailable.", 503
+
     worker = threading.Thread(
 
         target=
@@ -4098,6 +4231,11 @@ def receive_webhook():
             data,
             public_base_url
         ),
+
+        kwargs={
+            "process_oauth": False,
+            "process_durable_oauth": oauth_work_persisted > 0,
+        },
 
         daemon=True
     )
@@ -6936,6 +7074,7 @@ def dashboard_scheduler_loop():
             process_daily_auto_story()
             process_due_scheduled_stories()
             process_due_followups()
+            process_due_oauth_webhook_work()
             process_due_oauth_followups()
         except Exception as error:
             print("DASHBOARD SCHEDULER ERROR:", error)
