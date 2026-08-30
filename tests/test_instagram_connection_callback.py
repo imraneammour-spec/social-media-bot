@@ -195,34 +195,46 @@ class InstagramConnectionCallbackTest(unittest.TestCase):
             self.assertEqual(session.scalars(select(InstagramAccount)).all(), [])
             self.assertEqual(session.scalars(select(InstagramCredential)).all(), [])
 
-    def test_post_discovery_precommit_failure_logs_only_its_finite_stage(self):
-        """A precommit failure must not be mistaken for OAuth exchange or discovery failure."""
-        client = self._client_with_state()
-        with patch.dict("os.environ", self.environment, clear=False), patch(
-            "auth.complete_instagram_token_exchange", return_value=self._token_result()
-        ), patch("auth.discover_instagram_account", return_value=self._discovery()), patch(
-            "auth.complete_discovered_instagram_connection",
-            side_effect=InstagramConnectionError("connection-private-detail-must-not-leak"),
-        ), patch.object(self.app.logger, "warning") as warning:
-            response = client.get(
-                "/connect/instagram/callback",
-                query_string={"state": "connection-callback-state", "code": self.authorization_code},
-            )
-
-        self.assertEqual(response.status_code, 502)
-        self.assertEqual(response.get_data(as_text=True), "Instagram connection could not be completed.")
-        warning.assert_called_once_with(OAUTH_CALLBACK_STAGE_CONNECTION_PRECOMMIT_FAILED)
-        logged = " ".join(str(argument) for call in warning.call_args_list for argument in call.args)
-        for sensitive_value in (
-            self.authorization_code,
-            self.long_lived_token,
-            self.external_id,
-            "connection-private-detail-must-not-leak",
+    def test_post_discovery_precommit_failure_logs_only_its_safe_persistence_stage(self):
+        """Removing the finite stage from callback diagnostics must fail this contract."""
+        for stage in (
+            "stage_inputs",
+            "credential_stage",
+            "subscription_record",
+            "final_transaction",
         ):
-            self.assertNotIn(sensitive_value, logged)
-        with self.Session() as session:
-            self.assertEqual(session.scalars(select(InstagramAccount)).all(), [])
-            self.assertEqual(session.scalars(select(InstagramCredential)).all(), [])
+            with self.subTest(stage=stage):
+                client = self._client_with_state()
+                failure = InstagramConnectionError("connection-private-detail-must-not-leak")
+                failure.diagnostic_stage = stage
+                with patch.dict("os.environ", self.environment, clear=False), patch(
+                    "auth.complete_instagram_token_exchange", return_value=self._token_result()
+                ), patch("auth.discover_instagram_account", return_value=self._discovery()), patch(
+                    "auth.complete_discovered_instagram_connection",
+                    side_effect=failure,
+                ), patch.object(self.app.logger, "warning") as warning:
+                    response = client.get(
+                        "/connect/instagram/callback",
+                        query_string={"state": "connection-callback-state", "code": self.authorization_code},
+                    )
+
+                self.assertEqual(response.status_code, 502)
+                self.assertEqual(response.get_data(as_text=True), "Instagram connection could not be completed.")
+                warning.assert_called_once_with(
+                    f"{OAUTH_CALLBACK_STAGE_CONNECTION_PRECOMMIT_FAILED} stage={stage}"
+                )
+                logged = " ".join(str(argument) for call in warning.call_args_list for argument in call.args)
+                for sensitive_value in (
+                    self.authorization_code,
+                    self.long_lived_token,
+                    self.external_id,
+                    "connected_callback_account",
+                    "connection-private-detail-must-not-leak",
+                ):
+                    self.assertNotIn(sensitive_value, logged)
+                with self.Session() as session:
+                    self.assertEqual(session.scalars(select(InstagramAccount)).all(), [])
+                    self.assertEqual(session.scalars(select(InstagramCredential)).all(), [])
 
     def test_no_account_onboarding_has_a_csrf_protected_connect_form_without_identifiers(self):
         client = self._client_with_state()

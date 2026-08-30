@@ -24,6 +24,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from database.credentials import CredentialConfigurationError, credential_keyring_from_environment
 from database.instagram_connection import (
     InstagramConnectionError,
+    connection_diagnostic_stage,
     complete_discovered_instagram_connection,
     disconnect_owned_instagram_connection,
 )
@@ -493,8 +494,11 @@ def register_auth_routes(app) -> None:
         except OAuthDiscoveryError as error:
             current_app.logger.warning(error.diagnostic_stage)
             return "Instagram connection could not be completed.", 502
-        except InstagramConnectionError:
-            current_app.logger.warning(OAUTH_CALLBACK_STAGE_CONNECTION_PRECOMMIT_FAILED)
+        except InstagramConnectionError as error:
+            current_app.logger.warning(
+                f"{OAUTH_CALLBACK_STAGE_CONNECTION_PRECOMMIT_FAILED} "
+                f"stage={connection_diagnostic_stage(error)}"
+            )
             return "Instagram connection could not be completed.", 502
         return redirect(url_for("onboarding"))
 

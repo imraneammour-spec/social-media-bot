@@ -42,14 +42,39 @@ from .oauth_webhook_subscription import (
 
 
 INSTAGRAM_EXTERNAL_ID_PATTERN = re.compile(r"^[0-9]{1,64}$")
+PERSISTENCE_STAGE_INPUTS = "stage_inputs"
+PERSISTENCE_STAGE_CREDENTIAL = "credential_stage"
+PERSISTENCE_STAGE_SUBSCRIPTION = "subscription_record"
+PERSISTENCE_STAGE_FINAL = "final_transaction"
+_PERSISTENCE_DIAGNOSTIC_STAGES = frozenset((
+    PERSISTENCE_STAGE_INPUTS,
+    PERSISTENCE_STAGE_CREDENTIAL,
+    PERSISTENCE_STAGE_SUBSCRIPTION,
+    PERSISTENCE_STAGE_FINAL,
+))
 
 
 class InstagramConnectionError(ValueError):
     """Raised without account, token, provider, or database details."""
 
 
-def _connection_error() -> InstagramConnectionError:
-    return InstagramConnectionError("Instagram connection could not be completed.")
+def _connection_error(
+    diagnostic_stage: str = PERSISTENCE_STAGE_FINAL,
+) -> InstagramConnectionError:
+    error = InstagramConnectionError("Instagram connection could not be completed.")
+    error.diagnostic_stage = (
+        diagnostic_stage
+        if diagnostic_stage in _PERSISTENCE_DIAGNOSTIC_STAGES
+        else PERSISTENCE_STAGE_FINAL
+    )
+    return error
+
+
+def connection_diagnostic_stage(error: InstagramConnectionError) -> str:
+    """Return only one approved, non-secret persistence diagnostic stage."""
+
+    stage = getattr(error, "diagnostic_stage", None)
+    return stage if stage in _PERSISTENCE_DIAGNOSTIC_STAGES else PERSISTENCE_STAGE_FINAL
 
 
 def _normalized_user_id(value: object) -> uuid.UUID:
@@ -493,29 +518,45 @@ def complete_discovered_instagram_connection(
     """
 
     try:
-        normalized_user_id, instagram_user_id, username, token, expiry, scopes, current_time = (
-            _validated_connection_inputs(
-                user_id=user_id,
-                legacy_instagram_user_id=legacy_instagram_user_id,
-                discovery=discovery,
-                token_result=token_result,
-                now=now,
+        try:
+            normalized_user_id, instagram_user_id, username, token, expiry, scopes, current_time = (
+                _validated_connection_inputs(
+                    user_id=user_id,
+                    legacy_instagram_user_id=legacy_instagram_user_id,
+                    discovery=discovery,
+                    token_result=token_result,
+                    now=now,
+                )
             )
-        )
+        except (InstagramConnectionError, AttributeError, TypeError, ValueError):
+            raise _connection_error(PERSISTENCE_STAGE_INPUTS) from None
+
         try:
             with session_factory.begin() as db_session:
-                account = _stage_discovered_connection(
-                    db_session,
-                    user_id=normalized_user_id,
-                    instagram_user_id=instagram_user_id,
-                    username=username,
-                    access_token=token,
-                    expiry=expiry,
-                    scopes=scopes,
-                    keyring=keyring,
-                    current_time=current_time,
-                    connection_status=OAUTH_SUBSCRIPTION_PENDING_STATUS,
-                )
+                try:
+                    account = _stage_discovered_connection(
+                        db_session,
+                        user_id=normalized_user_id,
+                        instagram_user_id=instagram_user_id,
+                        username=username,
+                        access_token=token,
+                        expiry=expiry,
+                        scopes=scopes,
+                        keyring=keyring,
+                        current_time=current_time,
+                        connection_status=OAUTH_SUBSCRIPTION_PENDING_STATUS,
+                    )
+                except (
+                    InstagramConnectionError,
+                    CredentialConfigurationError,
+                    CredentialEncryptionError,
+                    CredentialPersistenceError,
+                    SQLAlchemyError,
+                    AttributeError,
+                    TypeError,
+                    ValueError,
+                ):
+                    raise _connection_error(PERSISTENCE_STAGE_CREDENTIAL) from None
                 if not subscribe_oauth_account_webhooks(
                     db_session,
                     instagram_account_id=account.id,
@@ -539,15 +580,18 @@ def complete_discovered_instagram_connection(
                 db_session.flush()
                 return account
         except OAuthWebhookSubscriptionError as subscription_error:
-            _record_subscription_failure(
-                session_factory,
-                user_id=normalized_user_id,
-                instagram_user_id=instagram_user_id,
-                username=username,
-                current_time=current_time,
-                failure_code=subscription_error.failure_code,
-            )
-            raise _connection_error() from None
+            try:
+                _record_subscription_failure(
+                    session_factory,
+                    user_id=normalized_user_id,
+                    instagram_user_id=instagram_user_id,
+                    username=username,
+                    current_time=current_time,
+                    failure_code=subscription_error.failure_code,
+                )
+            except (InstagramConnectionError, SQLAlchemyError, AttributeError, TypeError, ValueError):
+                raise _connection_error(PERSISTENCE_STAGE_SUBSCRIPTION) from None
+            raise _connection_error(PERSISTENCE_STAGE_SUBSCRIPTION) from None
     except InstagramConnectionError:
         raise
     except (

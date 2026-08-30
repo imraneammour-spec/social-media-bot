@@ -11,7 +11,11 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.orm.session import SessionTransaction
 
-from database.credentials import credential_keyring_from_environment, load_decrypted_access_token
+from database.credentials import (
+    CredentialEncryptionError,
+    credential_keyring_from_environment,
+    load_decrypted_access_token,
+)
 from database.instagram_connection import (
     InstagramConnectionError,
     complete_discovered_instagram_connection,
@@ -416,6 +420,7 @@ class InstagramConnectionPersistenceTest(unittest.TestCase):
                 self._complete()
 
         self.assertEqual(str(raised.exception), "Instagram connection could not be completed.")
+        self.assertEqual(raised.exception.diagnostic_stage, "subscription_record")
         with self.Session() as session:
             account = session.get(InstagramAccount, original.id)
             credential = session.scalar(select(InstagramCredential).where(
@@ -430,6 +435,40 @@ class InstagramConnectionPersistenceTest(unittest.TestCase):
             self.assertNotIn(self.token, credential.token_ciphertext)
             self.assertEqual(load_decrypted_access_token(session, account, self.keyring),
                              "long-lived-token-must-never-persist-in-plaintext")
+
+    def test_complete_classifies_invalid_inputs_as_stage_inputs(self):
+        """Collapsing input validation into another stage must fail this diagnostic boundary."""
+        with self.assertRaises(InstagramConnectionError) as raised:
+            self._complete(
+                discovery=InstagramAccountDiscovery(instagram_user_id="invalid", username=None),
+            )
+
+        self.assertEqual(raised.exception.diagnostic_stage, "stage_inputs")
+
+    def test_complete_classifies_credential_write_failure_as_credential_stage(self):
+        """A failed encrypted credential write must not be reported as another stage."""
+        with patch(
+            "database.instagram_connection.store_encrypted_credential",
+            side_effect=CredentialEncryptionError("private encryption detail"),
+        ):
+            with self.assertRaises(InstagramConnectionError) as raised:
+                self._complete()
+
+        self.assertEqual(raised.exception.diagnostic_stage, "credential_stage")
+
+    def test_complete_classifies_finalization_failure_as_final_transaction(self):
+        """A post-subscription config failure must retain a distinct safe stage."""
+        with patch(
+            "database.instagram_connection.subscribe_oauth_account_webhooks",
+            return_value=True,
+        ), patch(
+            "database.instagram_connection.ensure_initial_oauth_automation_config",
+            side_effect=SQLAlchemyError("private database detail"),
+        ):
+            with self.assertRaises(InstagramConnectionError) as raised:
+                self._complete()
+
+        self.assertEqual(raised.exception.diagnostic_stage, "final_transaction")
 
     def test_reconnect_readiness_uses_only_the_scopes_meta_granted(self):
         """Replacing a credential with a denied scope must return to reconnect-required."""
