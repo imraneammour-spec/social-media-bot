@@ -1,0 +1,61 @@
+{% extends "app_base.html" %}
+{% block title %}Analytics{% endblock %}
+{% block heading %}Analytics{% endblock %}
+{% block content %}
+<p class="muted">Operational analytics for the selected account, derived from persisted data.</p>
+<form method="get" action="{{ url_for('tenant_dashboard.app_analytics') }}" class="card activity-filters" aria-label="Analytics time range">
+    <input type="hidden" name="account" value="{{ selected_account.selection_ref }}">
+    <label>Time range
+        <select name="range">
+            {% for value, label in range_filters %}<option value="{{ value }}" {% if selected_range == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+        </select>
+    </label>
+    <button type="submit">Apply range</button>
+</form>
+
+<section class="summary-grid" aria-label="Key metrics">
+    <dl class="summary-card card"><dt>Comments handled</dt><dd>{{ analytics.metrics.comments_handled }}</dd></dl>
+    <dl class="summary-card card"><dt>Messages handled</dt><dd>{{ analytics.metrics.messages_handled }}</dd></dl>
+    <dl class="summary-card card"><dt>Prompt requests</dt><dd>{{ analytics.metrics.prompt_requests }}</dd></dl>
+    <dl class="summary-card card"><dt>Smart replies sent</dt><dd>{{ analytics.metrics.smart_replies_sent }}</dd></dl>
+    <dl class="summary-card card"><dt>Follow-ups scheduled</dt><dd>{{ analytics.metrics.followups_scheduled }}</dd></dl>
+</section>
+
+<section class="summary-grid" aria-label="Delivery metrics">
+    <dl class="summary-card card"><dt>Follow-ups sent</dt><dd>{{ analytics.metrics.followups_sent }}</dd></dl>
+    <dl class="summary-card card"><dt>Follow-ups failed</dt><dd>{{ analytics.metrics.followups_failed }}</dd></dl>
+    <dl class="summary-card card"><dt>Prompt-enabled content</dt><dd>{{ analytics.metrics.prompt_enabled_content }}</dd></dl>
+    <dl class="summary-card card"><dt>Failed events</dt><dd>{{ analytics.metrics.failed_events }}</dd></dl>
+    <dl class="summary-card card"><dt>Completed events</dt><dd>{{ analytics.metrics.completed_events }}</dd></dl>
+</section>
+
+<section class="card detail-card">
+    <h2>Follow-up delivery</h2>
+    <p>Scheduled {{ analytics.followup_breakdown.scheduled }} &middot; Processing {{ analytics.followup_breakdown.processing }} &middot; Sent {{ analytics.followup_breakdown.sent }} &middot; Cancelled {{ analytics.followup_breakdown.cancelled }} &middot; Failed {{ analytics.followup_breakdown.failed }}</p>
+</section>
+
+<section class="card detail-card">
+    <h2>Engagement reliability</h2>
+    <p>Completed {{ analytics.engagement_breakdown.done }} &middot; Processing {{ analytics.engagement_breakdown.processing }} &middot; Failed {{ analytics.engagement_breakdown.failed }}</p>
+    {% if analytics.metrics.total_events > 0 %}
+    <p class="muted">Failure rate: {{ "%.1f" | format((analytics.metrics.failed_events / analytics.metrics.total_events) * 100) }}%</p>
+    {% else %}
+    <p class="muted">No engagement events in this range.</p>
+    {% endif %}
+</section>
+
+<section class="card detail-card">
+    <h2>Lead activity</h2>
+    <p>Total {{ analytics.metrics.leads_total }} &middot; Active {{ analytics.metrics.leads_active }} &middot; Archived {{ analytics.metrics.leads_archived }}</p>
+    <p class="muted">New {{ analytics.lead_breakdown.new }} &middot; Contacted {{ analytics.lead_breakdown.contacted }} &middot; Qualified {{ analytics.lead_breakdown.qualified }} &middot; Won {{ analytics.lead_breakdown.won }} &middot; Lost {{ analytics.lead_breakdown.lost }}</p>
+</section>
+
+{% if analytics.recent_failures %}
+<section class="card detail-card">
+    <h2>Recent failures</h2>
+    {% for failure in analytics.recent_failures %}
+    <p>{{ failure.type }} &middot; {{ failure.state }} &middot; {{ failure.occurred_at }}</p>
+    {% endfor %}
+</section>
+{% endif %}
+{% endblock %}

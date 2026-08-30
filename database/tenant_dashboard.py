@@ -9,7 +9,7 @@ import ipaddress
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
 from sqlalchemy import func, select
@@ -897,4 +897,541 @@ def content(
         page=selected_page,
         has_previous=selected_page > 1,
         has_next=has_next,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 5D — Scheduler view models
+# ---------------------------------------------------------------------------
+
+SCHEDULER_STATUS_FILTERS = (
+    "all",
+    "upcoming",
+    "completed",
+    "failed",
+    "cancelled",
+)
+SCHEDULER_STATUS_FILTER_LABELS = (
+    ("all", "All"),
+    ("upcoming", "Upcoming"),
+    ("completed", "Completed"),
+    ("failed", "Failed"),
+    ("cancelled", "Cancelled"),
+)
+SCHEDULER_JOB_TYPE_FILTERS = ("all", "followups")
+SCHEDULER_JOB_TYPE_FILTER_LABELS = (
+    ("all", "All job types"),
+    ("followups", "Follow-ups"),
+)
+SCHEDULER_PER_PAGE = 25
+MAX_SCHEDULER_PAGE = 1000
+
+FOLLOWUP_STATE_LABELS = {
+    "pending": "Scheduled",
+    "processing": "Processing",
+    "sent": "Sent",
+    "cancelled": "Cancelled",
+    "failed": "Failed",
+}
+FOLLOWUP_STATUS_FILTER_MAP = {
+    "all": None,
+    "upcoming": ("pending", "processing"),
+    "completed": ("sent",),
+    "failed": ("failed",),
+    "cancelled": ("cancelled",),
+}
+
+
+def scheduler_status_filter(value: object = None) -> str:
+    """Normalize the finite Scheduler status filter."""
+
+    normalized = str(value or "all").strip().lower()
+    return normalized if normalized in SCHEDULER_STATUS_FILTERS else "all"
+
+
+def scheduler_job_type_filter(value: object = None) -> str:
+    """Normalize the finite Scheduler job-type filter."""
+
+    normalized = str(value or "all").strip().lower()
+    return normalized if normalized in SCHEDULER_JOB_TYPE_FILTERS else "all"
+
+
+def _scheduler_page(value: object) -> int:
+    try:
+        page = int(str(value or "1").strip())
+    except (TypeError, ValueError):
+        page = 1
+    return min(max(page, 1), MAX_SCHEDULER_PAGE)
+
+
+@dataclass(frozen=True)
+class TenantSchedulerPage:
+    """A bounded, account-scoped page of sanitized scheduled-job records."""
+
+    jobs: list[dict[str, object]]
+    page: int
+    has_previous: bool
+    has_next: bool
+
+
+def _followup_status_filter_clause(status_filter: str):
+    """Return a SQLAlchemy filter clause for follow-up states, or None."""
+
+    states = FOLLOWUP_STATUS_FILTER_MAP.get(status_filter)
+    if states is None:
+        return None
+    return InstagramOAuthFollowupJob.state.in_(states)
+
+
+def scheduler_jobs(
+    session: Session,
+    *,
+    instagram_account_id: uuid.UUID,
+    status_filter: object = None,
+    job_type_filter: object = None,
+    page: object = None,
+) -> TenantSchedulerPage:
+    """Return sanitized scheduled-job records for exactly one owned account.
+
+    The backend currently persists only ``InstagramOAuthFollowupJob`` records as
+    scheduled work — there is no Instagram post, story, or content publishing
+    scheduler.  Scheduler V1 therefore honestly presents follow-up jobs only.
+    """
+
+    selected_status = scheduler_status_filter(status_filter)
+    selected_job_type = scheduler_job_type_filter(job_type_filter)
+    selected_page = _scheduler_page(page)
+    limit = SCHEDULER_PER_PAGE
+    offset = (selected_page - 1) * limit
+
+    jobs: list[dict[str, object]] = []
+
+    if selected_job_type in {"all", "followups"}:
+        query = select(InstagramOAuthFollowupJob).where(
+            InstagramOAuthFollowupJob.instagram_account_id == instagram_account_id
+        )
+        state_clause = _followup_status_filter_clause(selected_status)
+        if state_clause is not None:
+            query = query.where(state_clause)
+        query = query.order_by(
+            InstagramOAuthFollowupJob.run_at.desc(),
+            InstagramOAuthFollowupJob.id.desc(),
+        ).limit(limit + 1).offset(offset)
+
+        for job in session.scalars(query):
+            state_key = str(job.state or "").strip().lower()
+            status_label = FOLLOWUP_STATE_LABELS.get(state_key, "Unknown")
+            completed_ts = job.sent_at or job.cancelled_at or job.failed_at
+            jobs.append({
+                "_job_id": job.id,
+                "job_type": "Follow-up",
+                "status": status_label,
+                "status_key": state_key,
+                "scheduled_at": _timestamp(job.run_at),
+                "created_at": _timestamp(job.created_at),
+                "completed_at": _timestamp(completed_ts),
+                "source_context": "Automated follow-up",
+            })
+
+    jobs.sort(key=lambda record: str(record.get("scheduled_at") or ""), reverse=True)
+    has_next = len(jobs) > limit
+    jobs = jobs[:limit]
+    return TenantSchedulerPage(
+        jobs=jobs,
+        page=selected_page,
+        has_previous=selected_page > 1,
+        has_next=has_next,
+    )
+
+
+def cancel_scheduler_followup(
+    session: Session,
+    *,
+    instagram_account_id: uuid.UUID,
+    reference: object,
+    secret_key: object,
+    user_id: object,
+    now: int | None = None,
+) -> bool:
+    """Cancel a pending follow-up job identified by an opaque action reference.
+
+    The reference is purpose-bound and account-scoped via HMAC.  Only jobs in the
+    ``pending`` state within the selected account can be cancelled.
+    """
+
+    job_id = _resolve_scheduler_job_reference(
+        session,
+        instagram_account_id=instagram_account_id,
+        reference=reference,
+        secret_key=secret_key,
+        user_id=user_id,
+        now=now,
+    )
+    if job_id is None:
+        return False
+    job = session.scalar(
+        select(InstagramOAuthFollowupJob)
+        .where(
+            InstagramOAuthFollowupJob.id == job_id,
+            InstagramOAuthFollowupJob.instagram_account_id == instagram_account_id,
+            InstagramOAuthFollowupJob.state == "pending",
+        )
+        .with_for_update()
+    )
+    if job is None:
+        return False
+    job.state = "cancelled"
+    job.cancelled_at = datetime.now(timezone.utc)
+    job.lease_token = None
+    job.lease_expires_at = None
+    return True
+
+
+SCHEDULER_CANCEL_REFERENCE_VERSION = "v1"
+SCHEDULER_CANCEL_REFERENCE_TTL_SECONDS = 900
+SCHEDULER_CANCEL_PURPOSE = "scheduler-cancel"
+
+
+def _scheduler_cancel_payload(
+    user_id: object,
+    instagram_account_id: object,
+    job_id: object,
+    expires_at: int,
+) -> str:
+    return (
+        f"{SCHEDULER_CANCEL_REFERENCE_VERSION}|{SCHEDULER_CANCEL_PURPOSE}|{user_id}|"
+        f"{instagram_account_id}|{job_id}|{expires_at}"
+    )
+
+
+def scheduler_cancel_reference_for_job(
+    user_id: object,
+    instagram_account_id: object,
+    job_id: object,
+    *,
+    secret_key: object,
+    now: int | None = None,
+) -> str:
+    """Create a non-revealing, purpose-bound cancel reference for one job."""
+
+    current = int(time.time() if now is None else now)
+    expires_at = current + SCHEDULER_CANCEL_REFERENCE_TTL_SECONDS
+    payload = _scheduler_cancel_payload(
+        user_id, instagram_account_id, job_id, expires_at
+    )
+    signature = hmac.new(
+        str(secret_key).encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+    ).digest()
+    encoded = base64.urlsafe_b64encode(signature).rstrip(b"=").decode("ascii")
+    return f"{SCHEDULER_CANCEL_REFERENCE_VERSION}.{expires_at}.{encoded}"
+
+
+def _resolve_scheduler_job_reference(
+    session: Session,
+    *,
+    instagram_account_id: uuid.UUID,
+    reference: object,
+    secret_key: object,
+    user_id: object,
+    now: int | None = None,
+) -> uuid.UUID | None:
+    """Resolve a cancel reference to a job ID within the selected account."""
+
+    if not isinstance(reference, str):
+        return None
+    parts = reference.split(".")
+    if len(parts) != 3 or parts[0] != SCHEDULER_CANCEL_REFERENCE_VERSION or not parts[1].isdigit():
+        return None
+    current = int(time.time() if now is None else now)
+    expires_at = int(parts[1])
+    if expires_at < current or expires_at > current + SCHEDULER_CANCEL_REFERENCE_TTL_SECONDS:
+        return None
+    candidate_ids = session.scalars(
+        select(InstagramOAuthFollowupJob.id).where(
+            InstagramOAuthFollowupJob.instagram_account_id == instagram_account_id,
+            InstagramOAuthFollowupJob.state == "pending",
+        )
+    )
+    for job_id in candidate_ids:
+        expected = scheduler_cancel_reference_for_job(
+            user_id,
+            instagram_account_id,
+            job_id,
+            secret_key=secret_key,
+            now=expires_at - SCHEDULER_CANCEL_REFERENCE_TTL_SECONDS,
+        )
+        if hmac.compare_digest(expected, reference):
+            return job_id
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Phase 5D — Analytics view models
+# ---------------------------------------------------------------------------
+
+ANALYTICS_RANGES = ("7d", "30d", "all")
+ANALYTICS_RANGE_LABELS = (
+    ("7d", "Last 7 days"),
+    ("30d", "Last 30 days"),
+    ("all", "All time"),
+)
+DEFAULT_ANALYTICS_RANGE = "30d"
+
+
+def analytics_range_filter(value: object = None) -> str:
+    """Normalize the finite Analytics time-range filter."""
+
+    normalized = str(value or DEFAULT_ANALYTICS_RANGE).strip().lower()
+    return normalized if normalized in ANALYTICS_RANGES else DEFAULT_ANALYTICS_RANGE
+
+
+def _analytics_since(range_key: str, now: datetime | None = None) -> datetime | None:
+    """Return the UTC cutoff timestamp for the given range, or None for all-time."""
+
+    if range_key == "all":
+        return None
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    days = 7 if range_key == "7d" else 30
+    return current - timedelta(days=days)
+
+
+@dataclass(frozen=True)
+class TenantAnalytics:
+    """Account-scoped analytics derived entirely from persisted data."""
+
+    range_key: str
+    metrics: dict[str, int]
+    followup_breakdown: dict[str, int]
+    lead_breakdown: dict[str, int]
+    engagement_breakdown: dict[str, int]
+    recent_failures: list[dict[str, str]]
+
+
+def analytics(
+    session: Session,
+    *,
+    instagram_account_id: uuid.UUID,
+    range_key: str,
+    now: datetime | None = None,
+) -> TenantAnalytics:
+    """Return account-scoped analytics from persisted operational data only.
+
+    No external Meta Insights API is used.  All metrics are derived from
+    tables already scoped by ``instagram_account_id``.
+    """
+
+    selected_range = analytics_range_filter(range_key)
+    since = _analytics_since(selected_range, now)
+
+    def _account_filter(model):
+        clause = model.instagram_account_id == instagram_account_id
+        if since is not None and hasattr(model, "created_at"):
+            clause = clause & (model.created_at >= since)
+        return clause
+
+    # --- Core metrics ---
+    prompt_requests = int(
+        session.scalar(
+            select(func.count())
+            .select_from(InstagramPromptRequest)
+            .where(_account_filter(InstagramPromptRequest))
+        )
+        or 0
+    )
+
+    smart_replies = int(
+        session.scalar(
+            select(func.count())
+            .select_from(InstagramSmartReplyActivity)
+            .where(_account_filter(InstagramSmartReplyActivity))
+        )
+        or 0
+    )
+
+    engagement_events = int(
+        session.scalar(
+            select(func.count())
+            .select_from(InstagramEngagementEvent)
+            .where(_account_filter(InstagramEngagementEvent))
+        )
+        or 0
+    )
+
+    comments_handled = int(
+        session.scalar(
+            select(func.count())
+            .select_from(InstagramEngagementEvent)
+            .where(
+                _account_filter(InstagramEngagementEvent),
+                InstagramEngagementEvent.event_type == "comment",
+            )
+        )
+        or 0
+    )
+
+    messages_handled = int(
+        session.scalar(
+            select(func.count())
+            .select_from(InstagramEngagementEvent)
+            .where(
+                _account_filter(InstagramEngagementEvent),
+                InstagramEngagementEvent.event_type == "message",
+            )
+        )
+        or 0
+    )
+
+    failed_events = int(
+        session.scalar(
+            select(func.count())
+            .select_from(InstagramEngagementEvent)
+            .where(
+                _account_filter(InstagramEngagementEvent),
+                InstagramEngagementEvent.state == "failed",
+            )
+        )
+        or 0
+    )
+
+    followup_query = select(InstagramOAuthFollowupJob).where(
+        InstagramOAuthFollowupJob.instagram_account_id == instagram_account_id
+    )
+    if since is not None:
+        followup_query = followup_query.where(
+            InstagramOAuthFollowupJob.created_at >= since
+        )
+
+    followup_states = {"scheduled": 0, "processing": 0, "sent": 0, "cancelled": 0, "failed": 0}
+    state_map = {
+        "pending": "scheduled",
+        "processing": "processing",
+        "sent": "sent",
+        "cancelled": "cancelled",
+        "failed": "failed",
+    }
+    for job in session.scalars(followup_query):
+        label = state_map.get(str(job.state or "").strip().lower(), "scheduled")
+        followup_states[label] += 1
+
+    prompt_post_count = int(
+        session.scalar(
+            select(func.count())
+            .select_from(InstagramPromptPost)
+            .where(_account_filter(InstagramPromptPost))
+        )
+        or 0
+    )
+
+    prompt_enabled_count = 0
+    for post in session.scalars(
+        select(InstagramPromptPost.prompts)
+        .where(_account_filter(InstagramPromptPost))
+    ):
+        if isinstance(post, list) and len(post) > 0:
+            prompt_enabled_count += 1
+
+    lead_total = int(
+        session.scalar(
+            select(func.count())
+            .select_from(InstagramPromptRequest)
+            .where(_account_filter(InstagramPromptRequest))
+        )
+        or 0
+    )
+
+    active_leads = int(
+        session.scalar(
+            select(func.count())
+            .select_from(InstagramPromptRequest)
+            .where(
+                _account_filter(InstagramPromptRequest),
+                InstagramPromptRequest.lead_archived_at.is_(None),
+            )
+        )
+        or 0
+    )
+
+    archived_leads = int(
+        session.scalar(
+            select(func.count())
+            .select_from(InstagramPromptRequest)
+            .where(
+                _account_filter(InstagramPromptRequest),
+                InstagramPromptRequest.lead_archived_at.is_not(None),
+            )
+        )
+        or 0
+    )
+
+    # Lead stage distribution
+    lead_stages = {status: 0 for status in LEAD_STATUSES}
+    for status, total in session.execute(
+        select(InstagramPromptRequest.lead_status, func.count())
+        .where(
+            _account_filter(InstagramPromptRequest),
+            InstagramPromptRequest.lead_archived_at.is_(None),
+        )
+        .group_by(InstagramPromptRequest.lead_status)
+    ):
+        normalized = _lead_status(status)
+        if str(status or "").strip().lower() in LEAD_STATUSES:
+            lead_stages[normalized] = int(total)
+
+    # Engagement state breakdown
+    engagement_breakdown = {"done": 0, "processing": 0, "failed": 0}
+    for state, total in session.execute(
+        select(InstagramEngagementEvent.state, func.count())
+        .where(_account_filter(InstagramEngagementEvent))
+        .group_by(InstagramEngagementEvent.state)
+    ):
+        key = str(state or "").strip().lower()
+        if key in engagement_breakdown:
+            engagement_breakdown[key] = int(total)
+
+    completed_events = engagement_breakdown.get("done", 0)
+
+    # Recent failures (last 10)
+    recent_failures: list[dict[str, str]] = []
+    for event in session.scalars(
+        select(InstagramEngagementEvent)
+        .where(
+            _account_filter(InstagramEngagementEvent),
+            InstagramEngagementEvent.state == "failed",
+        )
+        .order_by(InstagramEngagementEvent.created_at.desc())
+        .limit(10)
+    ):
+        recent_failures.append({
+            "occurred_at": _timestamp(event.failed_at or event.created_at) or "",
+            "type": event.event_type or "engagement",
+            "state": "Failed",
+        })
+
+    metrics = {
+        "comments_handled": comments_handled,
+        "messages_handled": messages_handled,
+        "prompt_requests": prompt_requests,
+        "smart_replies_sent": smart_replies,
+        "followups_scheduled": followup_states["scheduled"] + followup_states["processing"],
+        "followups_sent": followup_states["sent"],
+        "followups_failed": followup_states["failed"],
+        "prompt_enabled_content": prompt_enabled_count,
+        "total_content": prompt_post_count,
+        "failed_events": failed_events,
+        "completed_events": completed_events,
+        "total_events": engagement_events,
+        "leads_total": lead_total,
+        "leads_active": active_leads,
+        "leads_archived": archived_leads,
+    }
+
+    return TenantAnalytics(
+        range_key=selected_range,
+        metrics=metrics,
+        followup_breakdown=followup_states,
+        lead_breakdown=lead_stages,
+        engagement_breakdown=engagement_breakdown,
+        recent_failures=recent_failures,
     )

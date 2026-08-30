@@ -1,0 +1,44 @@
+{% extends "app_base.html" %}
+{% block title %}Scheduler{% endblock %}
+{% block heading %}Scheduler{% endblock %}
+{% block content %}
+<p class="muted">Scheduled jobs and upcoming automation actions for the selected account.</p>
+<form method="get" action="{{ url_for('tenant_dashboard.app_scheduler') }}" class="card activity-filters" aria-label="Scheduler filters">
+    <input type="hidden" name="account" value="{{ selected_account.selection_ref }}">
+    <label>Status
+        <select name="status">
+            {% for value, label in status_filters %}<option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+        </select>
+    </label>
+    <label>Job type
+        <select name="job_type">
+            {% for value, label in job_type_filters %}<option value="{{ value }}" {% if selected_job_type == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+        </select>
+    </label>
+    <button type="submit">Apply filters</button>
+</form>
+<section class="page-stack" aria-label="Scheduled jobs">
+{% for job in jobs %}
+<article class="card lead-card">
+    <h2>{{ job.job_type }}</h2>
+    <p><span class="status-badge">{{ job.status }}</span></p>
+    <p class="muted">Scheduled: {{ job.scheduled_at or "N/A" }}</p>
+    {% if job.completed_at %}<p class="muted">Completed: {{ job.completed_at }}</p>{% endif %}
+    <p class="muted">Created: {{ job.created_at or "N/A" }}</p>
+    <p class="muted">{{ job.source_context }}</p>
+    {% if job.can_cancel and job.cancel_action %}
+    <form method="post" action="{{ url_for('tenant_dashboard.app_scheduler_cancel', account=selected_account.selection_ref, status=selected_status, job_type=selected_job_type) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="scheduler_action" value="{{ job.cancel_action }}">
+        <button type="submit">Cancel follow-up</button>
+    </form>
+    {% endif %}
+</article>
+{% else %}<p class="empty-state">No scheduled jobs yet. Follow-up jobs will appear here when automation is active.</p>{% endfor %}
+</section>
+<nav aria-label="Scheduler pagination">
+    {% if scheduler_page.has_previous %}<a href="{{ url_for('tenant_dashboard.app_scheduler', account=selected_account.selection_ref, status=selected_status, job_type=selected_job_type, page=scheduler_page.page - 1) }}">Previous</a>{% endif %}
+    <span>Page {{ scheduler_page.page }}</span>
+    {% if scheduler_page.has_next %}<a href="{{ url_for('tenant_dashboard.app_scheduler', account=selected_account.selection_ref, status=selected_status, job_type=selected_job_type, page=scheduler_page.page + 1) }}">Next</a>{% endif %}
+</nav>
+{% endblock %}

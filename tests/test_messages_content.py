@@ -489,13 +489,14 @@ class MessagesContentDashboardTest(unittest.TestCase):
         self.assertIn('href="/app/content', page)
         self.assertNotIn(">Content <small>Coming soon</small>", page)
 
-    def test_sidebar_coming_soon_reduced_to_two(self):
-        """19. Existing sidebar/account selection behavior remains unchanged."""
+    def test_sidebar_scheduler_and_analytics_are_enabled(self):
+        """19. Phase 5D replaces the remaining Scheduler/Analytics placeholders."""
         self._login_as(self.owner_a)
         page = self.client.get("/app").get_data(as_text=True)
-        self.assertEqual(page.count("Coming soon"), 2)
+        self.assertEqual(page.count("Coming soon"), 0)
         for label in ("Scheduler", "Analytics"):
-            self.assertIn(f">{label} <small>Coming soon</small>", page)
+            self.assertIn(f">{label}</a>", page)
+            self.assertNotIn(f">{label} <small>Coming soon</small>", page)
         # Existing nav links still present
         self.assertIn('href="/app/leads', page)
         self.assertIn('href="/app/automations', page)

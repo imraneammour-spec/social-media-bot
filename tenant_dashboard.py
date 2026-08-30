@@ -294,6 +294,15 @@ def _safe_automation_update_error():
     )
 
 
+def _safe_scheduler_action_error():
+    return (
+        _cache_control(
+            jsonify(error="Scheduled job is unavailable.")
+        ),
+        400,
+    )
+
+
 def _render_page(
     template_name,
     *,
@@ -319,6 +328,8 @@ def _render_page(
         "tenant_dashboard.app_automations": "automations",
         "tenant_dashboard.app_messages": "messages",
         "tenant_dashboard.app_content": "content",
+        "tenant_dashboard.app_scheduler": "scheduler",
+        "tenant_dashboard.app_analytics": "analytics",
     }
 
     selected_account = next(
@@ -397,6 +408,64 @@ def _query(
 
     except SQLAlchemyError:
         return _DATABASE_UNAVAILABLE
+
+
+def _scheduler_jobs_with_actions(user, selected, scheduler_page):
+    """Attach only opaque, selected-account cancel actions to Scheduler rows."""
+
+    rows = []
+    for job in scheduler_page.jobs:
+        row = dict(job)
+        job_id = row.pop("_job_id", None)
+        can_cancel = row.get("status_key") == "pending" and job_id is not None
+        row["can_cancel"] = can_cancel
+        row["cancel_action"] = (
+            tenant_data.scheduler_cancel_reference_for_job(
+                user.id,
+                selected.instagram_account_id,
+                job_id,
+                secret_key=current_app.secret_key,
+            )
+            if can_cancel
+            else None
+        )
+        rows.append(row)
+    return rows
+
+
+def _cancel_scheduler_job(user, selected):
+    session_factory = getattr(_auth_state(), "session_factory", None)
+    if session_factory is None:
+        return _workspace_unavailable()
+    try:
+        with session_factory.begin() as session:
+            cancelled = tenant_data.cancel_scheduler_followup(
+                session,
+                instagram_account_id=selected.instagram_account_id,
+                reference=request.form.get("scheduler_action"),
+                secret_key=current_app.secret_key,
+                user_id=user.id,
+            )
+    except SQLAlchemyError:
+        return _workspace_unavailable()
+    if not cancelled:
+        return _safe_account_unavailable()
+    return _cache_control(
+        redirect(
+            url_for(
+                "tenant_dashboard.app_scheduler",
+                account=action_reference_for_account(
+                    user.id,
+                    selected.instagram_account_id,
+                    ACCOUNT_REFERENCE_PURPOSE,
+                    secret_key=current_app.secret_key,
+                ),
+                status=tenant_data.scheduler_status_filter(request.args.get("status")),
+                job_type=tenant_data.scheduler_job_type_filter(request.args.get("job_type")),
+            ),
+            code=303,
+        )
+    )
 
 
 def _lead_filters():
@@ -853,6 +922,80 @@ def register_tenant_dashboard(app) -> None:
             selected_filter=selected_filter,
         )
 
+    @dashboard.get("/scheduler")
+    @_require_tenant
+    def app_scheduler(
+        user,
+        accounts,
+        selected,
+    ):
+        selected_status = tenant_data.scheduler_status_filter(
+            request.args.get("status")
+        )
+        selected_job_type = tenant_data.scheduler_job_type_filter(
+            request.args.get("job_type")
+        )
+        page = request.args.get("page")
+        scheduler_page = _query(
+            selected,
+            tenant_data.scheduler_jobs,
+            status_filter=selected_status,
+            job_type_filter=selected_job_type,
+            page=page,
+        )
+
+        if scheduler_page is _DATABASE_UNAVAILABLE:
+            return _workspace_unavailable()
+
+        return _render_page(
+            "app_scheduler.html",
+            user=user,
+            accounts=accounts,
+            selected=selected,
+            jobs=_scheduler_jobs_with_actions(user, selected, scheduler_page),
+            scheduler_page=scheduler_page,
+            status_filters=tenant_data.SCHEDULER_STATUS_FILTER_LABELS,
+            job_type_filters=tenant_data.SCHEDULER_JOB_TYPE_FILTER_LABELS,
+            selected_status=selected_status,
+            selected_job_type=selected_job_type,
+        )
+
+    @dashboard.get("/analytics")
+    @_require_tenant
+    def app_analytics(
+        user,
+        accounts,
+        selected,
+    ):
+        selected_range = tenant_data.analytics_range_filter(
+            request.args.get("range")
+        )
+        data = _query(
+            selected,
+            tenant_data.analytics,
+            range_key=selected_range,
+        )
+
+        if data is _DATABASE_UNAVAILABLE:
+            return _workspace_unavailable()
+
+        return _render_page(
+            "app_analytics.html",
+            user=user,
+            accounts=accounts,
+            selected=selected,
+            analytics=data,
+            range_filters=tenant_data.ANALYTICS_RANGE_LABELS,
+            selected_range=selected_range,
+        )
+
+    @dashboard.post("/scheduler/cancel")
+    @_require_tenant
+    def app_scheduler_cancel(user, accounts, selected):
+        if not validate_csrf_token(request_csrf_token()):
+            return _safe_scheduler_action_error()
+        return _cancel_scheduler_job(user, selected)
+
     @dashboard.route(
         "/automations",
         methods=[
@@ -1095,6 +1238,68 @@ def register_tenant_dashboard(app) -> None:
                 "has_previous": content_page.has_previous,
                 "has_next": content_page.has_next,
             },
+        )
+
+    @dashboard.get("/api/scheduler")
+    @_require_tenant
+    def app_api_scheduler(
+        user,
+        accounts,
+        selected,
+    ):
+        selected_status = tenant_data.scheduler_status_filter(
+            request.args.get("status")
+        )
+        selected_job_type = tenant_data.scheduler_job_type_filter(
+            request.args.get("job_type")
+        )
+        page = request.args.get("page")
+        scheduler_page = _query(
+            selected,
+            tenant_data.scheduler_jobs,
+            status_filter=selected_status,
+            job_type_filter=selected_job_type,
+            page=page,
+        )
+
+        if scheduler_page is _DATABASE_UNAVAILABLE:
+            return _workspace_unavailable()
+
+        return jsonify(
+            jobs=_scheduler_jobs_with_actions(user, selected, scheduler_page),
+            pagination={
+                "page": scheduler_page.page,
+                "has_previous": scheduler_page.has_previous,
+                "has_next": scheduler_page.has_next,
+            },
+        )
+
+    @dashboard.get("/api/analytics")
+    @_require_tenant
+    def app_api_analytics(
+        user,
+        accounts,
+        selected,
+    ):
+        selected_range = tenant_data.analytics_range_filter(
+            request.args.get("range")
+        )
+        data = _query(
+            selected,
+            tenant_data.analytics,
+            range_key=selected_range,
+        )
+
+        if data is _DATABASE_UNAVAILABLE:
+            return _workspace_unavailable()
+
+        return jsonify(
+            range=data.range_key,
+            metrics=data.metrics,
+            followup_breakdown=data.followup_breakdown,
+            lead_breakdown=data.lead_breakdown,
+            engagement_breakdown=data.engagement_breakdown,
+            recent_failures=data.recent_failures,
         )
 
     @dashboard.post("/leads/status")

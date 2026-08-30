@@ -26,9 +26,9 @@
 
                 <a href="{{ url_for('tenant_dashboard.app_messages', account=selected_account.selection_ref) }}" {% if active_page == 'messages' %}aria-current="page"{% endif %}>Messages</a>
 
-                <span class="workspace-nav-unavailable" aria-disabled="true">Scheduler <small>Coming soon</small></span>
+                <a href="{{ url_for('tenant_dashboard.app_scheduler', account=selected_account.selection_ref) }}" {% if active_page == 'scheduler' %}aria-current="page"{% endif %}>Scheduler</a>
 
-                <span class="workspace-nav-unavailable" aria-disabled="true">Analytics <small>Coming soon</small></span>
+                <a href="{{ url_for('tenant_dashboard.app_analytics', account=selected_account.selection_ref) }}" {% if active_page == 'analytics' %}aria-current="page"{% endif %}>Analytics</a>
 
                 <a href="{{ url_for('tenant_dashboard.app_accounts', account=selected_account.selection_ref) }}" {% if active_page == 'accounts' %}aria-current="page"{% endif %}>Accounts</a>
 

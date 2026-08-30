@@ -778,8 +778,9 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertIn('href="/app/messages', page)
         self.assertIn('href="/app/content', page)
         for label in ("Scheduler", "Analytics"):
-            self.assertIn(f">{label} <small>Coming soon</small>", page)
-        self.assertEqual(page.count("Coming soon"), 2)
+            self.assertIn(f">{label}</a>", page)
+            self.assertNotIn(f">{label} <small>Coming soon</small>", page)
+        self.assertEqual(page.count("Coming soon"), 0)
         self.assertNotIn('href="/dashboard', page)
         self.assertNotIn('href="/api/', page)
 
@@ -829,4 +830,3 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertNotIn("/dashboard", stylesheet)
         self.assertNotIn("/api/", stylesheet)
         response.close()
-
