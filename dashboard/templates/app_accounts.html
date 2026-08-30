@@ -2,6 +2,17 @@
 {% block title %}Accounts{% endblock %}
 {% block heading %}Accounts{% endblock %}
 {% block content %}
+{% if deployment_readiness.state == 'ready' %}
+<section class="card"><p><strong>Deployment readiness: Ready</strong></p></section>
+{% elif deployment_readiness.state == 'engagement_disabled' %}
+<section class="card"><p><strong>Deployment readiness</strong></p><p class="muted">OAuth engagement is disabled for this deployment.</p></section>
+{% elif deployment_readiness.state == 'public_base_unavailable' %}
+<section class="card"><p><strong>Deployment readiness</strong></p><p class="muted">Public HTTPS base URL is not ready.</p></section>
+{% elif deployment_readiness.state == 'credential_keyring_unavailable' %}
+<section class="card"><p><strong>Deployment readiness</strong></p><p class="muted">Credential keyring is unavailable.</p></section>
+{% else %}
+<section class="card"><p><strong>Deployment readiness</strong></p><p class="muted">Multiple OAuth deployment prerequisites are unavailable.</p></section>
+{% endif %}
 <section class="account-list page-stack" aria-label="Owned Instagram accounts">
 {% for account in accounts %}
     <article class="card account-card {% if account.is_selected %}active{% endif %}">

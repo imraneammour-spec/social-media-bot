@@ -31,6 +31,7 @@ from auth import (
     validate_csrf_token,
 )
 from database import tenant_dashboard as tenant_data
+from database.oauth_deployment import oauth_deployment_readiness
 from database.models import InstagramAutomationConfig
 from database.tenant_automation import normalize_trigger_keywords
 
@@ -685,6 +686,7 @@ def register_tenant_dashboard(app) -> None:
             accounts=accounts,
             selected=selected,
             include_disconnect_actions=True,
+            deployment_readiness=oauth_deployment_readiness(),
         )
 
     @dashboard.get("/leads")

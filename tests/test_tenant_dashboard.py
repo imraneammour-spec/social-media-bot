@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from flask import Flask
+from cryptography.fernet import Fernet
 from sqlalchemy import create_engine, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
@@ -274,6 +275,28 @@ class TenantDashboardTest(unittest.TestCase):
             "10000000000000001",
         ):
             self.assertNotIn(secret_or_internal, rendered)
+
+    def test_accounts_renders_safe_deployment_readiness_separately_from_active_account(self):
+        self._login_as(self.owner_a)
+        key = Fernet.generate_key().decode("ascii")
+        environment = {
+            "INSTAGRAM_OAUTH_ENGAGEMENT_ENABLED": "true",
+            "PUBLIC_BASE_URL": "https://staging.example",
+            "INSTAGRAM_CREDENTIAL_ACTIVE_KEY_ID": "KEY_2026_01",
+            "INSTAGRAM_CREDENTIAL_KEY_KEY_2026_01": key,
+        }
+        with patch.dict("os.environ", environment, clear=False):
+            page = self.client.get("/app/accounts").get_data(as_text=True)
+        self.assertIn("Deployment readiness: Ready", page)
+        self.assertIn("Active", page)
+        self.assertNotIn(key, page)
+
+    def test_accounts_renders_safe_degraded_deployment_readiness(self):
+        self._login_as(self.owner_a)
+        with patch.dict("os.environ", {"INSTAGRAM_OAUTH_ENGAGEMENT_ENABLED": "true", "PUBLIC_BASE_URL": "http://unsafe.example"}, clear=False):
+            page = self.client.get("/app/accounts").get_data(as_text=True)
+        self.assertIn("Multiple OAuth deployment prerequisites are unavailable.", page)
+        self.assertNotIn("http://unsafe.example", page)
 
     def test_selection_failures_are_generic_and_do_not_cross_tenants(self):
         self._login_as(self.owner_a)
