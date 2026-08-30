@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .lead_intelligence import lead_intelligence_from_values
 from .models import (
     InstagramAccount,
     InstagramCredential,
@@ -38,7 +39,7 @@ MAX_LEAD_PAGE = 1000
 MAX_LEAD_SEARCH_LENGTH = 80
 LEAD_ACTION_REFERENCE_VERSION = "v1"
 LEAD_ACTION_REFERENCE_TTL_SECONDS = 900
-LEAD_ACTION_PURPOSES = {"lead-status", "lead-note", "lead-archive"}
+LEAD_ACTION_PURPOSES = {"lead-status", "lead-note", "lead-archive", "lead-analysis"}
 ACTIVITY_EVENT_TYPES = (
     "all",
     "prompt_requests",
@@ -85,6 +86,11 @@ class TenantLead:
     public_prompt_id: str | None
     post_permalink: str | None
     cover_url: str | None
+    ai_intent: str | None
+    ai_priority: str | None
+    ai_summary: str | None
+    ai_suggested_followup: str | None
+    ai_analyzed_at: str | None
 
 
 @dataclass(frozen=True)
@@ -542,6 +548,16 @@ def leads(
                     if request.media_id in prompt_posts
                     else None
                 ),
+                ai_intent=(intelligence.intent if (intelligence := lead_intelligence_from_values(
+                    request.ai_intent,
+                    request.ai_priority,
+                    request.ai_summary,
+                    request.ai_suggested_followup,
+                )) else None),
+                ai_priority=intelligence.priority if intelligence else None,
+                ai_summary=intelligence.summary if intelligence else None,
+                ai_suggested_followup=intelligence.suggested_followup if intelligence else None,
+                ai_analyzed_at=_timestamp(request.ai_analyzed_at) if intelligence else None,
             )
             for request in requests
         ],

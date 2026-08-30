@@ -31,6 +31,7 @@ from auth import (
     validate_csrf_token,
 )
 from database import tenant_dashboard as tenant_data
+from database.lead_intelligence import LeadIntelligence, lead_analysis_context
 from database.oauth_deployment import oauth_deployment_readiness
 from database.models import InstagramAutomationConfig
 from database.tenant_automation import (
@@ -537,6 +538,19 @@ def _lead_payload(
                         "lead-archive",
                         secret_key=current_app.secret_key,
                     ),
+                "analysis_action":
+                    tenant_data.lead_action_reference_for_prompt_request(
+                        user.id,
+                        selected.instagram_account_id,
+                        row.prompt_request_id,
+                        "lead-analysis",
+                        secret_key=current_app.secret_key,
+                    ),
+                "ai_intent": row.ai_intent,
+                "ai_priority": row.ai_priority,
+                "ai_summary": row.ai_summary,
+                "ai_suggested_followup": row.ai_suggested_followup,
+                "ai_analyzed_at": row.ai_analyzed_at,
             }
         )
 
@@ -602,6 +616,60 @@ def _mutate_lead(
     except SQLAlchemyError:
         return _safe_lead_unavailable()
 
+    return _lead_redirect()
+
+
+def _analyze_lead(user, selected):
+    """Run an owner-requested advisory analysis outside database transactions."""
+
+    session_factory = getattr(_auth_state(), "session_factory", None)
+    if session_factory is None:
+        return _safe_lead_unavailable()
+    try:
+        with session_factory.begin() as session:
+            lead = tenant_data.resolve_tenant_lead_action_reference(
+                session,
+                user_id=user.id,
+                instagram_account_id=selected.instagram_account_id,
+                reference=request.form.get("lead_action"),
+                purpose="lead-analysis",
+                secret_key=current_app.secret_key,
+            )
+            if lead is None:
+                return _safe_lead_unavailable()
+            context = lead_analysis_context(session, lead=lead)
+    except SQLAlchemyError:
+        return _safe_lead_unavailable()
+
+    analyzer = current_app.extensions.get("lead_intelligence_analyzer")
+    if not callable(analyzer):
+        return _lead_redirect()
+    try:
+        analysis = analyzer(context)
+    except Exception:
+        return _lead_redirect()
+    if not isinstance(analysis, LeadIntelligence):
+        return _lead_redirect()
+
+    try:
+        with session_factory.begin() as session:
+            lead = tenant_data.resolve_tenant_lead_action_reference(
+                session,
+                user_id=user.id,
+                instagram_account_id=selected.instagram_account_id,
+                reference=request.form.get("lead_action"),
+                purpose="lead-analysis",
+                secret_key=current_app.secret_key,
+            )
+            if lead is None:
+                return _safe_lead_unavailable()
+            lead.ai_intent = analysis.intent
+            lead.ai_priority = analysis.priority
+            lead.ai_summary = analysis.summary
+            lead.ai_suggested_followup = analysis.suggested_followup
+            lead.ai_analyzed_at = datetime.now(timezone.utc)
+    except SQLAlchemyError:
+        return _safe_lead_unavailable()
     return _lead_redirect()
 
 
@@ -1442,6 +1510,13 @@ def register_tenant_dashboard(app) -> None:
                 archived_at,
             ),
         )
+
+    @dashboard.post("/leads/analyze")
+    @_require_tenant
+    def app_lead_analyze(user, accounts, selected):
+        if not validate_csrf_token(request_csrf_token()):
+            return _safe_lead_update_error()
+        return _analyze_lead(user, selected)
 
     app.register_blueprint(
         dashboard

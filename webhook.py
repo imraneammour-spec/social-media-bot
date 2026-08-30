@@ -65,6 +65,7 @@ from database.oauth_webhook_ingress import (
     fail_oauth_webhook_work,
     oauth_webhook_work_account_matches,
 )
+from database.lead_intelligence import analyze_lead_intelligence
 from database.tenant_automation import oauth_automation_runtime_config
 from auth import (
     configure_auth,
@@ -3774,6 +3775,34 @@ Comment: {source_text}
     except Exception:
         print("OAUTH ENGAGEMENT: smart reply unavailable.")
         return ""
+
+
+def generate_oauth_lead_intelligence(context):
+    """Analyze only sanitized persisted lead facts through the existing Gemini client."""
+
+    if GEMINI_CLIENT is None:
+        return None
+    try:
+        return analyze_lead_intelligence(
+            context,
+            lambda prompt: str(
+                GEMINI_CLIENT.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        temperature=0,
+                    ),
+                ).text
+                or ""
+            ),
+        )
+    except Exception:
+        print("LEAD INTELLIGENCE: analysis unavailable.")
+        return None
+
+
+app.extensions["lead_intelligence_analyzer"] = generate_oauth_lead_intelligence
 
 
 def _oauth_smart_reply_eligible(comment_text):

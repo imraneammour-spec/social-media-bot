@@ -216,6 +216,11 @@ class InstagramPromptRequest(TimestampMixin, Base):
     )
     internal_note: Mapped[str | None] = mapped_column(Text)
     lead_archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ai_intent: Mapped[str | None] = mapped_column(String(32))
+    ai_priority: Mapped[str | None] = mapped_column(String(16))
+    ai_summary: Mapped[str | None] = mapped_column(Text)
+    ai_suggested_followup: Mapped[str | None] = mapped_column(Text)
+    ai_analyzed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class InstagramSmartReplyActivity(TimestampMixin, Base):
