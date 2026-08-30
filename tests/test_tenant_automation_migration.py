@@ -106,7 +106,8 @@ class TenantAutomationMigrationTests(unittest.TestCase):
                 )
                 configs = connection.execute(text(
                     "SELECT instagram_account_id, enabled, trigger_keywords, public_reply_enabled, "
-                    "public_reply_text FROM instagram_automation_configs"
+                    "public_reply_text, smart_reply_enabled, smart_reply_tone, "
+                    "smart_reply_max_per_hour FROM instagram_automation_configs"
                 )).mappings().all()
         finally:
             engine.dispose()
@@ -123,6 +124,10 @@ class TenantAutomationMigrationTests(unittest.TestCase):
             "Your prompts are ready. Check your messages.",
         )
         self.assertFalse(bool(by_account[unusable_id]["enabled"]))
+        for account_id in (eligible_id, unusable_id):
+            self.assertFalse(bool(by_account[account_id]["smart_reply_enabled"]))
+            self.assertEqual(by_account[account_id]["smart_reply_tone"], "friendly")
+            self.assertEqual(by_account[account_id]["smart_reply_max_per_hour"], 20)
         self.assertNotIn(legacy_id, by_account)
 
         downgrade = self._alembic("downgrade", self.previous_revision)
@@ -146,3 +151,46 @@ class TenantAutomationMigrationTests(unittest.TestCase):
 
         reupgrade = self._alembic("upgrade", "head")
         self.assertEqual(reupgrade.returncode, 0, reupgrade.stderr)
+
+    def test_phase6a_downgrade_removes_only_smart_reply_columns(self):
+        """The new migration must not remove the pre-existing automation configuration table."""
+
+        baseline = self._alembic("upgrade", "20260830_01")
+        self.assertEqual(baseline.returncode, 0, baseline.stderr)
+
+        upgrade = self._alembic("upgrade", "20260830_02")
+        self.assertEqual(upgrade.returncode, 0, upgrade.stderr)
+        engine = create_engine(self.environment["DATABASE_URL"])
+        try:
+            with engine.connect() as connection:
+                upgraded_columns = {
+                    column["name"]
+                    for column in inspect(connection).get_columns("instagram_automation_configs")
+                }
+        finally:
+            engine.dispose()
+        self.assertTrue({
+            "smart_reply_enabled",
+            "smart_reply_tone",
+            "smart_reply_max_per_hour",
+        }.issubset(upgraded_columns))
+
+        downgrade = self._alembic("downgrade", "20260830_01")
+        self.assertEqual(downgrade.returncode, 0, downgrade.stderr)
+        engine = create_engine(self.environment["DATABASE_URL"])
+        try:
+            with engine.connect() as connection:
+                self.assertIn(
+                    "instagram_automation_configs", inspect(connection).get_table_names()
+                )
+                downgraded_columns = {
+                    column["name"]
+                    for column in inspect(connection).get_columns("instagram_automation_configs")
+                }
+        finally:
+            engine.dispose()
+        self.assertFalse({
+            "smart_reply_enabled",
+            "smart_reply_tone",
+            "smart_reply_max_per_hour",
+        } & downgraded_columns)

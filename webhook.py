@@ -3748,15 +3748,17 @@ def _oauth_words(value):
     return re.findall(r"\b\w+\b", str(value or "").lower())
 
 
-def generate_oauth_smart_reply(comment_text):
+def generate_oauth_smart_reply(comment_text, *, tone="friendly"):
     """Generate a tenant-neutral reply; no legacy account identity is supplied."""
     source_text = str(comment_text or "").strip()
     if not source_text or GEMINI_CLIENT is None:
         return ""
     instructions = f"""
-Write one short, friendly reply to an Instagram comment for a professional account.
+Write one short, natural {tone} reply to an Instagram comment for a professional account.
 Use the comment's language where practical. Do not mention automation, account
-names, credentials, or private information. Do not use links or hashtags.
+names, credentials, or private information. Do not use links, hashtags, fake
+promises, or generic thanks unless it is genuinely appropriate. Do not invent
+facts about the post or business.
 Return only the reply text, under {SMART_REPLY_MAX_LENGTH} characters.
 
 Comment: {source_text}
@@ -3772,6 +3774,13 @@ Comment: {source_text}
     except Exception:
         print("OAUTH ENGAGEMENT: smart reply unavailable.")
         return ""
+
+
+def _oauth_smart_reply_eligible(comment_text):
+    """Exclude empty, emoji-only, and too-short public comments."""
+
+    source_text = str(comment_text or "").strip()
+    return len(source_text) >= 3 and bool(_oauth_words(source_text))
 
 
 def extract_oauth_prompts(media):
@@ -3859,7 +3868,7 @@ def _process_oauth_comment(value, route, entry_external_id, public_base_url, ses
         is_prompt_request = False
         prompt_request_decision = "runtime_config_unavailable"
     else:
-        is_prompt_request = any(
+        is_prompt_request = automation_config.enabled and any(
             word in automation_config.trigger_keywords
             for word in _oauth_words(comment_text)
         )
@@ -3871,13 +3880,28 @@ def _process_oauth_comment(value, route, entry_external_id, public_base_url, ses
     print(f"OAUTH AUTOMATION: prompt_request_decision={prompt_request_decision}")
     try:
         if not is_prompt_request:
+            if (
+                automation_config is None
+                or not automation_config.smart_reply_enabled
+                or not _oauth_smart_reply_eligible(comment_text)
+            ):
+                _oauth_complete(session_factory, route.instagram_account_id, comment_id, "comment")
+                return
             cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
             with session_factory() as db_session:
-                allowed = oauth_smart_reply_allowed(db_session, route.instagram_account_id, cutoff=cutoff, limit=SMART_REPLY_MAX_PER_HOUR)
+                allowed = oauth_smart_reply_allowed(
+                    db_session,
+                    route.instagram_account_id,
+                    cutoff=cutoff,
+                    limit=automation_config.smart_reply_max_per_hour,
+                )
             if not allowed:
                 _oauth_complete(session_factory, route.instagram_account_id, comment_id, "comment")
                 return
-            reply = generate_oauth_smart_reply(comment_text)
+            reply = generate_oauth_smart_reply(
+                comment_text,
+                tone=automation_config.smart_reply_tone,
+            )
             if not reply:
                 _oauth_complete(session_factory, route.instagram_account_id, comment_id, "comment")
                 return

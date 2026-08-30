@@ -61,6 +61,9 @@ class TenantAutomationModelTests(unittest.TestCase):
             self.assertEqual(config.trigger_keywords, [])
             self.assertFalse(config.public_reply_enabled)
             self.assertEqual(config.public_reply_text, "")
+            self.assertFalse(config.smart_reply_enabled)
+            self.assertEqual(config.smart_reply_tone, "friendly")
+            self.assertEqual(config.smart_reply_max_per_hour, 20)
 
     def test_configuration_model_allows_only_one_row_per_account(self):
         """Removing the per-account uniqueness guard must fail this test."""
@@ -100,6 +103,86 @@ class TenantAutomationHelperTests(unittest.TestCase):
         for value in (None, [], ["two words"], ["x" * 33], ["ai"] * 11):
             with self.assertRaises(helpers.TenantAutomationConfigurationError):
                 helpers.normalize_trigger_keywords(value)
+
+    def test_smart_reply_controls_are_bounded_and_fail_closed(self):
+        """Invalid tone or rate input must not become an account runtime choice."""
+
+        helpers = self._helpers()
+        self.assertEqual(helpers.normalize_smart_reply_tone("Professional"), "professional")
+        self.assertEqual(helpers.normalize_smart_reply_max_per_hour("100"), 100)
+        for tone in (None, "", "playful", "friendly " * 20):
+            with self.assertRaises(helpers.TenantAutomationConfigurationError):
+                helpers.normalize_smart_reply_tone(tone)
+        for limit in (None, "", "0", "101", "many", True):
+            with self.assertRaises(helpers.TenantAutomationConfigurationError):
+                helpers.normalize_smart_reply_max_per_hour(limit)
+
+    def test_runtime_snapshot_keeps_prompt_and_smart_reply_settings_account_scoped(self):
+        """A runtime read must not mix tenant A's smart settings into tenant B."""
+
+        helpers = self._helpers()
+        engine = create_engine("sqlite://")
+        Base.metadata.create_all(engine)
+        Session = sessionmaker(bind=engine)
+        try:
+            with Session.begin() as session:
+                owner = User(email="runtime-owner@example.test")
+                session.add(owner)
+                session.flush()
+                account_a = InstagramAccount(
+                    user_id=owner.id,
+                    instagram_user_id="17841438617458131",
+                    provider="instagram",
+                    connection_status="connected",
+                )
+                account_b = InstagramAccount(
+                    user_id=owner.id,
+                    instagram_user_id="17841438617458132",
+                    provider="instagram",
+                    connection_status="connected",
+                )
+                session.add_all([account_a, account_b])
+                session.flush()
+                session.add_all([
+                    InstagramAutomationConfig(
+                        instagram_account_id=account_a.id,
+                        enabled=True,
+                        trigger_keywords=["prompt"],
+                        public_reply_enabled=False,
+                        public_reply_text="",
+                        smart_reply_enabled=True,
+                        smart_reply_tone="professional",
+                        smart_reply_max_per_hour=7,
+                    ),
+                    InstagramAutomationConfig(
+                        instagram_account_id=account_b.id,
+                        enabled=False,
+                        trigger_keywords=["access"],
+                        public_reply_enabled=False,
+                        public_reply_text="",
+                        smart_reply_enabled=False,
+                        smart_reply_tone="concise",
+                        smart_reply_max_per_hour=3,
+                    ),
+                ])
+                account_a_id, account_b_id = account_a.id, account_b.id
+            with Session() as session:
+                runtime_a = helpers.oauth_automation_runtime_config(
+                    session, instagram_account_id=account_a_id
+                )
+                runtime_b = helpers.oauth_automation_runtime_config(
+                    session, instagram_account_id=account_b_id
+                )
+        finally:
+            engine.dispose()
+
+        self.assertTrue(runtime_a.smart_reply_enabled)
+        self.assertEqual(runtime_a.smart_reply_tone, "professional")
+        self.assertEqual(runtime_a.smart_reply_max_per_hour, 7)
+        self.assertFalse(runtime_b.enabled)
+        self.assertFalse(runtime_b.smart_reply_enabled)
+        self.assertEqual(runtime_b.smart_reply_tone, "concise")
+        self.assertEqual(runtime_b.smart_reply_max_per_hour, 3)
 
     def test_current_public_reply_default_matches_existing_oauth_behavior(self):
         """Changing the rollout copy must fail this behavior-preservation test."""

@@ -33,7 +33,12 @@ from auth import (
 from database import tenant_dashboard as tenant_data
 from database.oauth_deployment import oauth_deployment_readiness
 from database.models import InstagramAutomationConfig
-from database.tenant_automation import normalize_trigger_keywords
+from database.tenant_automation import (
+    SMART_REPLY_TONES,
+    normalize_smart_reply_max_per_hour,
+    normalize_smart_reply_tone,
+    normalize_trigger_keywords,
+)
 
 
 lead_action_reference_for_prompt_request = (
@@ -635,6 +640,9 @@ def _automation_config(selected):
                 "public_reply_text":
                     config.public_reply_text
                     or "",
+                "smart_reply_enabled": config.smart_reply_enabled,
+                "smart_reply_tone": config.smart_reply_tone,
+                "smart_reply_max_per_hour": config.smart_reply_max_per_hour,
             }
 
     except SQLAlchemyError:
@@ -669,6 +677,22 @@ def _update_automation_config(selected):
         keywords = normalize_trigger_keywords(
             keyword_items
         )
+        smart_reply_tone_value = request.form.get("smart_reply_tone")
+        smart_reply_max_per_hour_value = request.form.get(
+            "smart_reply_max_per_hour"
+        )
+        smart_reply_controls_present = (
+            smart_reply_tone_value is not None
+            or smart_reply_max_per_hour_value is not None
+            or "smart_reply_enabled" in request.form
+        )
+        if smart_reply_controls_present:
+            smart_reply_tone = normalize_smart_reply_tone(
+                smart_reply_tone_value
+            )
+            smart_reply_max_per_hour = normalize_smart_reply_max_per_hour(
+                smart_reply_max_per_hour_value
+            )
 
     except ValueError:
         return False
@@ -707,6 +731,13 @@ def _update_automation_config(selected):
                 )
                 or ""
             ).strip()
+
+            if smart_reply_controls_present:
+                config.smart_reply_enabled = (
+                    request.form.get("smart_reply_enabled") == "on"
+                )
+                config.smart_reply_tone = smart_reply_tone
+                config.smart_reply_max_per_hour = smart_reply_max_per_hour
 
             session.flush()
 
@@ -1045,6 +1076,7 @@ def register_tenant_dashboard(app) -> None:
             accounts=accounts,
             selected=selected,
             automation=automation,
+            smart_reply_tones=SMART_REPLY_TONES,
         )
 
     @dashboard.get("/api/accounts")

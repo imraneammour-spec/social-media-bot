@@ -12,7 +12,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from database.account_runtime import InstagramAccountRuntime
-from database.models import Base, InstagramAccount, InstagramCredential, User
+from database.models import (
+    Base,
+    InstagramAccount,
+    InstagramAutomationConfig,
+    InstagramCredential,
+    User,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -293,6 +299,17 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
 
     def test_comment_replay_is_claimed_once_and_never_calls_legacy_json_or_graph_fallback(self):
         comment = {"id": "comment-a", "text": "hello", "from": {"id": "customer"}}
+        with self.Session.begin() as session:
+            session.add(InstagramAutomationConfig(
+                instagram_account_id=self.account_a_id,
+                enabled=True,
+                trigger_keywords=["prompt"],
+                public_reply_enabled=False,
+                public_reply_text="",
+                smart_reply_enabled=True,
+                smart_reply_tone="friendly",
+                smart_reply_max_per_hour=20,
+            ))
         with patch.dict(os.environ, {"INSTAGRAM_OAUTH_ENGAGEMENT_ENABLED": "true"}, clear=False), patch.object(
             self.module, "generate_oauth_smart_reply", return_value="Hello!"
         ), patch.object(

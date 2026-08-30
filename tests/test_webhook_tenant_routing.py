@@ -20,6 +20,8 @@ from database.models import (
     InstagramOAuthWebhookWorkItem,
     InstagramPendingAccess,
     InstagramPromptRequest,
+    InstagramSmartReplyActivity,
+    InstagramEngagementEvent,
     User,
 )
 
@@ -542,6 +544,9 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
         trigger_keywords=None,
         public_reply_enabled=True,
         public_reply_text="Configured acknowledgement",
+        smart_reply_enabled=False,
+        smart_reply_tone="friendly",
+        smart_reply_max_per_hour=20,
     ):
         account = self._account(external_id)
         with self.session_factory.begin() as session:
@@ -551,6 +556,9 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
                 trigger_keywords=(trigger_keywords or ["launch"]),
                 public_reply_enabled=public_reply_enabled,
                 public_reply_text=public_reply_text,
+                smart_reply_enabled=smart_reply_enabled,
+                smart_reply_tone=smart_reply_tone,
+                smart_reply_max_per_hour=smart_reply_max_per_hour,
             ))
 
     @staticmethod
@@ -584,6 +592,212 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
 
         prompt_page.assert_not_called()
         private_reply.assert_not_called()
+
+    def test_enabled_smart_reply_uses_its_account_tone_for_a_normal_comment(self):
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["prompt"],
+            smart_reply_enabled=True,
+            smart_reply_tone="professional",
+            smart_reply_max_per_hour=7,
+        )
+        with patch.object(
+            self.module, "generate_oauth_smart_reply", return_value="Happy to help."
+        ) as generate, patch.object(
+            self.module, "send_oauth_public_comment_reply", return_value=True
+        ) as public_reply, patch.object(self.module, "_oauth_prompt_post_for_comment") as prompt_page:
+            self._process(self.primary_external_id, "smart-normal-comment", "How does this work?")
+
+        generate.assert_called_once_with("How does this work?", tone="professional")
+        public_reply.assert_called_once()
+        prompt_page.assert_not_called()
+
+    def test_disabled_smart_reply_does_not_reply_to_a_normal_comment(self):
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["prompt"],
+            smart_reply_enabled=False,
+        )
+        with patch.object(self.module, "generate_oauth_smart_reply") as generate, patch.object(
+            self.module, "send_oauth_public_comment_reply"
+        ) as public_reply:
+            self._process(self.primary_external_id, "smart-disabled-comment", "How does this work?")
+
+        generate.assert_not_called()
+        public_reply.assert_not_called()
+
+    def test_keyword_automation_never_generates_a_smart_reply(self):
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["prompt"],
+            smart_reply_enabled=True,
+        )
+        with patch.object(self.module, "generate_oauth_smart_reply") as generate, patch.object(
+            self.module, "_oauth_prompt_post_for_comment", return_value="prompt-page"
+        ), patch.object(
+            self.module, "send_oauth_public_comment_reply", return_value=True
+        ), patch.object(
+            self.module, "send_oauth_private_access_reply", return_value="recipient-1"
+        ) as private_reply:
+            self._process(self.primary_external_id, "keyword-priority", "Need a prompt")
+
+        generate.assert_not_called()
+        private_reply.assert_called_once()
+
+    def test_smart_reply_limit_is_enforced_per_account(self):
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["prompt"],
+            smart_reply_enabled=True,
+            smart_reply_max_per_hour=1,
+        )
+        primary = self._account(self.primary_external_id)
+        with self.session_factory.begin() as session:
+            session.add(InstagramSmartReplyActivity(
+                instagram_account_id=primary.id,
+                comment_id="prior-smart-reply",
+                recipient_id="customer-1",
+                username="customer",
+                reply_text="Already sent",
+            ))
+
+        with patch.object(self.module, "generate_oauth_smart_reply") as generate, patch.object(
+            self.module, "send_oauth_public_comment_reply"
+        ) as public_reply:
+            self._process(self.primary_external_id, "rate-limited-comment", "How does this work?")
+
+        generate.assert_not_called()
+        public_reply.assert_not_called()
+
+    def test_smart_reply_rate_activity_from_another_account_does_not_block_delivery(self):
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["prompt"],
+            smart_reply_enabled=True,
+            smart_reply_max_per_hour=1,
+        )
+        self._set_config(
+            self.secondary_external_id,
+            trigger_keywords=["prompt"],
+            smart_reply_enabled=True,
+            smart_reply_tone="concise",
+            smart_reply_max_per_hour=1,
+        )
+        primary = self._account(self.primary_external_id)
+        with self.session_factory.begin() as session:
+            session.add(InstagramSmartReplyActivity(
+                instagram_account_id=primary.id,
+                comment_id="primary-only-rate-record",
+                recipient_id="customer-1",
+                username="customer",
+                reply_text="Already sent",
+            ))
+
+        with patch.object(
+            self.module, "generate_oauth_smart_reply", return_value="Sure."
+        ) as generate, patch.object(
+            self.module, "send_oauth_public_comment_reply", return_value=True
+        ) as public_reply:
+            self._process(self.secondary_external_id, "secondary-not-limited", "How does this work?")
+
+        generate.assert_called_once_with("How does this work?", tone="concise")
+        public_reply.assert_called_once()
+
+    def test_short_and_emoji_only_comments_are_not_sent_to_the_generator(self):
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["prompt"],
+            smart_reply_enabled=True,
+        )
+        with patch.object(self.module, "generate_oauth_smart_reply") as generate:
+            self._process(self.primary_external_id, "short-comment", "ok")
+            self._process(self.primary_external_id, "emoji-comment", "🔥🔥")
+
+        generate.assert_not_called()
+
+    def test_self_comment_is_ignored_before_smart_reply_generation(self):
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["prompt"],
+            smart_reply_enabled=True,
+        )
+        comment = self._comment("self-comment", "How does this work?")
+        comment["from"]["id"] = self.primary_external_id
+        with patch.object(self.module, "generate_oauth_smart_reply") as generate:
+            self.module._process_oauth_comment(
+                comment,
+                self._route(self.primary_external_id),
+                self.primary_external_id,
+                "https://example.test",
+                self.session_factory,
+            )
+
+        generate.assert_not_called()
+
+    def test_duplicate_normal_comment_sends_one_smart_reply(self):
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["prompt"],
+            smart_reply_enabled=True,
+        )
+        with patch.object(
+            self.module, "generate_oauth_smart_reply", return_value="Sure."
+        ), patch.object(
+            self.module, "send_oauth_public_comment_reply", return_value=True
+        ) as public_reply:
+            self._process(self.primary_external_id, "duplicate-smart-comment", "How does this work?")
+            self._process(self.primary_external_id, "duplicate-smart-comment", "How does this work?")
+
+        public_reply.assert_called_once()
+        account = self._account(self.primary_external_id)
+        with self.session_factory() as session:
+            self.assertEqual(session.query(InstagramSmartReplyActivity).filter_by(
+                instagram_account_id=account.id,
+                comment_id="duplicate-smart-comment",
+            ).count(), 1)
+
+    def test_smart_reply_generation_failure_completes_without_outbound_delivery(self):
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["prompt"],
+            smart_reply_enabled=True,
+        )
+        with patch.object(
+            self.module, "generate_oauth_smart_reply", return_value=""
+        ), patch.object(self.module, "send_oauth_public_comment_reply") as public_reply:
+            self._process(self.primary_external_id, "generation-failure", "How does this work?")
+
+        public_reply.assert_not_called()
+        account = self._account(self.primary_external_id)
+        with self.session_factory() as session:
+            event = session.scalar(select(InstagramEngagementEvent).where(
+                InstagramEngagementEvent.instagram_account_id == account.id,
+                InstagramEngagementEvent.provider_event_id == "generation-failure",
+            ))
+        self.assertEqual(event.state, "done")
+
+    def test_smart_reply_delivery_failure_marks_the_claim_failed_without_retry(self):
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["prompt"],
+            smart_reply_enabled=True,
+        )
+        with patch.object(
+            self.module, "generate_oauth_smart_reply", return_value="Sure."
+        ), patch.object(
+            self.module, "send_oauth_public_comment_reply", return_value=False
+        ) as public_reply:
+            self._process(self.primary_external_id, "delivery-failure", "How does this work?")
+            self._process(self.primary_external_id, "delivery-failure", "How does this work?")
+
+        public_reply.assert_called_once()
+        account = self._account(self.primary_external_id)
+        with self.session_factory() as session:
+            event = session.scalar(select(InstagramEngagementEvent).where(
+                InstagramEngagementEvent.instagram_account_id == account.id,
+                InstagramEngagementEvent.provider_event_id == "delivery-failure",
+            ))
+        self.assertEqual(event.state, "failed")
 
     def test_custom_account_keyword_starts_prompt_request_delivery(self):
         self._set_config(

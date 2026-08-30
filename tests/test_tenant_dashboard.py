@@ -430,7 +430,7 @@ class TenantDashboardTest(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.headers["Cache-Control"], "no-store")
         self.assertEqual([item["username"] for item in responses["leads"].get_json()["leads"]], ["lead_alpha"])
-        self.assertIn("Reply sent", {item["type"] for item in responses["activity"].get_json()["activity"]})
+        self.assertIn("Smart reply", {item["type"] for item in responses["activity"].get_json()["activity"]})
         self.assertEqual(responses["followups"].get_json()["followups"][0]["status"], "Scheduled")
         self.assertEqual(responses["leads"].get_json()["leads"][0]["prompt_url"], "/p/o/opaque-prompt-a")
 
@@ -745,7 +745,7 @@ class TenantDashboardTest(unittest.TestCase):
         ).get_json()["activity"]
         all_types = {item["type"] for item in all_activity}
         self.assertIn("Prompt request", all_types)
-        self.assertIn("Reply sent", all_types)
+        self.assertIn("Smart reply", all_types)
         self.assertIn("Message received", all_types)
         self.assertIn("Follow-up scheduled", all_types)
 
@@ -828,6 +828,86 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertNotIn('<h1>Instagram workspace</h1>', page)
         self.assertIn('for="automation_enabled"', page)
         self.assertIn('for="public_reply_enabled"', page)
+        self.assertIn("Smart Comment Assistant", page)
+        self.assertIn('for="smart_reply_enabled"', page)
+        self.assertIn('id="smart_reply_tone"', page)
+        self.assertIn('id="smart_reply_max_per_hour"', page)
+
+    def test_automations_updates_smart_reply_settings_only_for_selected_account(self):
+        self._login_as(self.owner_a)
+        selected = self._reference(self.owner_a, self.account_a1)
+        with self.Session.begin() as session:
+            session.add_all([
+                InstagramAutomationConfig(
+                    instagram_account_id=self.account_a1.id,
+                    enabled=True,
+                    trigger_keywords=["prompt"],
+                    public_reply_enabled=False,
+                    public_reply_text="",
+                    smart_reply_enabled=False,
+                    smart_reply_tone="friendly",
+                    smart_reply_max_per_hour=20,
+                ),
+                InstagramAutomationConfig(
+                    instagram_account_id=self.account_a2.id,
+                    enabled=True,
+                    trigger_keywords=["access"],
+                    public_reply_enabled=False,
+                    public_reply_text="",
+                    smart_reply_enabled=True,
+                    smart_reply_tone="neutral",
+                    smart_reply_max_per_hour=9,
+                ),
+            ])
+
+        page = self.client.get(f"/app/automations?account={selected}").get_data(as_text=True)
+        csrf_token = re.search(r'name="csrf_token"\s+value="([^"]+)"', page).group(1)
+        response = self.client.post(
+            f"/app/automations?account={selected}",
+            data={
+                "csrf_token": csrf_token,
+                "enabled": "on",
+                "trigger_keywords": "prompt",
+                "public_reply_text": "",
+                "smart_reply_enabled": "on",
+                "smart_reply_tone": "professional",
+                "smart_reply_max_per_hour": "7",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        with self.Session() as session:
+            primary = session.scalar(select(InstagramAutomationConfig).where(
+                InstagramAutomationConfig.instagram_account_id == self.account_a1.id
+            ))
+            secondary = session.scalar(select(InstagramAutomationConfig).where(
+                InstagramAutomationConfig.instagram_account_id == self.account_a2.id
+            ))
+        self.assertTrue(primary.smart_reply_enabled)
+        self.assertEqual(primary.smart_reply_tone, "professional")
+        self.assertEqual(primary.smart_reply_max_per_hour, 7)
+        self.assertEqual(secondary.smart_reply_tone, "neutral")
+        self.assertEqual(secondary.smart_reply_max_per_hour, 9)
+
+        invalid = self.client.post(
+            f"/app/automations?account={selected}",
+            data={
+                "csrf_token": csrf_token,
+                "enabled": "on",
+                "trigger_keywords": "prompt",
+                "public_reply_text": "",
+                "smart_reply_enabled": "on",
+                "smart_reply_tone": "invalid-tone",
+                "smart_reply_max_per_hour": "101",
+            },
+        )
+        self.assertEqual(invalid.status_code, 400)
+        with self.Session() as session:
+            primary = session.scalar(select(InstagramAutomationConfig).where(
+                InstagramAutomationConfig.instagram_account_id == self.account_a1.id
+            ))
+        self.assertEqual(primary.smart_reply_tone, "professional")
+        self.assertEqual(primary.smart_reply_max_per_hour, 7)
 
     def test_home_renders_existing_sanitized_status_and_summary_data(self):
         self._login_as(self.owner_a)

@@ -133,6 +133,15 @@ class InstagramAutomationConfig(TimestampMixin, Base):
     public_reply_text: Mapped[str] = mapped_column(
         Text, nullable=False, default="", server_default=text("''")
     )
+    smart_reply_enabled: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default=text("false")
+    )
+    smart_reply_tone: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="friendly", server_default=text("'friendly'")
+    )
+    smart_reply_max_per_hour: Mapped[int] = mapped_column(
+        nullable=False, default=20, server_default=text("20")
+    )
 
     instagram_account: Mapped[InstagramAccount] = relationship(
         back_populates="automation_config"

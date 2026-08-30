@@ -584,7 +584,7 @@ def activity(
         ):
             records.append({
                 "occurred_at": _timestamp(reply.created_at) or "",
-                "type": "Reply sent",
+                "type": "Smart reply",
                 "state": "Completed",
                 "username": _username(reply.username),
             })

@@ -63,6 +63,42 @@
             >
         </div>
 
+        <section class="detail-card">
+            <h2>Smart Comment Assistant</h2>
+            <p class="muted">Reply to normal comments that do not match a keyword automation.</p>
+
+            <div class="checkbox-field">
+                <input
+                    id="smart_reply_enabled"
+                    type="checkbox"
+                    name="smart_reply_enabled"
+                    {% if automation.smart_reply_enabled %}checked{% endif %}
+                >
+                <label for="smart_reply_enabled">Enable Smart Replies</label>
+            </div>
+
+            <div>
+                <label for="smart_reply_tone">Tone</label>
+                <select id="smart_reply_tone" name="smart_reply_tone">
+                    {% for tone in smart_reply_tones %}
+                    <option value="{{ tone }}" {% if automation.smart_reply_tone == tone %}selected{% endif %}>{{ tone|capitalize }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div>
+                <label for="smart_reply_max_per_hour">Maximum replies per hour</label>
+                <input
+                    id="smart_reply_max_per_hour"
+                    name="smart_reply_max_per_hour"
+                    type="number"
+                    min="1"
+                    max="100"
+                    value="{{ automation.smart_reply_max_per_hour }}"
+                >
+            </div>
+        </section>
+
         <button type="submit">
             Save
         </button>
