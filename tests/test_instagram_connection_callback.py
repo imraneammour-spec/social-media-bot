@@ -197,16 +197,23 @@ class InstagramConnectionCallbackTest(unittest.TestCase):
 
     def test_post_discovery_precommit_failure_logs_only_its_safe_persistence_stage(self):
         """Removing the finite stage from callback diagnostics must fail this contract."""
-        for stage in (
-            "stage_inputs",
-            "credential_stage",
-            "subscription_record",
-            "final_transaction",
+        for stage, input_stage in (
+            ("stage_inputs", "inputs_user_id"),
+            ("stage_inputs", "inputs_discovery_identity"),
+            ("stage_inputs", "inputs_token"),
+            ("stage_inputs", "inputs_legacy_identity"),
+            ("stage_inputs", "inputs_clock"),
+            ("stage_inputs", "inputs_unexpected"),
+            ("credential_stage", None),
+            ("subscription_record", None),
+            ("final_transaction", None),
         ):
-            with self.subTest(stage=stage):
+            with self.subTest(stage=stage, input_stage=input_stage):
                 client = self._client_with_state()
                 failure = InstagramConnectionError("connection-private-detail-must-not-leak")
                 failure.diagnostic_stage = stage
+                if input_stage is not None:
+                    failure.input_diagnostic_stage = input_stage
                 with patch.dict("os.environ", self.environment, clear=False), patch(
                     "auth.complete_instagram_token_exchange", return_value=self._token_result()
                 ), patch("auth.discover_instagram_account", return_value=self._discovery()), patch(
@@ -220,9 +227,10 @@ class InstagramConnectionCallbackTest(unittest.TestCase):
 
                 self.assertEqual(response.status_code, 502)
                 self.assertEqual(response.get_data(as_text=True), "Instagram connection could not be completed.")
-                warning.assert_called_once_with(
-                    f"{OAUTH_CALLBACK_STAGE_CONNECTION_PRECOMMIT_FAILED} stage={stage}"
-                )
+                expected_warning = f"{OAUTH_CALLBACK_STAGE_CONNECTION_PRECOMMIT_FAILED} stage={stage}"
+                if input_stage is not None:
+                    expected_warning = f"{expected_warning} input_stage={input_stage}"
+                warning.assert_called_once_with(expected_warning)
                 logged = " ".join(str(argument) for call in warning.call_args_list for argument in call.args)
                 for sensitive_value in (
                     self.authorization_code,

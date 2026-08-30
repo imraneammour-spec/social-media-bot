@@ -436,14 +436,108 @@ class InstagramConnectionPersistenceTest(unittest.TestCase):
             self.assertEqual(load_decrypted_access_token(session, account, self.keyring),
                              "long-lived-token-must-never-persist-in-plaintext")
 
-    def test_complete_classifies_invalid_inputs_as_stage_inputs(self):
-        """Collapsing input validation into another stage must fail this diagnostic boundary."""
+    def test_complete_classifies_invalid_user_id_as_inputs_user_id(self):
+        """A malformed authenticated user identity must keep its finite safe label."""
+        with self.assertRaises(InstagramConnectionError) as raised:
+            self._complete(user_id="not-a-user-uuid")
+
+        self.assertEqual(raised.exception.diagnostic_stage, "stage_inputs")
+        self.assertEqual(raised.exception.input_diagnostic_stage, "inputs_user_id")
+
+    def test_complete_classifies_invalid_discovery_identity_as_inputs_discovery_identity(self):
+        """A malformed discovered professional identity must not share another input label."""
         with self.assertRaises(InstagramConnectionError) as raised:
             self._complete(
                 discovery=InstagramAccountDiscovery(instagram_user_id="invalid", username=None),
             )
 
         self.assertEqual(raised.exception.diagnostic_stage, "stage_inputs")
+        self.assertEqual(raised.exception.input_diagnostic_stage, "inputs_discovery_identity")
+
+    def test_complete_classifies_invalid_or_empty_token_as_inputs_token(self):
+        """A nonusable long-lived token must preserve only its approved input label."""
+        for token in ("", None):
+            with self.subTest(token_is_empty=token == ""):
+                with self.assertRaises(InstagramConnectionError) as raised:
+                    self._complete(result=InstagramOAuthTokenResult(token, None, None))
+
+                self.assertEqual(raised.exception.diagnostic_stage, "stage_inputs")
+                self.assertEqual(raised.exception.input_diagnostic_stage, "inputs_token")
+
+    def test_complete_classifies_legacy_identity_equality_as_inputs_legacy_identity(self):
+        """The legacy identity guard must retain a distinct, data-free label."""
+        with self.assertRaises(InstagramConnectionError) as raised:
+            self._complete(discovery=self._discovery(instagram_user_id="17841438617459999"))
+
+        self.assertEqual(raised.exception.diagnostic_stage, "stage_inputs")
+        self.assertEqual(raised.exception.input_diagnostic_stage, "inputs_legacy_identity")
+
+    def test_complete_classifies_invalid_clock_as_inputs_clock(self):
+        """A malformed supplied clock must not be reported as another input failure."""
+        with self.assertRaises(InstagramConnectionError) as raised:
+            self._complete(now="not-a-datetime")
+
+        self.assertEqual(raised.exception.diagnostic_stage, "stage_inputs")
+        self.assertEqual(raised.exception.input_diagnostic_stage, "inputs_clock")
+
+    def test_complete_classifies_unexpected_discovery_shape_as_inputs_unexpected(self):
+        """Unexpected discovery access errors must not disclose or reuse explicit labels."""
+
+        class UnexpectedDiscovery:
+            @property
+            def instagram_user_id(self):
+                raise TypeError("private discovery shape detail")
+
+        with self.assertRaises(InstagramConnectionError) as raised:
+            self._complete(discovery=UnexpectedDiscovery())
+
+        self.assertEqual(raised.exception.diagnostic_stage, "stage_inputs")
+        self.assertEqual(raised.exception.input_diagnostic_stage, "inputs_unexpected")
+        self.assertNotIn("private discovery shape detail", str(raised.exception))
+
+    def test_same_owner_disconnected_reconnect_proceeds_past_input_validation(self):
+        """A known disconnected owner account must reconnect through the normal completion path."""
+        original = self._persist()
+        with self.Session.begin() as session:
+            session.get(InstagramAccount, original.id).connection_status = "disconnected"
+
+        with patch(
+            "database.instagram_connection.subscribe_oauth_account_webhooks", return_value=True
+        ):
+            reconnected = self._complete()
+
+        self.assertEqual(reconnected.id, original.id)
+        self.assertEqual(reconnected.connection_status, "connected")
+
+    def test_invalid_scopes_and_nonusable_usernames_remain_fail_soft(self):
+        """Input diagnostics must not turn optional OAuth fields into rejections."""
+        cases = (
+            ((), None),
+            (("UPPERCASE_SCOPE",), "x" * 256),
+        )
+        for scopes, username in cases:
+            with self.subTest(scopes=scopes, username_is_missing=username is None), patch(
+                "database.instagram_connection.subscribe_oauth_account_webhooks", return_value=True
+            ):
+                account = self._complete(
+                    discovery=self._discovery(
+                        instagram_user_id=(
+                            "17841438617458003"
+                            if username is None
+                            else "17841438617458004"
+                        ),
+                        username=username,
+                    ),
+                    result=self._result(scopes=scopes),
+                )
+
+            with self.Session() as session:
+                persisted = session.get(InstagramAccount, account.id)
+                credential = session.scalar(select(InstagramCredential).where(
+                    InstagramCredential.instagram_account_id == account.id
+                ))
+                self.assertIsNone(persisted.username)
+                self.assertIsNone(credential.scopes)
 
     def test_complete_classifies_credential_write_failure_as_credential_stage(self):
         """A failed encrypted credential write must not be reported as another stage."""
