@@ -362,20 +362,61 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
         legacy_reply.assert_not_called()
         legacy_json.assert_not_called()
 
-    def test_oauth_prompt_page_uses_only_opaque_public_id_and_has_no_account_metadata(self):
+    def test_oauth_prompt_page_renders_polished_neutral_viewer_without_account_metadata(self):
         from database.oauth_engagement import oauth_prompt_post
         with self.Session.begin() as session:
-            oauth_prompt_post(session, self.account_a_id, "media-a", [{"text": "safe prompt"}])
+            oauth_prompt_post(
+                session,
+                self.account_a_id,
+                "media-a",
+                [{"text": "safe prompt one\nwith formatting"}, {"text": "safe prompt two"}],
+                cover_url="https://cdn.example.test/preview.jpg",
+                permalink="https://www.instagram.com/p/safe-post/",
+            )
         with self.Session() as session:
             from database.oauth_engagement import get_oauth_prompt_post
             public_id = get_oauth_prompt_post(session, self.account_a_id, "media-a").public_id
         response = self.module.app.test_client().get(f"/p/o/{public_id}")
         body = response.get_data(as_text=True)
         self.assertEqual(response.status_code, 200)
-        self.assertIn("safe prompt", body)
+        self.assertIn("#0b0b0d", body)
+        self.assertEqual(body.count('class="prompt-card"'), 2)
+        self.assertEqual(body.count("Copy Prompt"), 2)
+        self.assertIn("Copy All Prompts", body)
+        self.assertIn("navigator.clipboard", body)
+        self.assertIn("document.execCommand", body)
+        self.assertIn("Prompt copied", body)
+        self.assertIn("https://cdn.example.test/preview.jpg", body)
+        self.assertIn("View Instagram Post", body)
+        self.assertIn("https://www.instagram.com/p/safe-post/", body)
         self.assertNotIn(str(self.account_a_id), body)
         self.assertNotIn("17841438617458101", body)
         self.assertNotIn("media-a", body)
+        self.assertNotIn("@imran.prompts", body)
+
+    def test_oauth_prompt_page_omits_instagram_link_without_permalink(self):
+        from database.oauth_engagement import oauth_prompt_post
+        with self.Session.begin() as session:
+            oauth_prompt_post(session, self.account_a_id, "media-without-link", [{"text": "safe prompt"}])
+        with self.Session() as session:
+            from database.oauth_engagement import get_oauth_prompt_post
+            public_id = get_oauth_prompt_post(session, self.account_a_id, "media-without-link").public_id
+
+        body = self.module.app.test_client().get(f"/p/o/{public_id}").get_data(as_text=True)
+
+        self.assertNotIn("View Instagram Post", body)
+
+    def test_legacy_prompt_page_remains_legacy_viewer(self):
+        with patch.object(self.module, "get_saved_post", return_value={
+            "prompts": [{"text": "legacy prompt"}],
+            "permalink": "",
+            "cover_url": "",
+        }):
+            body = self.module.app.test_client().get("/p/legacy-media").get_data(as_text=True)
+
+        self.assertIn("IMRAN PROMPTS", body)
+        self.assertIn("Generated automatically for @imran.prompts", body)
+        self.assertIn('/preview/legacy-media', body)
 
 
 if __name__ == "__main__":
