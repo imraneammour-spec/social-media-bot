@@ -450,7 +450,7 @@ class MessagesContentDashboardTest(unittest.TestCase):
             )
         response = self.client.get(f"/app/content?account={empty_ref}")
         self.assertEqual(response.status_code, 200)
-        self.assertIn("No content yet", response.get_data(as_text=True))
+        self.assertIn("No prompt-enabled content yet", response.get_data(as_text=True))
 
     def test_content_filters_remain_tenant_scoped(self):
         """15. Filters remain tenant-scoped."""

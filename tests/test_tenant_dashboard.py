@@ -22,6 +22,7 @@ from auth import (
 from database.models import (
     Base,
     InstagramAccount,
+    InstagramAutomationConfig,
     InstagramCredential,
     InstagramEngagementEvent,
     InstagramOAuthFollowupJob,
@@ -797,6 +798,37 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertNotIn(str(self.account_a2.id), leads)
         self.assertNotIn(self.account_a2.instagram_user_id, leads)
 
+    def test_account_switcher_keeps_the_current_dashboard_page(self):
+        """Changing an owned account does not unexpectedly send a user to Home."""
+        self._login_as(self.owner_a)
+        selected = self._reference(self.owner_a, self.account_a1)
+        other = self._reference(self.owner_a, self.account_a2)
+
+        page = self.client.get(f"/app/leads?account={selected}").get_data(as_text=True)
+
+        self.assertIn(f'href="/app/leads?account={other}"', page)
+        self.assertNotIn(f'href="/app?account={other}"', page)
+
+    def test_automations_uses_one_page_heading_and_labeled_checkboxes(self):
+        self._login_as(self.owner_a)
+        selected = self._reference(self.owner_a, self.account_a1)
+        with self.Session.begin() as session:
+            session.add(InstagramAutomationConfig(
+                instagram_account_id=self.account_a1.id,
+                enabled=True,
+                trigger_keywords=["prompts"],
+                public_reply_enabled=True,
+                public_reply_text="Thanks",
+            ))
+
+        page = self.client.get(f"/app/automations?account={selected}").get_data(as_text=True)
+
+        self.assertIn("<title>Automations | Imran Prompts</title>", page)
+        self.assertIn('<h1>Automations</h1>', page)
+        self.assertNotIn('<h1>Instagram workspace</h1>', page)
+        self.assertIn('for="automation_enabled"', page)
+        self.assertIn('for="public_reply_enabled"', page)
+
     def test_home_renders_existing_sanitized_status_and_summary_data(self):
         self._login_as(self.owner_a)
 
@@ -827,6 +859,8 @@ class TenantDashboardTest(unittest.TestCase):
         stylesheet = response.get_data(as_text=True)
         self.assertIn(".app-shell", stylesheet)
         self.assertIn("@media", stylesheet)
+        self.assertIn('input[type="checkbox"]', stylesheet)
+        self.assertIn(":focus-visible", stylesheet)
         self.assertNotIn("/dashboard", stylesheet)
         self.assertNotIn("/api/", stylesheet)
         response.close()

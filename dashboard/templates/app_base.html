@@ -61,7 +61,7 @@
                     <span class="account-switcher-label">Account</span>
 
                     {% for account in accounts %}
-                        <a href="{{ url_for('tenant_dashboard.app_overview', account=account.selection_ref) }}" {% if account.is_selected %}aria-current="true"{% endif %}>{{ account.username }}</a>
+                        <a href="{{ url_for(account_switch_endpoint, account=account.selection_ref) }}" {% if account.is_selected %}aria-current="true"{% endif %}>{{ account.username }}</a>
                     {% endfor %}
 
                 </nav>

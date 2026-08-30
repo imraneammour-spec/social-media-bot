@@ -348,6 +348,7 @@ def _render_page(
                 request.endpoint,
                 "",
             ),
+            account_switch_endpoint=request.endpoint,
             csrf_token=csrf_token(),
             **context,
         )

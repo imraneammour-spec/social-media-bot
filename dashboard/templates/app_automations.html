@@ -1,15 +1,13 @@
 {% extends "app_base.html" %}
 
+{% block title %}Automations{% endblock %}
+{% block heading %}Automations{% endblock %}
+
 {% block content %}
 
-<section class="app-panel">
+<section class="card page-stack">
 
-    <h1>Automations</h1>
-
-    <p>
-        Automation settings for
-        <strong>{{ selected_account.username }}</strong>
-    </p>
+    <p class="muted">Configure keyword-triggered responses for the selected account.</p>
 
     <form method="post">
 
@@ -19,15 +17,14 @@
             value="{{ csrf_token }}"
         >
 
-        <div>
-            <label>
-                <input
-                    type="checkbox"
-                    name="enabled"
-                    {% if automation.enabled %}checked{% endif %}
-                >
-                Enabled
-            </label>
+        <div class="checkbox-field">
+            <input
+                id="automation_enabled"
+                type="checkbox"
+                name="enabled"
+                {% if automation.enabled %}checked{% endif %}
+            >
+            <label for="automation_enabled">Enabled</label>
         </div>
 
         <div>
@@ -43,15 +40,14 @@
             >
         </div>
 
-        <div>
-            <label>
-                <input
-                    type="checkbox"
-                    name="public_reply_enabled"
-                    {% if automation.public_reply_enabled %}checked{% endif %}
-                >
-                Public reply enabled
-            </label>
+        <div class="checkbox-field">
+            <input
+                id="public_reply_enabled"
+                type="checkbox"
+                name="public_reply_enabled"
+                {% if automation.public_reply_enabled %}checked{% endif %}
+            >
+            <label for="public_reply_enabled">Public reply enabled</label>
         </div>
 
         <div>

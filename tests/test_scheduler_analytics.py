@@ -736,6 +736,36 @@ class SchedulerAnalyticsDashboardTest(unittest.TestCase):
         self.assertIn("Prompt requests", page)
         self.assertIn("Follow-up delivery", page)
 
+    def test_analytics_empty_range_has_a_clear_empty_state(self):
+        """An owned account with no durable activity is not presented as an error."""
+        self._login_as(self.owner_a)
+        with self.Session.begin() as session:
+            empty_account = InstagramAccount(
+                user_id=self.owner_a.id,
+                instagram_user_id="10000000000000089",
+                username="empty_analytics",
+                connection_status="connected",
+            )
+            session.add(empty_account)
+            session.flush()
+            session.add(InstagramCredential(
+                instagram_account_id=empty_account.id,
+                token_ciphertext="ciphertext-empty-analytics",
+                encryption_key_id="KEY_2026_01",
+                scopes=["instagram_business_basic"],
+                token_status="valid",
+            ))
+            empty_ref = action_reference_for_account(
+                self.owner_a.id,
+                empty_account.id,
+                "tenant-dashboard-select",
+                secret_key=self.app.secret_key,
+            )
+
+        page = self.client.get(f"/app/analytics?account={empty_ref}").get_data(as_text=True)
+
+        self.assertIn('class="empty-state">No activity in this time range.</p>', page)
+
     def test_scheduler_status_filter_upcoming(self):
         """Scheduler 'upcoming' filter shows only pending/processing jobs."""
         self._login_as(self.owner_a)

@@ -22,7 +22,7 @@
     {% if item.prompt_url %}<p><a href="{{ item.prompt_url }}">View prepared prompts</a></p>{% endif %}
     {% if item.permalink %}<p><a href="{{ item.permalink }}" target="_blank" rel="noopener noreferrer">View Instagram Post</a></p>{% endif %}
 </article>
-{% else %}<p class="empty-state">No content yet. Instagram posts with extracted prompts will appear here.</p>{% endfor %}
+{% else %}<p class="empty-state">No prompt-enabled content yet. Instagram posts with extracted prompts will appear here.</p>{% endfor %}
 </section>
 <nav aria-label="Content pagination">
     {% if content_page.has_previous %}<a href="{{ url_for('tenant_dashboard.app_content', account=selected_account.selection_ref, filter=selected_filter, page=content_page.page - 1) }}">Previous</a>{% endif %}

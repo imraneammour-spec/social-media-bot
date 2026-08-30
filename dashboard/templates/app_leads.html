@@ -56,7 +56,7 @@
         <button type="submit">{{ 'Unarchive lead' if lead.archived else 'Archive lead' }}</button>
     </form>
 </article>
-{% else %}<p class="muted">No leads yet.</p>{% endfor %}
+{% else %}<p class="empty-state">No leads yet.</p>{% endfor %}
 <nav aria-label="Lead pagination">
     {% if lead_page.has_previous %}<a href="{{ url_for('tenant_dashboard.app_leads', account=selected_account.selection_ref, view=selected_view, stage=selected_stage, q=selected_search or None, sort=selected_sort, page=lead_page.page - 1) }}">Previous</a>{% endif %}
     <span>Page {{ lead_page.page }}</span>
