@@ -205,7 +205,7 @@ class OAuthEngagementModelTest(unittest.TestCase):
         with patch.object(oauth_graph, "_request_with_runtime", return_value={
             "recipient_id": "recipient-1"
         }) as graph_request:
-            recipient = oauth_graph.send_oauth_initial_private_dm(
+            recipient = oauth_graph.send_oauth_private_access_reply(
                 lambda: self.Session(),
                 instagram_account_id=self.account_a_id,
                 instagram_user_id="17841438617458001",
@@ -486,7 +486,7 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
         ), patch.object(
             self.module, "send_oauth_public_comment_reply", return_value=True
         ), patch.object(
-            self.module, "send_oauth_initial_private_dm", return_value="recipient-1"
+            self.module, "send_oauth_private_access_reply", return_value="recipient-1"
         ) as initial_dm, patch.object(
             self.module, "send_oauth_prompt_access_button", return_value=True
         ) as access_button:
@@ -512,7 +512,7 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
         ), patch.object(
             self.module, "send_oauth_public_comment_reply", return_value=True
         ), patch.object(
-            self.module, "send_oauth_initial_private_dm", return_value="recipient-1"
+            self.module, "send_oauth_private_access_reply", return_value="recipient-1"
         ), patch.object(
             self.module, "save_oauth_pending_access"
         ) as save_pending:
@@ -535,7 +535,7 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
         with patch.object(oauth_graph, "_request_with_runtime", return_value={
             "recipient_id": "recipient-1"
         }) as graph_request:
-            oauth_graph.send_oauth_initial_private_dm(
+            oauth_graph.send_oauth_private_access_reply(
                 lambda: self.Session(),
                 instagram_account_id=self.account_a_id,
                 instagram_user_id="17841438617458001",
@@ -555,7 +555,7 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
         with patch.object(oauth_graph, "_request_with_runtime", return_value={
             "recipient_id": "recipient-1"
         }) as graph_request:
-            oauth_graph.send_oauth_initial_private_dm(
+            oauth_graph.send_oauth_private_access_reply(
                 lambda: self.Session(),
                 instagram_account_id=self.account_a_id,
                 instagram_user_id="17841438617458001",
@@ -573,7 +573,7 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
         with patch.object(oauth_graph, "_request_with_runtime", return_value={
             "recipient_id": "recipient-1"
         }) as graph_request:
-            oauth_graph.send_oauth_initial_private_dm(
+            oauth_graph.send_oauth_private_access_reply(
                 lambda: self.Session(),
                 instagram_account_id=self.account_a_id,
                 instagram_user_id="17841438617458001",
@@ -669,7 +669,7 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
         ), patch.object(
             self.module, "send_oauth_public_comment_reply", return_value=True
         ), patch.object(
-            self.module, "send_oauth_initial_private_dm", return_value="recipient-dup"
+            self.module, "send_oauth_private_access_reply", return_value="recipient-dup"
         ) as initial_dm:
             self.module.process_oauth_webhook_entry(
                 {"changes": [{"field": "comments", "value": comment}]},

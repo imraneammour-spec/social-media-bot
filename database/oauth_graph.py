@@ -204,41 +204,17 @@ def send_oauth_public_comment_reply(session_factory: Callable[[], Any], *, insta
 
 
 def send_oauth_private_access_reply(session_factory: Callable[[], Any], *, instagram_account_id: object, instagram_user_id: object, comment_id: object) -> str | None:
-    comment = str(comment_id or "").strip()
-    if not comment:
-        return None
-    try:
-        payload = _request_with_runtime(session_factory, instagram_account_id=instagram_account_id, instagram_user_id=instagram_user_id, method="POST", path=f"/{instagram_user_id}/messages", json_body={"recipient": {"comment_id": comment}, "message": {"text": "Your requested prompts are ready. Reply ACCESS to open them.", "quick_replies": [{"content_type": "text", "title": "View prompts", "payload": "VIEW_AI_PROMPTS"}]}})
-        recipient = payload.get("recipient_id")
-        return str(recipient).strip() if recipient is not None and str(recipient).strip() else None
-    except OAuthGraphOperationError:
-        return None
+    """Send the first private DM after a trigger comment.
 
-
-def send_oauth_initial_private_dm(session_factory: Callable[[], Any], *, instagram_account_id: object, instagram_user_id: object, comment_id: object) -> str | None:
-    """Send the first DM after a trigger comment with a View-prompts quick reply.
-
-    The message is plain text with one quick-reply button whose payload is
-    ``VIEW_AI_PROMPTS``.  It contains no URL, no web_url button, and no
-    ACCESS/SEND instruction.  The user presses the quick reply to unlock
-    the second message which carries the real prompt-page link.
+    Uses the original proven comment-recipient private reply structure that
+    correctly renders a visible quick-reply button in Instagram.  The message
+    contains no URL, no web_url button, and no ACCESS/SEND instruction.  The
+    user presses the visible "View prompts" quick reply to unlock the second
+    message which carries the real prompt-page link.
     """
     comment = str(comment_id or "").strip()
     if not comment:
         return None
-    body = {
-        "recipient": {"comment_id": comment},
-        "message": {
-            "text": "Your requested prompts are ready.",
-            "quick_replies": [
-                {
-                    "content_type": "text",
-                    "title": "View prompts",
-                    "payload": "VIEW_AI_PROMPTS",
-                }
-            ],
-        },
-    }
     try:
         payload = _request_with_runtime(
             session_factory,
@@ -246,7 +222,15 @@ def send_oauth_initial_private_dm(session_factory: Callable[[], Any], *, instagr
             instagram_user_id=instagram_user_id,
             method="POST",
             path=f"/{instagram_user_id}/messages",
-            json_body=body,
+            json_body={
+                "recipient": {"comment_id": comment},
+                "message": {
+                    "text": "Your requested prompts are ready.",
+                    "quick_replies": [
+                        {"content_type": "text", "title": "View prompts", "payload": "VIEW_AI_PROMPTS"}
+                    ],
+                },
+            },
         )
         recipient = payload.get("recipient_id")
         return str(recipient).strip() if recipient is not None and str(recipient).strip() else None
