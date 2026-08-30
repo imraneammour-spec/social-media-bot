@@ -45,6 +45,7 @@ class WebhookTenantRoutingTest(unittest.TestCase):
             "FLASK_SECRET_KEY": "integration-test-secret",
             "META_APP_SECRET": "routing-signing-secret",
             "INSTAGRAM_ACCESS_TOKEN": "legacy-token-must-not-leak",
+            "LEGACY_INSTAGRAM_USER_ID": "17841438617458289",
             "GEMINI_API_KEY": "",
         }
         module_name = "phase4b_webhook_tenant_routing"

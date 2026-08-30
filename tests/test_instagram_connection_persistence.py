@@ -11,11 +11,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.orm.session import SessionTransaction
 
-from database.credentials import (
-    CredentialEncryptionError,
-    credential_keyring_from_environment,
-    load_decrypted_access_token,
-)
+from database.credentials import credential_keyring_from_environment, load_decrypted_access_token
 from database.instagram_connection import (
     InstagramConnectionError,
     complete_discovered_instagram_connection,
@@ -98,11 +94,20 @@ class InstagramConnectionPersistenceTest(unittest.TestCase):
             now=now or datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
         )
 
-    def _complete(self, *, user_id=None, discovery=None, result=None, keyring=None, now=None):
+    def _complete(
+        self,
+        *,
+        user_id=None,
+        legacy_instagram_user_id="17841438617459999",
+        discovery=None,
+        result=None,
+        keyring=None,
+        now=None,
+    ):
         return complete_discovered_instagram_connection(
             self.Session,
             user_id=user_id or self.owner_id,
-            legacy_instagram_user_id="17841438617459999",
+            legacy_instagram_user_id=legacy_instagram_user_id,
             discovery=discovery or self._discovery(),
             token_result=result or self._result(scopes=(
                 "instagram_business_basic",
@@ -420,7 +425,6 @@ class InstagramConnectionPersistenceTest(unittest.TestCase):
                 self._complete()
 
         self.assertEqual(str(raised.exception), "Instagram connection could not be completed.")
-        self.assertEqual(raised.exception.diagnostic_stage, "subscription_record")
         with self.Session() as session:
             account = session.get(InstagramAccount, original.id)
             credential = session.scalar(select(InstagramCredential).where(
@@ -436,65 +440,6 @@ class InstagramConnectionPersistenceTest(unittest.TestCase):
             self.assertEqual(load_decrypted_access_token(session, account, self.keyring),
                              "long-lived-token-must-never-persist-in-plaintext")
 
-    def test_complete_classifies_invalid_user_id_as_inputs_user_id(self):
-        """A malformed authenticated user identity must keep its finite safe label."""
-        with self.assertRaises(InstagramConnectionError) as raised:
-            self._complete(user_id="not-a-user-uuid")
-
-        self.assertEqual(raised.exception.diagnostic_stage, "stage_inputs")
-        self.assertEqual(raised.exception.input_diagnostic_stage, "inputs_user_id")
-
-    def test_complete_classifies_invalid_discovery_identity_as_inputs_discovery_identity(self):
-        """A malformed discovered professional identity must not share another input label."""
-        with self.assertRaises(InstagramConnectionError) as raised:
-            self._complete(
-                discovery=InstagramAccountDiscovery(instagram_user_id="invalid", username=None),
-            )
-
-        self.assertEqual(raised.exception.diagnostic_stage, "stage_inputs")
-        self.assertEqual(raised.exception.input_diagnostic_stage, "inputs_discovery_identity")
-
-    def test_complete_classifies_invalid_or_empty_token_as_inputs_token(self):
-        """A nonusable long-lived token must preserve only its approved input label."""
-        for token in ("", None):
-            with self.subTest(token_is_empty=token == ""):
-                with self.assertRaises(InstagramConnectionError) as raised:
-                    self._complete(result=InstagramOAuthTokenResult(token, None, None))
-
-                self.assertEqual(raised.exception.diagnostic_stage, "stage_inputs")
-                self.assertEqual(raised.exception.input_diagnostic_stage, "inputs_token")
-
-    def test_complete_classifies_legacy_identity_equality_as_inputs_legacy_identity(self):
-        """The legacy identity guard must retain a distinct, data-free label."""
-        with self.assertRaises(InstagramConnectionError) as raised:
-            self._complete(discovery=self._discovery(instagram_user_id="17841438617459999"))
-
-        self.assertEqual(raised.exception.diagnostic_stage, "stage_inputs")
-        self.assertEqual(raised.exception.input_diagnostic_stage, "inputs_legacy_identity")
-
-    def test_complete_classifies_invalid_clock_as_inputs_clock(self):
-        """A malformed supplied clock must not be reported as another input failure."""
-        with self.assertRaises(InstagramConnectionError) as raised:
-            self._complete(now="not-a-datetime")
-
-        self.assertEqual(raised.exception.diagnostic_stage, "stage_inputs")
-        self.assertEqual(raised.exception.input_diagnostic_stage, "inputs_clock")
-
-    def test_complete_classifies_unexpected_discovery_shape_as_inputs_unexpected(self):
-        """Unexpected discovery access errors must not disclose or reuse explicit labels."""
-
-        class UnexpectedDiscovery:
-            @property
-            def instagram_user_id(self):
-                raise TypeError("private discovery shape detail")
-
-        with self.assertRaises(InstagramConnectionError) as raised:
-            self._complete(discovery=UnexpectedDiscovery())
-
-        self.assertEqual(raised.exception.diagnostic_stage, "stage_inputs")
-        self.assertEqual(raised.exception.input_diagnostic_stage, "inputs_unexpected")
-        self.assertNotIn("private discovery shape detail", str(raised.exception))
-
     def test_same_owner_disconnected_reconnect_proceeds_past_input_validation(self):
         """A known disconnected owner account must reconnect through the normal completion path."""
         original = self._persist()
@@ -508,6 +453,110 @@ class InstagramConnectionPersistenceTest(unittest.TestCase):
 
         self.assertEqual(reconnected.id, original.id)
         self.assertEqual(reconnected.connection_status, "connected")
+
+    def test_unset_legacy_mode_connects_the_same_owner_environment_managed_account(self):
+        """A tenant-only deployment must transition its own former legacy account safely."""
+        professional_id = "17841438617458031"
+        with self.Session.begin() as session:
+            account = InstagramAccount(
+                user_id=self.owner_id,
+                instagram_user_id=professional_id,
+                provider="instagram",
+                connection_status="environment_managed",
+            )
+            session.add(account)
+            session.flush()
+            original_id = account.id
+
+        with patch(
+            "database.instagram_connection.subscribe_oauth_account_webhooks", return_value=True
+        ):
+            connected = self._complete(
+                legacy_instagram_user_id="",
+                discovery=self._discovery(instagram_user_id=professional_id),
+            )
+
+        self.assertEqual(connected.id, original_id)
+        self.assertEqual(connected.connection_status, "connected")
+        self.assertEqual(len(self._accounts()), 1)
+        self.assertEqual(len(self._credentials()), 1)
+
+    def test_configured_legacy_mode_keeps_the_environment_managed_identity_reserved(self):
+        """An explicit legacy deployment must not convert its reserved workspace through OAuth."""
+        professional_id = "17841438617458030"
+        with self.Session.begin() as session:
+            session.add(InstagramAccount(
+                user_id=self.owner_id,
+                instagram_user_id=professional_id,
+                provider="instagram",
+                connection_status="environment_managed",
+            ))
+
+        with self.assertRaises(InstagramConnectionError):
+            self._complete(
+                legacy_instagram_user_id=professional_id,
+                discovery=self._discovery(instagram_user_id=professional_id),
+            )
+
+        with self.Session() as session:
+            account = session.scalar(select(InstagramAccount).where(
+                InstagramAccount.instagram_user_id == professional_id
+            ))
+            self.assertEqual(account.connection_status, "environment_managed")
+            self.assertEqual(self._credentials(), [])
+
+    def test_unset_legacy_mode_keeps_cross_owner_identity_collision_rejected(self):
+        """Removing legacy mode must not permit a second owner to claim an existing account."""
+        professional_id = "17841438617458032"
+        with self.Session.begin() as session:
+            session.add(InstagramAccount(
+                user_id=self.other_owner_id,
+                instagram_user_id=professional_id,
+                provider="instagram",
+                connection_status="environment_managed",
+            ))
+
+        with self.assertRaises(InstagramConnectionError):
+            self._complete(
+                legacy_instagram_user_id="",
+                discovery=self._discovery(instagram_user_id=professional_id),
+            )
+
+        with self.Session() as session:
+            account = session.scalar(select(InstagramAccount).where(
+                InstagramAccount.instagram_user_id == professional_id
+            ))
+            self.assertEqual(account.user_id, self.other_owner_id)
+            self.assertEqual(account.connection_status, "environment_managed")
+
+    def test_unset_legacy_mode_does_not_merge_an_unrelated_disconnected_app_identity(self):
+        """OAuth may not silently repurpose a disconnected record with another external identity."""
+        app_scoped_id = "17841438617458033"
+        professional_id = "17841438617458034"
+        with self.Session.begin() as session:
+            disconnected = InstagramAccount(
+                user_id=self.owner_id,
+                instagram_user_id=app_scoped_id,
+                provider="instagram",
+                connection_status="disconnected",
+            )
+            session.add(disconnected)
+            session.flush()
+            disconnected_id = disconnected.id
+
+        with patch(
+            "database.instagram_connection.subscribe_oauth_account_webhooks", return_value=True
+        ):
+            connected = self._complete(
+                legacy_instagram_user_id="",
+                discovery=self._discovery(instagram_user_id=professional_id),
+            )
+
+        self.assertNotEqual(connected.id, disconnected_id)
+        with self.Session() as session:
+            original = session.get(InstagramAccount, disconnected_id)
+            self.assertEqual(original.instagram_user_id, app_scoped_id)
+            self.assertEqual(original.connection_status, "disconnected")
 
     def test_invalid_scopes_and_nonusable_usernames_remain_fail_soft(self):
         """Input diagnostics must not turn optional OAuth fields into rejections."""
@@ -538,31 +587,6 @@ class InstagramConnectionPersistenceTest(unittest.TestCase):
                 ))
                 self.assertIsNone(persisted.username)
                 self.assertIsNone(credential.scopes)
-
-    def test_complete_classifies_credential_write_failure_as_credential_stage(self):
-        """A failed encrypted credential write must not be reported as another stage."""
-        with patch(
-            "database.instagram_connection.store_encrypted_credential",
-            side_effect=CredentialEncryptionError("private encryption detail"),
-        ):
-            with self.assertRaises(InstagramConnectionError) as raised:
-                self._complete()
-
-        self.assertEqual(raised.exception.diagnostic_stage, "credential_stage")
-
-    def test_complete_classifies_finalization_failure_as_final_transaction(self):
-        """A post-subscription config failure must retain a distinct safe stage."""
-        with patch(
-            "database.instagram_connection.subscribe_oauth_account_webhooks",
-            return_value=True,
-        ), patch(
-            "database.instagram_connection.ensure_initial_oauth_automation_config",
-            side_effect=SQLAlchemyError("private database detail"),
-        ):
-            with self.assertRaises(InstagramConnectionError) as raised:
-                self._complete()
-
-        self.assertEqual(raised.exception.diagnostic_stage, "final_transaction")
 
     def test_reconnect_readiness_uses_only_the_scopes_meta_granted(self):
         """Replacing a credential with a denied scope must return to reconnect-required."""

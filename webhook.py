@@ -147,7 +147,8 @@ CLOUDINARY_API_SECRET = os.getenv(
     ""
 ).strip()
 
-INSTAGRAM_USER_ID = "17841438617458289"
+LEGACY_INSTAGRAM_USER_ID = os.getenv("LEGACY_INSTAGRAM_USER_ID", "").strip()
+INSTAGRAM_USER_ID = LEGACY_INSTAGRAM_USER_ID
 
 # Phase 3A auth is additive.  If this deployment has not yet configured both
 # DATABASE_URL and FLASK_SECRET_KEY, public compatibility routes keep working

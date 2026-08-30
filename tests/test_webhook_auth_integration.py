@@ -41,6 +41,7 @@ class WebhookAuthenticationIntegrationTest(unittest.TestCase):
             "APP_ENV": "test",
             "ALLOW_UNSIGNED_WEBHOOKS": "1",
             "INSTAGRAM_ACCESS_TOKEN": "",
+            "LEGACY_INSTAGRAM_USER_ID": "17841438617458289",
             "GEMINI_API_KEY": "",
         }
         self.module_name = "phase3b_webhook_integration"
