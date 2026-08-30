@@ -538,6 +538,70 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
         prompt_page.assert_not_called()
         private_reply.assert_not_called()
 
+    def test_missing_runtime_config_emits_unavailable_prompt_decision(self):
+        with patch.object(self.module, "generate_oauth_smart_reply", return_value=""), patch(
+            "builtins.print"
+        ) as log:
+            self._process(self.primary_external_id, "missing-config-decision", "testauto")
+
+        log.assert_any_call(
+            "OAUTH AUTOMATION: prompt_request_decision=runtime_config_unavailable"
+        )
+
+    def test_nonmatching_runtime_config_emits_keyword_no_match_prompt_decision(self):
+        self._set_config(self.primary_external_id, trigger_keywords=["launch"])
+        with patch.object(self.module, "generate_oauth_smart_reply", return_value=""), patch(
+            "builtins.print"
+        ) as log:
+            self._process(self.primary_external_id, "no-match-decision", "testauto")
+
+        log.assert_any_call(
+            "OAUTH AUTOMATION: prompt_request_decision=keyword_no_match"
+        )
+
+    def test_matching_runtime_config_emits_matched_prompt_decision(self):
+        self._set_config(self.primary_external_id, trigger_keywords=["testauto"])
+        with patch.object(
+            self.module, "_oauth_prompt_post_for_comment", return_value="prompt-page"
+        ), patch.object(
+            self.module, "send_oauth_public_comment_reply", return_value=True
+        ), patch.object(
+            self.module, "send_oauth_private_access_reply", return_value="recipient-1"
+        ), patch("builtins.print") as log:
+            self._process(self.primary_external_id, "matched-decision", "testauto")
+
+        log.assert_any_call(
+            "OAUTH AUTOMATION: prompt_request_decision=prompt_request_matched"
+        )
+
+    def test_prompt_decision_marker_never_contains_comment_or_config_values(self):
+        secret_comment = "comment-text-must-not-appear"
+        secret_keyword = "keyword-must-not-appear"
+        secret_public_reply = "public-reply-must-not-appear"
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=[secret_keyword],
+            public_reply_text=secret_public_reply,
+        )
+        with patch.object(self.module, "generate_oauth_smart_reply", return_value=""), patch(
+            "builtins.print"
+        ) as log:
+            self._process(self.primary_external_id, "comment-id-must-not-appear", secret_comment)
+
+        rendered = " ".join(
+            str(argument) for call in log.call_args_list for argument in call.args
+        )
+        for sensitive_value in (
+            "comment-id-must-not-appear",
+            secret_comment,
+            secret_keyword,
+            secret_public_reply,
+            "customer",
+            self.primary_external_id,
+            self.environment["INSTAGRAM_ACCESS_TOKEN"],
+        ):
+            self.assertNotIn(sensitive_value, rendered)
+
     def test_invalid_runtime_config_skips_new_prompt_request_delivery(self):
         self._set_config(
             self.primary_external_id,

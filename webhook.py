@@ -3783,13 +3783,20 @@ def _process_oauth_comment(value, route, entry_external_id, public_base_url, ses
     with session_factory.begin() as db_session:
         if not claim_oauth_event(db_session, route.instagram_account_id, comment_id, "comment"):
             return
-    is_prompt_request = bool(
-        automation_config is not None
-        and any(
+    if automation_config is None:
+        is_prompt_request = False
+        prompt_request_decision = "runtime_config_unavailable"
+    else:
+        is_prompt_request = any(
             word in automation_config.trigger_keywords
             for word in _oauth_words(comment_text)
         )
-    )
+        prompt_request_decision = (
+            "prompt_request_matched"
+            if is_prompt_request
+            else "keyword_no_match"
+        )
+    print(f"OAUTH AUTOMATION: prompt_request_decision={prompt_request_decision}")
     try:
         if not is_prompt_request:
             cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
