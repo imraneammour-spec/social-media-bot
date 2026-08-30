@@ -199,7 +199,7 @@ class OAuthEngagementModelTest(unittest.TestCase):
             "status=500 code=none subcode=none message=provider_rejected"
         )
 
-    def test_initial_private_dm_uses_comment_recipient_and_omits_url_button_and_access_copy(self):
+    def test_initial_private_dm_uses_comment_recipient_quick_reply_and_omits_url_and_access_copy(self):
         from database import oauth_graph
 
         with patch.object(oauth_graph, "_request_with_runtime", return_value={
@@ -216,14 +216,20 @@ class OAuthEngagementModelTest(unittest.TestCase):
         body = graph_request.call_args.kwargs["json_body"]
         self.assertEqual(body["recipient"], {"comment_id": "comment-initial-dm"})
         self.assertEqual(body["message"]["text"], "Your requested prompts are ready.")
+        # Quick reply IS present with the correct payload.
+        self.assertIn("quick_replies", body["message"])
+        self.assertEqual(len(body["message"]["quick_replies"]), 1)
+        qr = body["message"]["quick_replies"][0]
+        self.assertEqual(qr["content_type"], "text")
+        self.assertEqual(qr["title"], "View prompts")
+        self.assertEqual(qr["payload"], "VIEW_AI_PROMPTS")
+        # No web_url button, no attachment, no ACCESS/SEND instruction.
         self.assertNotIn("attachment", body["message"])
         self.assertNotIn("messaging_type", body)
-        self.assertNotIn("quick_replies", body["message"])
         rendered = str(body).upper()
         self.assertNotIn("HTTP", rendered)
         self.assertNotIn("ACCESS", rendered)
         self.assertNotIn("SEND", rendered)
-        self.assertNotIn("VIEW PROMPTS", rendered)
 
 
 class OAuthWebhookEngagementTest(unittest.TestCase):
@@ -305,8 +311,8 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
         with self.Session.begin() as session:
             save_oauth_pending_access(session, self.account_a_id, "customer", "https://example.test/p/o/a")
             save_oauth_pending_access(session, self.account_b_id, "customer", "https://example.test/p/o/b")
-        no_mid = {"sender": {"id": "customer"}, "message": {"text": "sure"}}
-        event = {"sender": {"id": "customer"}, "message": {"mid": "mid-a", "text": "sure"}}
+        no_mid = {"sender": {"id": "customer"}, "message": {"text": "ok", "quick_reply": {"payload": "VIEW_AI_PROMPTS"}}}
+        event = {"sender": {"id": "customer"}, "message": {"mid": "mid-a", "text": "View prompts", "quick_reply": {"payload": "VIEW_AI_PROMPTS"}}}
         with patch.dict(os.environ, {"INSTAGRAM_OAUTH_ENGAGEMENT_ENABLED": "true"}, clear=False), patch.object(
             self.module, "send_oauth_prompt_access_button", return_value=True
         ) as button:
@@ -317,7 +323,7 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
     def test_oauth_access_message_failure_keeps_generic_log_without_temporary_stage(self):
         from database.oauth_engagement import save_oauth_pending_access
 
-        event = {"sender": {"id": "customer"}, "message": {"mid": "button-mid", "text": "sure"}}
+        event = {"sender": {"id": "customer"}, "message": {"mid": "button-mid", "text": "View prompts", "quick_reply": {"payload": "VIEW_AI_PROMPTS"}}}
         with self.Session.begin() as session:
             save_oauth_pending_access(session, self.account_a_id, "customer", "http://internal.test/p/o/prompt")
         with patch.object(self.module, "send_oauth_prompt_access_button", return_value=False), patch(
@@ -335,7 +341,7 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
         from database import oauth_graph
         from database.oauth_engagement import save_oauth_pending_access
 
-        event = {"sender": {"id": "customer"}, "message": {"mid": "https-mid", "text": "yes please"}}
+        event = {"sender": {"id": "customer"}, "message": {"mid": "https-mid", "text": "View prompts", "quick_reply": {"payload": "VIEW_AI_PROMPTS"}}}
         with self.Session.begin() as session:
             save_oauth_pending_access(session, self.account_a_id, "customer", "https://example.test/p/o/prompt")
         with patch.object(oauth_graph, "_request_with_runtime", return_value={}) as graph_request:
@@ -362,12 +368,12 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
                 recipient_id="customer",
                 page_url="https://example.test/p/o/b",
             )
-        reply_event = {"sender": {"id": "customer"}, "message": {"mid": "reply-mid-a", "text": "sure"}}
+        quick_reply_event = {"sender": {"id": "customer"}, "message": {"mid": "reply-mid-a", "text": "View prompts", "quick_reply": {"payload": "VIEW_AI_PROMPTS"}}}
         normal_event = {"sender": {"id": "customer"}, "message": {"mid": "normal-mid-a", "text": "thanks"}}
         with patch.dict(os.environ, {"INSTAGRAM_OAUTH_ENGAGEMENT_ENABLED": "true"}, clear=False), patch.object(
             self.module, "send_oauth_prompt_access_button", return_value=True
         ):
-            self.module.process_oauth_webhook_entry({"messaging": [reply_event, normal_event]}, self._route(self.account_a_id), "17841438617458101", "https://example.test")
+            self.module.process_oauth_webhook_entry({"messaging": [quick_reply_event, normal_event]}, self._route(self.account_a_id), "17841438617458101", "https://example.test")
         with self.Session() as session:
             account_a_jobs = list(session.query(InstagramOAuthFollowupJob).filter_by(instagram_account_id=self.account_a_id))
             account_b_job = session.query(InstagramOAuthFollowupJob).filter_by(instagram_account_id=self.account_b_id).one()
@@ -464,8 +470,14 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
             "media": {"id": "media-1"},
         }
 
-    def test_trigger_comment_sends_exactly_one_plain_initial_dm_with_no_url_or_button(self):
-        """Initial DM after trigger comment is plain text with no URL/button/ACCESS."""
+    def _quick_reply_event(self, mid="qr-mid", sender_id="customer", text="View prompts"):
+        return {
+            "sender": {"id": sender_id},
+            "message": {"mid": mid, "text": text, "quick_reply": {"payload": "VIEW_AI_PROMPTS"}},
+        }
+
+    def test_trigger_comment_sends_one_initial_dm_with_view_prompts_quick_reply(self):
+        """Initial DM after trigger comment has quick_reply View prompts, no URL/button."""
         comment = self._trigger_comment()
         with patch.dict(os.environ, {"INSTAGRAM_OAUTH_ENGAGEMENT_ENABLED": "true"}, clear=False), patch.object(
             self.module, "oauth_automation_runtime_config", return_value=self._automation_config()
@@ -484,12 +496,10 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
                 "17841438617458101",
                 "https://example.test",
             )
-        # Exactly one initial DM, no View-prompts button at this stage.
         initial_dm.assert_called_once()
         access_button.assert_not_called()
         body = initial_dm.call_args.kwargs
         self.assertEqual(body["comment_id"], "comment-trigger")
-        # The Graph helper should be called with the right account.
         self.assertEqual(body["instagram_account_id"], self.account_a_id)
 
     def test_trigger_comment_stores_pending_access_with_prompt_page_url(self):
@@ -518,13 +528,72 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
         self.assertEqual(save_pending.call_args.args[1], self.account_a_id)
         self.assertEqual(save_pending.call_args.args[2], "recipient-1")
 
-    def test_arbitrary_inbound_reply_triggers_one_view_prompts_button(self):
-        """Any ordinary reply from a recipient with pending access triggers the button."""
+    def test_initial_dm_contains_no_prompt_url(self):
+        """The initial DM Graph body must not contain any prompt page URL."""
+        from database import oauth_graph
+
+        with patch.object(oauth_graph, "_request_with_runtime", return_value={
+            "recipient_id": "recipient-1"
+        }) as graph_request:
+            oauth_graph.send_oauth_initial_private_dm(
+                lambda: self.Session(),
+                instagram_account_id=self.account_a_id,
+                instagram_user_id="17841438617458001",
+                comment_id="comment-check",
+            )
+        body = graph_request.call_args.kwargs["json_body"]
+        self.assertIn("text", body["message"])
+        self.assertEqual(body["message"]["text"], "Your requested prompts are ready.")
+        self.assertNotIn("attachment", body["message"])
+        rendered = str(body).upper()
+        self.assertNotIn("HTTP", rendered)
+
+    def test_initial_dm_contains_no_access_or_send_instruction(self):
+        """The initial DM text must not contain ACCESS or SEND instructions."""
+        from database import oauth_graph
+
+        with patch.object(oauth_graph, "_request_with_runtime", return_value={
+            "recipient_id": "recipient-1"
+        }) as graph_request:
+            oauth_graph.send_oauth_initial_private_dm(
+                lambda: self.Session(),
+                instagram_account_id=self.account_a_id,
+                instagram_user_id="17841438617458001",
+                comment_id="comment-check",
+            )
+        body = graph_request.call_args.kwargs["json_body"]
+        rendered = str(body).upper()
+        self.assertNotIn("ACCESS", rendered)
+        self.assertNotIn("SEND", rendered)
+
+    def test_initial_dm_quick_reply_payload_is_view_ai_prompts(self):
+        """The initial DM quick_reply payload must be VIEW_AI_PROMPTS."""
+        from database import oauth_graph
+
+        with patch.object(oauth_graph, "_request_with_runtime", return_value={
+            "recipient_id": "recipient-1"
+        }) as graph_request:
+            oauth_graph.send_oauth_initial_private_dm(
+                lambda: self.Session(),
+                instagram_account_id=self.account_a_id,
+                instagram_user_id="17841438617458001",
+                comment_id="comment-check",
+            )
+        body = graph_request.call_args.kwargs["json_body"]
+        self.assertIn("quick_replies", body["message"])
+        self.assertEqual(len(body["message"]["quick_replies"]), 1)
+        qr = body["message"]["quick_replies"][0]
+        self.assertEqual(qr["content_type"], "text")
+        self.assertEqual(qr["title"], "View prompts")
+        self.assertEqual(qr["payload"], "VIEW_AI_PROMPTS")
+
+    def test_arbitrary_normal_reply_does_not_release_pending_access(self):
+        """Arbitrary text like 'ok' or 'thanks' must NOT unlock the prompt link."""
         from database.oauth_engagement import save_oauth_pending_access
 
         with self.Session.begin() as session:
             save_oauth_pending_access(session, self.account_a_id, "customer", "https://example.test/p/o/a")
-        reply_event = {"sender": {"id": "customer"}, "message": {"mid": "reply-mid", "text": "thanks"}}
+        reply_event = {"sender": {"id": "customer"}, "message": {"mid": "normal-mid", "text": "thanks"}}
         with patch.dict(os.environ, {"INSTAGRAM_OAUTH_ENGAGEMENT_ENABLED": "true"}, clear=False), patch.object(
             self.module, "send_oauth_prompt_access_button", return_value=True
         ) as button:
@@ -534,16 +603,51 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
                 "17841438617458101",
                 "https://example.test",
             )
-        button.assert_called_once()
-        self.assertEqual(button.call_args.kwargs["page_url"], "https://example.test/p/o/a")
+        button.assert_not_called()
 
-    def test_duplicate_inbound_message_mid_does_not_duplicate_button(self):
-        """Duplicate message mid does not send the button twice (durable dedupe)."""
+    def test_view_prompts_quick_reply_sends_one_prompt_link_button(self):
+        """Pressing the View prompts quick reply sends exactly one prompt-link button."""
         from database.oauth_engagement import save_oauth_pending_access
 
         with self.Session.begin() as session:
             save_oauth_pending_access(session, self.account_a_id, "customer", "https://example.test/p/o/a")
-        event = {"sender": {"id": "customer"}, "message": {"mid": "dup-mid", "text": "sure"}}
+        event = self._quick_reply_event(mid="qr-mid")
+        with patch.dict(os.environ, {"INSTAGRAM_OAUTH_ENGAGEMENT_ENABLED": "true"}, clear=False), patch.object(
+            self.module, "send_oauth_prompt_access_button", return_value=True
+        ) as button:
+            self.module.process_oauth_webhook_entry(
+                {"messaging": [event]},
+                self._route(self.account_a_id),
+                "17841438617458101",
+                "https://example.test",
+            )
+        button.assert_called_once()
+        self.assertEqual(button.call_args.kwargs["page_url"], "https://example.test/p/o/a")
+
+    def test_second_button_uses_correct_opaque_https_prompt_url(self):
+        """The second DM button URL must be the opaque HTTPS prompt page URL."""
+        from database import oauth_graph
+        from database.oauth_engagement import save_oauth_pending_access
+
+        with self.Session.begin() as session:
+            save_oauth_pending_access(session, self.account_a_id, "customer", "https://example.test/p/o/prompt")
+        event = self._quick_reply_event(mid="https-mid")
+        with patch.object(oauth_graph, "_request_with_runtime", return_value={}) as graph_request:
+            self.module._process_oauth_message(
+                event, self._route(self.account_a_id), "17841438617458101", self.Session
+            )
+        self.assertEqual(
+            graph_request.call_args.kwargs["json_body"]["message"]["attachment"]["payload"]["buttons"][0]["url"],
+            "https://example.test/p/o/prompt",
+        )
+
+    def test_duplicate_quick_reply_mid_does_not_duplicate_delivery(self):
+        """Duplicate quick-reply message mid does not send the button twice (durable dedupe)."""
+        from database.oauth_engagement import save_oauth_pending_access
+
+        with self.Session.begin() as session:
+            save_oauth_pending_access(session, self.account_a_id, "customer", "https://example.test/p/o/a")
+        event = self._quick_reply_event(mid="dup-mid")
         with patch.dict(os.environ, {"INSTAGRAM_OAUTH_ENGAGEMENT_ENABLED": "true"}, clear=False), patch.object(
             self.module, "send_oauth_prompt_access_button", return_value=True
         ) as button:
@@ -555,7 +659,7 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
             )
         button.assert_called_once()
 
-    def test_duplicate_trigger_comment_does_not_duplicate_initial_dm(self):
+    def test_duplicate_trigger_webhook_does_not_duplicate_initial_dm(self):
         """Duplicate trigger comment is deduped by the durable engagement event claim."""
         comment = self._trigger_comment(comment_id="comment-dup")
         with patch.dict(os.environ, {"INSTAGRAM_OAUTH_ENGAGEMENT_ENABLED": "true"}, clear=False), patch.object(
@@ -581,13 +685,13 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
             )
         initial_dm.assert_called_once()
 
-    def test_pending_access_consumed_after_successful_button_delivery(self):
-        """Pending access is removed only after the View-prompts button succeeds."""
+    def test_pending_access_consumed_only_after_successful_link_delivery(self):
+        """Pending access is removed only after the prompt-link button succeeds."""
         from database.oauth_engagement import get_oauth_pending_access, save_oauth_pending_access
 
         with self.Session.begin() as session:
             save_oauth_pending_access(session, self.account_a_id, "customer", "https://example.test/p/o/a")
-        event = {"sender": {"id": "customer"}, "message": {"mid": "consume-mid", "text": "yes"}}
+        event = self._quick_reply_event(mid="consume-mid")
         with patch.dict(os.environ, {"INSTAGRAM_OAUTH_ENGAGEMENT_ENABLED": "true"}, clear=False), patch.object(
             self.module, "send_oauth_prompt_access_button", return_value=True
         ):
@@ -600,13 +704,13 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
         with self.Session() as session:
             self.assertIsNone(get_oauth_pending_access(session, self.account_a_id, "customer"))
 
-    def test_failed_button_send_does_not_consume_pending_access(self):
-        """If the button delivery fails, pending access remains for the next attempt."""
+    def test_failed_link_delivery_preserves_pending_access(self):
+        """If the prompt-link button delivery fails, pending access remains for the next attempt."""
         from database.oauth_engagement import get_oauth_pending_access, save_oauth_pending_access
 
         with self.Session.begin() as session:
             save_oauth_pending_access(session, self.account_a_id, "customer", "https://example.test/p/o/a")
-        event = {"sender": {"id": "customer"}, "message": {"mid": "fail-mid", "text": "yes"}}
+        event = self._quick_reply_event(mid="fail-mid")
         with patch.dict(os.environ, {"INSTAGRAM_OAUTH_ENGAGEMENT_ENABLED": "true"}, clear=False), patch.object(
             self.module, "send_oauth_prompt_access_button", return_value=False
         ):
@@ -626,7 +730,7 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
 
         with self.Session.begin() as session:
             save_oauth_pending_access(session, self.account_a_id, "customer", "https://example.test/p/o/a")
-        event = {"sender": {"id": "customer"}, "message": {"mid": "flow-mid", "text": "ok"}}
+        event = self._quick_reply_event(mid="flow-mid")
         with patch.dict(os.environ, {"INSTAGRAM_OAUTH_ENGAGEMENT_ENABLED": "true"}, clear=False), patch.object(
             self.module, "send_oauth_prompt_access_button", return_value=True
         ):
@@ -648,7 +752,7 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
 
         with self.Session.begin() as session:
             save_oauth_pending_access(session, self.account_a_id, "customer", "https://example.test/p/o/a")
-        event = {"sender": {"id": "customer"}, "message": {"mid": "iso-mid", "text": "sure"}}
+        event = self._quick_reply_event(mid="iso-mid")
         with patch.dict(os.environ, {"INSTAGRAM_OAUTH_ENGAGEMENT_ENABLED": "true"}, clear=False), patch.object(
             self.module, "send_oauth_prompt_access_button", return_value=True
         ) as button:
@@ -660,31 +764,6 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
             )
         # No pending access for account B, so no button should be sent.
         button.assert_not_called()
-
-    def test_initial_dm_contains_no_url_or_button_or_access_instruction(self):
-        """Verify the initial DM Graph body has no URL, button, or ACCESS/SEND text."""
-        from database import oauth_graph
-
-        with patch.object(oauth_graph, "_request_with_runtime", return_value={
-            "recipient_id": "recipient-1"
-        }) as graph_request:
-            oauth_graph.send_oauth_initial_private_dm(
-                lambda: self.Session(),
-                instagram_account_id=self.account_a_id,
-                instagram_user_id="17841438617458001",
-                comment_id="comment-check",
-            )
-        body = graph_request.call_args.kwargs["json_body"]
-        self.assertIn("text", body["message"])
-        self.assertEqual(body["message"]["text"], "Your requested prompts are ready.")
-        self.assertNotIn("attachment", body["message"])
-        self.assertNotIn("quick_replies", body["message"])
-        rendered = str(body).upper()
-        self.assertNotIn("HTTP", rendered)
-        self.assertNotIn("ACCESS", rendered)
-        self.assertNotIn("SEND", rendered)
-        self.assertNotIn("VIEW PROMPTS", rendered)
-        self.assertNotIn("BUTTON", rendered)
 
     def test_second_dm_uses_view_prompts_button_with_correct_text(self):
         """The second DM uses 'Your requested prompts are ready to view.' with button."""

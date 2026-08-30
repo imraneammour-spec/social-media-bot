@@ -3946,14 +3946,18 @@ def _process_oauth_message(event, route, entry_external_id, session_factory):
     with session_factory.begin() as db_session:
         if not claim_oauth_event(db_session, route.instagram_account_id, message_id, "message"):
             return
-    # Check for pending prompt access for this account + sender.
-    # If pending access exists, ANY ordinary inbound reply unlocks the
-    # View-prompts button — no ACCESS/SEND keyword requirement.
-    with session_factory() as db_session:
-        page_url = get_oauth_pending_access(db_session, route.instagram_account_id, sender_id)
-    if not page_url:
-        # No pending access: this is a normal user reply.  Cancel any queued
-        # follow-up because the person has already re-engaged naturally.
+    # Only the explicit "View prompts" quick-reply payload (VIEW_AI_PROMPTS)
+    # unlocks the prompt-link button for the new two-step flow.
+    # Backward compatibility: legacy ACCESS/SEND keywords remain supported
+    # for already-issued legacy pending flows.
+    quick = message.get("quick_reply") if isinstance(message.get("quick_reply"), dict) else {}
+    quick_payload = str(quick.get("payload") or "").strip().upper()
+    words = _oauth_words(message.get("text"))
+    is_view_prompts_quick_reply = quick_payload == "VIEW_AI_PROMPTS"
+    is_legacy_access = "access" in words or "send" in words
+    if not is_view_prompts_quick_reply and not is_legacy_access:
+        # Arbitrary text reply: cancel any queued follow-up because the
+        # person has already re-engaged, but do NOT unlock the prompt link.
         with session_factory.begin() as db_session:
             cancel_oauth_followups(
                 db_session,
@@ -3963,6 +3967,11 @@ def _process_oauth_message(event, route, entry_external_id, session_factory):
             complete_oauth_event(db_session, route.instagram_account_id, message_id, "message")
         return
     try:
+        with session_factory() as db_session:
+            page_url = get_oauth_pending_access(db_session, route.instagram_account_id, sender_id)
+        if not page_url:
+            _oauth_complete(session_factory, route.instagram_account_id, message_id, "message")
+            return
         if not send_oauth_prompt_access_button(session_factory, instagram_account_id=route.instagram_account_id, instagram_user_id=entry_external_id, recipient_id=sender_id, page_url=page_url):
             raise RuntimeError("oauth prompt access unavailable")
         # Only consume pending access after successful button delivery.

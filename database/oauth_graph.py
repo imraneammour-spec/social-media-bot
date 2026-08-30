@@ -216,18 +216,28 @@ def send_oauth_private_access_reply(session_factory: Callable[[], Any], *, insta
 
 
 def send_oauth_initial_private_dm(session_factory: Callable[[], Any], *, instagram_account_id: object, instagram_user_id: object, comment_id: object) -> str | None:
-    """Send the first plain-text DM after a trigger comment.
+    """Send the first DM after a trigger comment with a View-prompts quick reply.
 
-    This message contains no URL, no button, and no ACCESS/SEND instruction.
-    It simply notifies the user that their prompts are ready, prompting them
-    to reply naturally to unlock the View-prompts button.
+    The message is plain text with one quick-reply button whose payload is
+    ``VIEW_AI_PROMPTS``.  It contains no URL, no web_url button, and no
+    ACCESS/SEND instruction.  The user presses the quick reply to unlock
+    the second message which carries the real prompt-page link.
     """
     comment = str(comment_id or "").strip()
     if not comment:
         return None
     body = {
         "recipient": {"comment_id": comment},
-        "message": {"text": "Your requested prompts are ready."},
+        "message": {
+            "text": "Your requested prompts are ready.",
+            "quick_replies": [
+                {
+                    "content_type": "text",
+                    "title": "View prompts",
+                    "payload": "VIEW_AI_PROMPTS",
+                }
+            ],
+        },
     }
     try:
         payload = _request_with_runtime(
