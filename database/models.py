@@ -196,6 +196,12 @@ class InstagramContentItem(TimestampMixin, Base):
     alt_text: Mapped[str | None] = mapped_column(Text)
     metadata_json: Mapped[dict[str, object] | None] = mapped_column(JSON, default=dict, server_default=text("'{}'"))
     scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    provider_media_id: Mapped[str | None] = mapped_column(String(255))
+    publish_error_code: Mapped[str | None] = mapped_column(String(128))
+    provider_request_may_have_been_sent: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default=text("false")
+    )
 
     instagram_account: Mapped[InstagramAccount] = relationship(back_populates="content_items")
 

@@ -1,0 +1,315 @@
+"""Tenant-safe execution for due scheduled Instagram image content."""
+
+from __future__ import annotations
+
+import logging
+import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any
+
+import requests
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from .account_runtime import (
+    InstagramAccountRuntime,
+    RuntimeCredentialUnavailableError,
+    resolve_oauth_instagram_account_runtime,
+)
+from .models import InstagramContentItem
+
+
+LOGGER = logging.getLogger(__name__)
+API_VERSION = "v25.0"
+GRAPH_ROOT = "https://graph.instagram.com"
+IMAGE_CONTENT_TYPE = "image"
+SAFE_ERROR_CODES = {
+    "unsupported_content_type",
+    "instagram_connection_unavailable",
+    "tenant_identity_mismatch",
+    "provider_rejected",
+    "provider_response_invalid",
+    "provider_request_ambiguous",
+    "unexpected_publish_error",
+}
+
+
+class InstagramPublishError(ValueError):
+    """A safe provider outcome classification with no provider payload."""
+
+    def __init__(self, code: str, *, request_may_have_been_sent: bool) -> None:
+        self.code = code if code in SAFE_ERROR_CODES else "unexpected_publish_error"
+        self.request_may_have_been_sent = bool(request_may_have_been_sent)
+        super().__init__("Instagram publishing is unavailable.")
+
+
+@dataclass(frozen=True)
+class ClaimedScheduledContent:
+    id: uuid.UUID
+    instagram_account_id: uuid.UUID
+    instagram_user_id: str
+    content_type: str
+    caption: str
+    media_url: str
+
+
+@dataclass(frozen=True)
+class ContentPublishingSummary:
+    claimed: int = 0
+    published: int = 0
+    failed: int = 0
+    skipped: int = 0
+
+
+def _now(value: datetime | None = None) -> datetime:
+    current = value or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        return current.replace(tzinfo=timezone.utc)
+    return current.astimezone(timezone.utc)
+
+
+def _safe_code(value: object) -> str:
+    return value if isinstance(value, str) and value in SAFE_ERROR_CODES else "unexpected_publish_error"
+
+
+def claim_due_scheduled_content(
+    session: Session, *, now: datetime | None = None, limit: int = 25
+) -> list[ClaimedScheduledContent]:
+    """Atomically transition due scheduled rows to publishing under a row lock.
+
+    The caller owns the surrounding short transaction and must commit it before
+    making any provider request.
+    """
+
+    current = _now(now)
+    bounded_limit = max(1, min(int(limit), 100))
+    items = list(
+        session.scalars(
+            select(InstagramContentItem)
+            .where(
+                InstagramContentItem.status == "scheduled",
+                InstagramContentItem.scheduled_for.is_not(None),
+                InstagramContentItem.scheduled_for <= current,
+            )
+            .order_by(InstagramContentItem.scheduled_for, InstagramContentItem.id)
+            .limit(bounded_limit)
+            .with_for_update(skip_locked=True)
+        ).all()
+    )
+    claimed: list[ClaimedScheduledContent] = []
+    for item in items:
+        # Recheck while holding the lock so a concurrent state transition wins.
+        if item.status != "scheduled" or item.scheduled_for is None:
+            LOGGER.info("scheduled_content_skipped", extra={"content_id": str(item.id), "reason": "no_longer_eligible"})
+            continue
+        item.status = "publishing"
+        item.publish_error_code = None
+        item.provider_request_may_have_been_sent = False
+        account = item.instagram_account
+        claimed.append(
+            ClaimedScheduledContent(
+                id=item.id,
+                instagram_account_id=item.instagram_account_id,
+                instagram_user_id=str(account.instagram_user_id),
+                content_type=str(item.content_type),
+                caption=str(item.caption),
+                media_url=str(item.media_url),
+            )
+        )
+        LOGGER.info("scheduled_content_selected", extra={"content_id": str(item.id), "instagram_account_id": str(item.instagram_account_id)})
+    session.flush()
+    return claimed
+
+
+def _claimed_item(
+    session: Session, *, content_id: object, instagram_account_id: object
+) -> InstagramContentItem | None:
+    return session.scalar(
+        select(InstagramContentItem)
+        .where(
+            InstagramContentItem.id == content_id,
+            InstagramContentItem.instagram_account_id == instagram_account_id,
+            InstagramContentItem.status == "publishing",
+        )
+        .with_for_update()
+    )
+
+
+def mark_content_published(
+    session: Session,
+    *,
+    content_id: object,
+    instagram_account_id: object,
+    provider_media_id: object,
+    now: datetime | None = None,
+) -> bool:
+    """Persist a successful claimed publication once; terminal rows are untouched."""
+
+    media_id = str(provider_media_id or "").strip()
+    if not media_id or len(media_id) > 255:
+        return False
+    item = _claimed_item(session, content_id=content_id, instagram_account_id=instagram_account_id)
+    if item is None:
+        return False
+    item.status = "published"
+    item.provider_media_id = media_id
+    item.published_at = _now(now)
+    item.publish_error_code = None
+    item.provider_request_may_have_been_sent = False
+    session.flush()
+    return True
+
+
+def mark_content_publish_failed(
+    session: Session,
+    *,
+    content_id: object,
+    instagram_account_id: object,
+    error_code: object,
+    provider_request_may_have_been_sent: bool,
+) -> bool:
+    """Persist a sanitized terminal failure for one still-claimed item."""
+
+    item = _claimed_item(session, content_id=content_id, instagram_account_id=instagram_account_id)
+    if item is None:
+        return False
+    item.status = "failed"
+    item.publish_error_code = _safe_code(error_code)
+    item.provider_request_may_have_been_sent = bool(provider_request_may_have_been_sent)
+    session.flush()
+    return True
+
+
+def _payload_id(response: object) -> str | None:
+    try:
+        payload = response.json()
+    except (AttributeError, TypeError, ValueError):
+        return None
+    value = payload.get("id") if isinstance(payload, dict) else None
+    identifier = str(value or "").strip()
+    return identifier if identifier else None
+
+
+def _provider_post(path: str, runtime: InstagramAccountRuntime, data: dict[str, str]) -> Any:
+    try:
+        return requests.post(
+            f"{GRAPH_ROOT}/{API_VERSION}/{path.lstrip('/')}",
+            data=data,
+            headers={"Authorization": f"Bearer {runtime.access_token}"},
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        raise InstagramPublishError(
+            "provider_request_ambiguous", request_may_have_been_sent=True
+        ) from exc
+
+
+def publish_instagram_image(runtime: InstagramAccountRuntime, item: ClaimedScheduledContent) -> str:
+    """Publish one image through the tenant-bound Graph API runtime.
+
+    A timeout or malformed response after the publish request is deliberately
+    ambiguous. The caller records that state but never automatically resends.
+    """
+
+    container = _provider_post(
+        f"{runtime.instagram_user_id}/media",
+        runtime,
+        {"image_url": item.media_url, "caption": item.caption},
+    )
+    if not bool(getattr(container, "ok", False)):
+        raise InstagramPublishError("provider_rejected", request_may_have_been_sent=False)
+    creation_id = _payload_id(container)
+    if creation_id is None:
+        raise InstagramPublishError("provider_response_invalid", request_may_have_been_sent=False)
+
+    published = _provider_post(
+        f"{runtime.instagram_user_id}/media_publish",
+        runtime,
+        {"creation_id": creation_id},
+    )
+    if not bool(getattr(published, "ok", False)):
+        raise InstagramPublishError("provider_rejected", request_may_have_been_sent=False)
+    media_id = _payload_id(published)
+    if media_id is None:
+        raise InstagramPublishError("provider_response_invalid", request_may_have_been_sent=True)
+    return media_id
+
+
+def _record_failure(
+    session_factory: Callable[[], Session], item: ClaimedScheduledContent, error_code: str, ambiguous: bool
+) -> bool:
+    with session_factory.begin() as session:
+        return mark_content_publish_failed(
+            session,
+            content_id=item.id,
+            instagram_account_id=item.instagram_account_id,
+            error_code=error_code,
+            provider_request_may_have_been_sent=ambiguous,
+        )
+
+
+def execute_due_scheduled_content(
+    session_factory: Callable[[], Session],
+    *,
+    now: datetime | None = None,
+    limit: int = 25,
+    runtime_resolver: Callable[..., InstagramAccountRuntime] = resolve_oauth_instagram_account_runtime,
+    publisher: Callable[[InstagramAccountRuntime, ClaimedScheduledContent], str] = publish_instagram_image,
+) -> ContentPublishingSummary:
+    """Claim then execute a bounded batch without automatically retrying failures."""
+
+    current = _now(now)
+    with session_factory.begin() as session:
+        claimed = claim_due_scheduled_content(session, now=current, limit=limit)
+
+    published_count = failed_count = skipped_count = 0
+    for item in claimed:
+        LOGGER.info("scheduled_content_publishing_started", extra={"content_id": str(item.id), "instagram_account_id": str(item.instagram_account_id)})
+        if item.content_type != IMAGE_CONTENT_TYPE:
+            failed_count += int(_record_failure(session_factory, item, "unsupported_content_type", False))
+            LOGGER.info("scheduled_content_publishing_failed", extra={"content_id": str(item.id), "error_code": "unsupported_content_type", "provider_request_may_have_been_sent": False})
+            continue
+        try:
+            with session_factory() as session:
+                runtime = runtime_resolver(
+                    session,
+                    instagram_account_id=item.instagram_account_id,
+                    instagram_user_id=item.instagram_user_id,
+                    now=current,
+                )
+            if (
+                runtime.instagram_account_id != item.instagram_account_id
+                or runtime.instagram_user_id != item.instagram_user_id
+                or runtime.connection_mode != "oauth"
+            ):
+                raise InstagramPublishError("tenant_identity_mismatch", request_may_have_been_sent=False)
+            provider_media_id = publisher(runtime, item)
+            with session_factory.begin() as session:
+                completed = mark_content_published(
+                    session,
+                    content_id=item.id,
+                    instagram_account_id=item.instagram_account_id,
+                    provider_media_id=provider_media_id,
+                    now=current,
+                )
+            if completed:
+                published_count += 1
+                LOGGER.info("scheduled_content_publishing_succeeded", extra={"content_id": str(item.id), "instagram_account_id": str(item.instagram_account_id), "provider_media_id": provider_media_id})
+            else:
+                skipped_count += 1
+                LOGGER.info("scheduled_content_skipped", extra={"content_id": str(item.id), "reason": "no_longer_eligible"})
+        except RuntimeCredentialUnavailableError:
+            failed_count += int(_record_failure(session_factory, item, "instagram_connection_unavailable", False))
+            LOGGER.info("scheduled_content_publishing_failed", extra={"content_id": str(item.id), "error_code": "instagram_connection_unavailable", "provider_request_may_have_been_sent": False})
+        except InstagramPublishError as error:
+            failed_count += int(_record_failure(session_factory, item, error.code, error.request_may_have_been_sent))
+            LOGGER.info("scheduled_content_publishing_failed", extra={"content_id": str(item.id), "error_code": error.code, "provider_request_may_have_been_sent": error.request_may_have_been_sent})
+        except Exception:
+            failed_count += int(_record_failure(session_factory, item, "unexpected_publish_error", True))
+            LOGGER.info("scheduled_content_publishing_failed", extra={"content_id": str(item.id), "error_code": "unexpected_publish_error", "provider_request_may_have_been_sent": True})
+
+    return ContentPublishingSummary(
+        claimed=len(claimed), published=published_count, failed=failed_count, skipped=skipped_count
+    )
