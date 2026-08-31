@@ -1194,6 +1194,9 @@ def register_tenant_dashboard(app) -> None:
                     media_url=request.form.get("media_url") or request.form.get("media_reference"),
                 )
         except (PermissionError, SQLAlchemyError, ValueError):
+            app.logger.exception(
+                "Draft edit failed while processing a safe tenant content-draft-edit request."
+            )
             return _safe_content_update_error()
 
         return _cache_control(
