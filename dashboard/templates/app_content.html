@@ -47,7 +47,7 @@
                 <p>{{ draft.caption_preview or 'No caption yet.' }}</p>
                 <p class="muted">Updated: {{ draft.updated_at or draft.created_at }}</p>
                 <div style="display:flex; gap:0.75rem; flex-wrap:wrap;">
-                    <form method="post" action="{{ url_for('tenant_dashboard.app_content_status_draft', account=selected_account.selection_ref) }}">
+                    {% if draft.status in ('draft', 'ready') %}<form method="post" action="{{ url_for('tenant_dashboard.app_content_status_draft', account=selected_account.selection_ref) }}">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                         <input type="hidden" name="draft_ref" value="{{ draft.status_ref }}">
                         {% if draft.status == 'draft' %}
@@ -58,13 +58,30 @@
                         <button type="submit">Return to draft</button>
                         {% endif %}
                     </form>
+                    {% endif %}
+                    {% if draft.status == 'ready' %}
+                    <form method="post" action="{{ url_for('tenant_dashboard.app_content_schedule_draft', account=selected_account.selection_ref) }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <input type="hidden" name="draft_ref" value="{{ draft.schedule_ref }}">
+                        <label>Date <input type="date" name="date" required></label>
+                        <label>Time <input type="time" name="time" required></label>
+                        <button type="submit">Schedule</button>
+                    </form>
+                    {% elif draft.status == 'scheduled' %}
+                    <p class="muted">Scheduled: {{ draft.scheduled_for }}</p>
+                    <form method="post" action="{{ url_for('tenant_dashboard.app_content_unschedule_draft', account=selected_account.selection_ref) }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <input type="hidden" name="draft_ref" value="{{ draft.unschedule_ref }}">
+                        <button type="submit">Return to ready</button>
+                    </form>
+                    {% endif %}
                     <form method="post" action="{{ url_for('tenant_dashboard.app_content_delete_draft', account=selected_account.selection_ref) }}">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                         <input type="hidden" name="draft_ref" value="{{ draft.delete_ref }}">
                         <button type="submit">Delete</button>
                     </form>
                 </div>
-                <form method="post" action="{{ url_for('tenant_dashboard.app_content_edit_draft', account=selected_account.selection_ref) }}" aria-label="Edit draft">
+                {% if draft.status != 'scheduled' %}<form method="post" action="{{ url_for('tenant_dashboard.app_content_edit_draft', account=selected_account.selection_ref) }}" aria-label="Edit draft">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <input type="hidden" name="draft_ref" value="{{ draft.draft_ref }}">
                     <label>Type
@@ -80,6 +97,7 @@
                     </label>
                     <button type="submit">Save changes</button>
                 </form>
+                {% endif %}
             </article>
             {% endfor %}
         {% else %}

@@ -3,6 +3,21 @@
 {% block heading %}Scheduler{% endblock %}
 {% block content %}
 <p class="muted">Scheduled jobs and upcoming automation actions for the selected account.</p>
+<section class="page-stack" aria-label="Content schedule">
+    <h2>Content schedule</h2>
+    {% for item in scheduled_content %}
+    <article class="card lead-card">
+        <h3>{{ item.content_type|upper }} · Scheduled</h3>
+        <p>{{ item.caption_preview }}</p>
+        <p class="muted">Scheduled: {{ item.scheduled_for }}</p>
+        <form method="post" action="{{ url_for('tenant_dashboard.app_content_unschedule_draft', account=selected_account.selection_ref) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="draft_ref" value="{{ item.unschedule_ref }}">
+            <button type="submit">Return to ready</button>
+        </form>
+    </article>
+    {% else %}<p class="empty-state">No content is scheduled for this account.</p>{% endfor %}
+</section>
 <form method="get" action="{{ url_for('tenant_dashboard.app_scheduler') }}" class="card activity-filters" aria-label="Scheduler filters">
     <input type="hidden" name="account" value="{{ selected_account.selection_ref }}">
     <label>Status

@@ -870,7 +870,7 @@ def content_drafts(
     for draft in session.scalars(
         select(InstagramContentItem)
         .where(InstagramContentItem.instagram_account_id == instagram_account_id)
-        .where(InstagramContentItem.status.in_({"draft", "ready"}))
+        .where(InstagramContentItem.status.in_({"draft", "ready", "scheduled"}))
         .order_by(InstagramContentItem.updated_at.desc(), InstagramContentItem.id.desc())
         .limit(limit)
     ):
@@ -884,6 +884,7 @@ def content_drafts(
             "updated_at": _timestamp(draft.updated_at) or "",
             "media_url": preview_url,
             "media_link": preview_url,
+            "scheduled_for": _timestamp(draft.scheduled_for),
         })
     return rows
 

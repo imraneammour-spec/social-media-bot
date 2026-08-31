@@ -5,6 +5,7 @@ from __future__ import annotations
 import hmac
 import uuid
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from functools import wraps
 
 from flask import (
@@ -40,7 +41,9 @@ from database.content import (
     MAX_CAPTION_LENGTH,
     create_content_draft,
     delete_content_draft,
+    schedule_content_draft,
     transition_content_status,
+    unschedule_content_draft,
     update_content_draft,
 )
 from database.models import InstagramAutomationConfig, InstagramContentItem
@@ -1130,6 +1133,8 @@ def register_tenant_dashboard(app) -> None:
                                 draft["id"],
                                 purpose="content-draft-delete",
                             ) if draft.get("id") else None,
+                            "schedule_ref": _content_draft_reference(user.id, draft["id"], purpose="content-schedule") if draft.get("id") else None,
+                            "unschedule_ref": _content_draft_reference(user.id, draft["id"], purpose="content-unschedule") if draft.get("id") else None,
                         }
                         for draft in raw_drafts
                     ]
@@ -1215,6 +1220,8 @@ def register_tenant_dashboard(app) -> None:
                 )
                 if draft is None:
                     raise PermissionError("Draft not found for this account.")
+                if draft.status == "scheduled":
+                    raise ValueError("Scheduled content must be returned to ready before editing.")
                 update_content_draft(
                     session,
                     selected.instagram_account_id,
@@ -1345,6 +1352,46 @@ def register_tenant_dashboard(app) -> None:
             )
         )
 
+    @dashboard.post("/content/drafts/schedule")
+    @_require_tenant
+    def app_content_schedule_draft(user, accounts, selected):
+        if not validate_csrf_token(request_csrf_token()):
+            return _safe_content_update_error()
+        draft_ref = str(request.form.get("draft_ref") or "").strip()
+        try:
+            local_time = datetime.fromisoformat(f"{request.form.get('date', '')}T{request.form.get('time', '')}")
+            scheduled_for = local_time.replace(tzinfo=ZoneInfo("Africa/Casablanca"))
+            session_factory = getattr(_auth_state(), "session_factory", None)
+            if session_factory is None:
+                return _workspace_unavailable()
+            with session_factory.begin() as session:
+                draft = _resolve_owned_content_draft(session, user_id=user.id, selected_account_id=selected.instagram_account_id, reference=draft_ref, purpose="content-schedule")
+                if draft is None:
+                    raise PermissionError("Draft not found for this account.")
+                schedule_content_draft(session, selected.instagram_account_id, draft.id, scheduled_for)
+        except (PermissionError, SQLAlchemyError, ValueError):
+            return _safe_content_update_error()
+        return _cache_control(redirect(url_for("tenant_dashboard.app_content", account=action_reference_for_account(user.id, selected.instagram_account_id, ACCOUNT_REFERENCE_PURPOSE, secret_key=current_app.secret_key)), code=303))
+
+    @dashboard.post("/content/drafts/unschedule")
+    @_require_tenant
+    def app_content_unschedule_draft(user, accounts, selected):
+        if not validate_csrf_token(request_csrf_token()):
+            return _safe_content_update_error()
+        draft_ref = str(request.form.get("draft_ref") or "").strip()
+        try:
+            session_factory = getattr(_auth_state(), "session_factory", None)
+            if session_factory is None:
+                return _workspace_unavailable()
+            with session_factory.begin() as session:
+                draft = _resolve_owned_content_draft(session, user_id=user.id, selected_account_id=selected.instagram_account_id, reference=draft_ref, purpose="content-unschedule")
+                if draft is None:
+                    raise PermissionError("Draft not found for this account.")
+                unschedule_content_draft(session, selected.instagram_account_id, draft.id)
+        except (PermissionError, SQLAlchemyError, ValueError):
+            return _safe_content_update_error()
+        return _cache_control(redirect(url_for("tenant_dashboard.app_content", account=action_reference_for_account(user.id, selected.instagram_account_id, ACCOUNT_REFERENCE_PURPOSE, secret_key=current_app.secret_key)), code=303))
+
     @dashboard.get("/scheduler")
     @_require_tenant
     def app_scheduler(
@@ -1370,6 +1417,22 @@ def register_tenant_dashboard(app) -> None:
         if scheduler_page is _DATABASE_UNAVAILABLE:
             return _workspace_unavailable()
 
+        scheduled_content = []
+        session_factory = getattr(_auth_state(), "session_factory", None)
+        if session_factory is not None:
+            try:
+                with session_factory() as session:
+                    scheduled_content = [
+                        {
+                            **draft,
+                            "unschedule_ref": _content_draft_reference(user.id, draft["id"], purpose="content-unschedule"),
+                        }
+                        for draft in tenant_data.content_drafts(session, instagram_account_id=selected.instagram_account_id)
+                        if draft.get("status") == "scheduled"
+                    ]
+            except SQLAlchemyError:
+                return _workspace_unavailable()
+
         return _render_page(
             "app_scheduler.html",
             user=user,
@@ -1381,6 +1444,7 @@ def register_tenant_dashboard(app) -> None:
             job_type_filters=tenant_data.SCHEDULER_JOB_TYPE_FILTER_LABELS,
             selected_status=selected_status,
             selected_job_type=selected_job_type,
+            scheduled_content=scheduled_content,
         )
 
     @dashboard.get("/analytics")

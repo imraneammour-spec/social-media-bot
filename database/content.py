@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 from sqlalchemy import select
@@ -11,7 +12,7 @@ from sqlalchemy.orm import Session
 from .models import InstagramContentItem
 
 CONTENT_TYPES = ("image", "video", "carousel", "reel")
-VALID_STATUSES = {"draft", "ready"}
+VALID_STATUSES = {"draft", "ready", "scheduled"}
 MAX_CAPTION_LENGTH = 2200
 
 
@@ -167,11 +168,39 @@ def transition_content_status(
         raise ValueError("Unsupported content status.")
     allowed = {
         "draft": {"ready"},
-        "ready": {"draft"},
+        "ready": {"draft", "scheduled"},
+        "scheduled": {"ready"},
     }
     if desired not in allowed.get(item.status, set()):
         raise ValueError("Invalid status transition.")
     item.status = desired
+    session.flush()
+    return item
+
+
+def schedule_content_draft(session: Session, instagram_account_id: object, item_id: object, scheduled_for: datetime) -> InstagramContentItem:
+    """Schedule one owned ready item at a future UTC instant; no publishing occurs here."""
+    if scheduled_for.tzinfo is None:
+        raise ValueError("Scheduled time must include a timezone.")
+    scheduled_utc = scheduled_for.astimezone(timezone.utc)
+    if scheduled_utc <= datetime.now(timezone.utc):
+        raise ValueError("Scheduled time must be in the future.")
+    item = _load_owned_item(session, instagram_account_id, item_id)
+    if item.status != "ready":
+        raise ValueError("Only ready content can be scheduled.")
+    item.status = "scheduled"
+    item.scheduled_for = scheduled_utc
+    session.flush()
+    return item
+
+
+def unschedule_content_draft(session: Session, instagram_account_id: object, item_id: object) -> InstagramContentItem:
+    """Return one owned scheduled item to ready without publishing it."""
+    item = _load_owned_item(session, instagram_account_id, item_id)
+    if item.status != "scheduled":
+        raise ValueError("Only scheduled content can be returned to ready.")
+    item.status = "ready"
+    item.scheduled_for = None
     session.flush()
     return item
 
@@ -198,5 +227,7 @@ __all__ = [
     "list_content_drafts",
     "mark_content_ready",
     "normalize_content_type",
+    "schedule_content_draft",
+    "unschedule_content_draft",
     "update_content_draft",
 ]

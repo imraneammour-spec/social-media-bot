@@ -195,6 +195,7 @@ class InstagramContentItem(TimestampMixin, Base):
     cover_url: Mapped[str | None] = mapped_column(Text)
     alt_text: Mapped[str | None] = mapped_column(Text)
     metadata_json: Mapped[dict[str, object] | None] = mapped_column(JSON, default=dict, server_default=text("'{}'"))
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
     instagram_account: Mapped[InstagramAccount] = relationship(back_populates="content_items")
 
