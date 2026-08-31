@@ -133,6 +133,12 @@ class InstagramAutomationConfig(TimestampMixin, Base):
     public_reply_text: Mapped[str] = mapped_column(
         Text, nullable=False, default="", server_default=text("''")
     )
+    followup_enabled: Mapped[bool] = mapped_column(
+        nullable=False, default=True, server_default=text("true")
+    )
+    followup_delay_minutes: Mapped[int] = mapped_column(
+        nullable=False, default=360, server_default=text("360")
+    )
     smart_reply_enabled: Mapped[bool] = mapped_column(
         nullable=False, default=False, server_default=text("false")
     )

@@ -3976,13 +3976,23 @@ def _process_oauth_comment(value, route, entry_external_id, public_base_url, ses
         with session_factory.begin() as db_session:
             save_oauth_pending_access(db_session, route.instagram_account_id, recipient_id, page_url)
             record_oauth_request(db_session, route.instagram_account_id, media_id, comment_id, recipient_id, username, page_url)
-            schedule_oauth_followup(
-                db_session,
-                instagram_account_id=route.instagram_account_id,
-                source_message_id=comment_id,
-                recipient_id=recipient_id,
-                page_url=page_url,
-            )
+            followup_enabled = getattr(automation_config, "followup_enabled", True)
+            if followup_enabled is None:
+                followup_enabled = True
+            followup_delay_minutes = getattr(automation_config, "followup_delay_minutes", 360)
+            try:
+                followup_delay_minutes = int(followup_delay_minutes)
+            except (TypeError, ValueError):
+                followup_delay_minutes = 360
+            if followup_enabled:
+                schedule_oauth_followup(
+                    db_session,
+                    instagram_account_id=route.instagram_account_id,
+                    source_message_id=comment_id,
+                    recipient_id=recipient_id,
+                    page_url=page_url,
+                    run_at=datetime.now(timezone.utc) + timedelta(minutes=followup_delay_minutes),
+                )
             complete_oauth_event(db_session, route.instagram_account_id, comment_id, "comment")
     except Exception:
         _oauth_complete(session_factory, route.instagram_account_id, comment_id, "comment", failed=True)
@@ -4010,6 +4020,11 @@ def _process_oauth_message(event, route, entry_external_id, session_factory):
     words = _oauth_words(message.get("text"))
     is_view_prompts_quick_reply = quick_payload == "VIEW_AI_PROMPTS"
     is_legacy_access = "access" in words or "send" in words
+    with session_factory() as db_session:
+        automation_config = oauth_automation_runtime_config(
+            db_session,
+            instagram_account_id=route.instagram_account_id,
+        )
     if not is_view_prompts_quick_reply and not is_legacy_access:
         # Arbitrary text reply: cancel any queued follow-up because the
         # person has already re-engaged, but do NOT unlock the prompt link.
@@ -4032,13 +4047,23 @@ def _process_oauth_message(event, route, entry_external_id, session_factory):
         # Only consume pending access after successful button delivery.
         with session_factory.begin() as db_session:
             pop_oauth_pending_access(db_session, route.instagram_account_id, sender_id)
-            schedule_oauth_followup(
-                db_session,
-                instagram_account_id=route.instagram_account_id,
-                source_message_id=message_id,
-                recipient_id=sender_id,
-                page_url=page_url,
-            )
+            followup_enabled = getattr(automation_config, "followup_enabled", True)
+            if followup_enabled is None:
+                followup_enabled = True
+            followup_delay_minutes = getattr(automation_config, "followup_delay_minutes", 360)
+            try:
+                followup_delay_minutes = int(followup_delay_minutes)
+            except (TypeError, ValueError):
+                followup_delay_minutes = 360
+            if followup_enabled:
+                schedule_oauth_followup(
+                    db_session,
+                    instagram_account_id=route.instagram_account_id,
+                    source_message_id=message_id,
+                    recipient_id=sender_id,
+                    page_url=page_url,
+                    run_at=datetime.now(timezone.utc) + timedelta(minutes=followup_delay_minutes),
+                )
             complete_oauth_event(db_session, route.instagram_account_id, message_id, "message")
     except Exception:
         _oauth_complete(session_factory, route.instagram_account_id, message_id, "message", failed=True)

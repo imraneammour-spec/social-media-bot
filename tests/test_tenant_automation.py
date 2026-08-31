@@ -61,6 +61,8 @@ class TenantAutomationModelTests(unittest.TestCase):
             self.assertEqual(config.trigger_keywords, [])
             self.assertFalse(config.public_reply_enabled)
             self.assertEqual(config.public_reply_text, "")
+            self.assertTrue(config.followup_enabled)
+            self.assertEqual(config.followup_delay_minutes, 360)
             self.assertFalse(config.smart_reply_enabled)
             self.assertEqual(config.smart_reply_tone, "friendly")
             self.assertEqual(config.smart_reply_max_per_hour, 20)
@@ -110,12 +112,91 @@ class TenantAutomationHelperTests(unittest.TestCase):
         helpers = self._helpers()
         self.assertEqual(helpers.normalize_smart_reply_tone("Professional"), "professional")
         self.assertEqual(helpers.normalize_smart_reply_max_per_hour("100"), 100)
+        self.assertEqual(helpers.normalize_followup_delay_minutes("360"), 360)
         for tone in (None, "", "playful", "friendly " * 20):
             with self.assertRaises(helpers.TenantAutomationConfigurationError):
                 helpers.normalize_smart_reply_tone(tone)
         for limit in (None, "", "0", "101", "many", True):
             with self.assertRaises(helpers.TenantAutomationConfigurationError):
                 helpers.normalize_smart_reply_max_per_hour(limit)
+        for delay in (None, "", "4", "10081", "many", True):
+            with self.assertRaises(helpers.TenantAutomationConfigurationError):
+                helpers.normalize_followup_delay_minutes(delay)
+
+    def test_runtime_snapshot_keeps_prompt_and_smart_reply_settings_account_scoped(self):
+        """A runtime read must not mix tenant A's smart settings into tenant B."""
+
+        helpers = self._helpers()
+        engine = create_engine("sqlite://")
+        Base.metadata.create_all(engine)
+        Session = sessionmaker(bind=engine)
+        try:
+            with Session.begin() as session:
+                owner = User(email="runtime-owner@example.test")
+                session.add(owner)
+                session.flush()
+                account_a = InstagramAccount(
+                    user_id=owner.id,
+                    instagram_user_id="17841438617458131",
+                    provider="instagram",
+                    connection_status="connected",
+                )
+                account_b = InstagramAccount(
+                    user_id=owner.id,
+                    instagram_user_id="17841438617458132",
+                    provider="instagram",
+                    connection_status="connected",
+                )
+                session.add_all([account_a, account_b])
+                session.flush()
+                session.add_all([
+                    InstagramAutomationConfig(
+                        instagram_account_id=account_a.id,
+                        enabled=True,
+                        trigger_keywords=["prompt"],
+                        public_reply_enabled=False,
+                        public_reply_text="",
+                        followup_enabled=True,
+                        followup_delay_minutes=60,
+                        smart_reply_enabled=True,
+                        smart_reply_tone="professional",
+                        smart_reply_max_per_hour=7,
+                    ),
+                    InstagramAutomationConfig(
+                        instagram_account_id=account_b.id,
+                        enabled=False,
+                        trigger_keywords=["access"],
+                        public_reply_enabled=False,
+                        public_reply_text="",
+                        followup_enabled=False,
+                        followup_delay_minutes=300,
+                        smart_reply_enabled=False,
+                        smart_reply_tone="concise",
+                        smart_reply_max_per_hour=3,
+                    ),
+                ])
+                account_a_id, account_b_id = account_a.id, account_b.id
+            with Session() as session:
+                runtime_a = helpers.oauth_automation_runtime_config(
+                    session, instagram_account_id=account_a_id
+                )
+                runtime_b = helpers.oauth_automation_runtime_config(
+                    session, instagram_account_id=account_b_id
+                )
+        finally:
+            engine.dispose()
+
+        self.assertTrue(runtime_a.smart_reply_enabled)
+        self.assertEqual(runtime_a.smart_reply_tone, "professional")
+        self.assertEqual(runtime_a.smart_reply_max_per_hour, 7)
+        self.assertTrue(runtime_a.followup_enabled)
+        self.assertEqual(runtime_a.followup_delay_minutes, 60)
+        self.assertFalse(runtime_b.enabled)
+        self.assertFalse(runtime_b.smart_reply_enabled)
+        self.assertEqual(runtime_b.smart_reply_tone, "concise")
+        self.assertEqual(runtime_b.smart_reply_max_per_hour, 3)
+        self.assertFalse(runtime_b.followup_enabled)
+        self.assertEqual(runtime_b.followup_delay_minutes, 300)
 
     def test_runtime_snapshot_keeps_prompt_and_smart_reply_settings_account_scoped(self):
         """A runtime read must not mix tenant A's smart settings into tenant B."""

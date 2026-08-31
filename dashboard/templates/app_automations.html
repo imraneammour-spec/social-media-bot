@@ -7,7 +7,7 @@
 
 <section class="card page-stack">
 
-    <p class="muted">Configure keyword-triggered responses for the selected account.</p>
+    <p class="muted">Configure the fixed keyword automation flow for the selected account.</p>
 
     <form method="post">
 
@@ -27,41 +27,100 @@
             <label for="automation_enabled">Enabled</label>
         </div>
 
-        <div>
-            <label for="trigger_keywords">
-                Trigger keywords
-            </label>
+        <section class="detail-card">
+            <h2>Automation Flow</h2>
+            <ol>
+                <li>Trigger keywords</li>
+                <li>Public reply</li>
+                <li>View Prompts DM</li>
+                <li>Prompt link delivery</li>
+                <li>Follow-up</li>
+            </ol>
+        </section>
 
-            <input
-                id="trigger_keywords"
-                name="trigger_keywords"
-                type="text"
-                value="{{ automation.trigger_keywords | join(', ') }}"
-            >
-        </div>
+        <section class="detail-card">
+            <h2>Step 1 — Trigger</h2>
+            <div>
+                <label for="trigger_keywords">Trigger keywords</label>
+                <input
+                    id="trigger_keywords"
+                    name="trigger_keywords"
+                    type="text"
+                    value="{{ automation.trigger_keywords | join(', ') }}"
+                >
+            </div>
+        </section>
 
-        <div class="checkbox-field">
-            <input
-                id="public_reply_enabled"
-                type="checkbox"
-                name="public_reply_enabled"
-                {% if automation.public_reply_enabled %}checked{% endif %}
-            >
-            <label for="public_reply_enabled">Public reply enabled</label>
-        </div>
+        <section class="detail-card">
+            <h2>Step 2 — Public Reply</h2>
+            <div class="checkbox-field">
+                <input
+                    id="public_reply_enabled"
+                    type="checkbox"
+                    name="public_reply_enabled"
+                    {% if automation.public_reply_enabled %}checked{% endif %}
+                >
+                <label for="public_reply_enabled">Public reply enabled</label>
+            </div>
 
-        <div>
-            <label for="public_reply_text">
-                Public reply text
-            </label>
+            <div>
+                <label for="public_reply_text">Reply text</label>
+                <input
+                    id="public_reply_text"
+                    name="public_reply_text"
+                    type="text"
+                    value="{{ automation.public_reply_text }}"
+                >
+            </div>
+        </section>
 
-            <input
-                id="public_reply_text"
-                name="public_reply_text"
-                type="text"
-                value="{{ automation.public_reply_text }}"
-            >
-        </div>
+        <section class="detail-card">
+            <h2>Step 3 — View Prompts DM</h2>
+            <p class="muted">Required system step. The protected View prompts flow remains fixed on for the keyword automation path.</p>
+        </section>
+
+        <section class="detail-card">
+            <h2>Step 4 — Prompt Link</h2>
+            <p class="muted">Protected system step. Prompt link delivery remains fixed and cannot be disabled in V1.</p>
+        </section>
+
+        <section class="detail-card">
+            <h2>Step 5 — Follow-up</h2>
+            <div class="checkbox-field">
+                <input
+                    id="followup_enabled"
+                    type="checkbox"
+                    name="followup_enabled"
+                    {% if automation.followup_enabled %}checked{% endif %}
+                >
+                <label for="followup_enabled">Enable follow-up</label>
+            </div>
+
+            <div>
+                <label for="followup_delay_minutes">Delay in minutes</label>
+                <input
+                    id="followup_delay_minutes"
+                    name="followup_delay_minutes"
+                    type="number"
+                    min="5"
+                    max="10080"
+                    value="{{ automation.followup_delay_minutes }}"
+                >
+            </div>
+        </section>
+
+        <section class="detail-card">
+            <h2>Flow Preview</h2>
+            <p class="muted">
+                When someone comments: "{{ automation.trigger_keywords | join(', ') if automation.trigger_keywords else 'prompt, ai' }}"
+            </p>
+            <ul>
+                <li>Public reply: {{ 'Enabled' if automation.public_reply_enabled else 'Disabled' }}</li>
+                <li>View Prompts DM: Required system step</li>
+                <li>Prompt link delivery: Fixed system step</li>
+                <li>Follow-up: {{ 'After ' ~ automation.followup_delay_minutes ~ ' minutes' if automation.followup_enabled else 'Disabled' }}</li>
+            </ul>
+        </section>
 
         <section class="detail-card">
             <h2>Smart Comment Assistant</h2>

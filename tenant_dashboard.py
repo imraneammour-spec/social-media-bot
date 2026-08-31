@@ -35,7 +35,10 @@ from database.lead_intelligence import LeadIntelligence, lead_analysis_context
 from database.oauth_deployment import oauth_deployment_readiness
 from database.models import InstagramAutomationConfig
 from database.tenant_automation import (
+    DEFAULT_FOLLOWUP_DELAY_MINUTES,
+    DEFAULT_FOLLOWUP_ENABLED,
     SMART_REPLY_TONES,
+    normalize_followup_delay_minutes,
     normalize_smart_reply_max_per_hour,
     normalize_smart_reply_tone,
     normalize_trigger_keywords,
@@ -708,6 +711,16 @@ def _automation_config(selected):
                 "public_reply_text":
                     config.public_reply_text
                     or "",
+                "followup_enabled": (
+                    config.followup_enabled
+                    if config.followup_enabled is not None
+                    else True
+                ),
+                "followup_delay_minutes": (
+                    config.followup_delay_minutes
+                    if config.followup_delay_minutes is not None
+                    else DEFAULT_FOLLOWUP_DELAY_MINUTES
+                ),
                 "smart_reply_enabled": config.smart_reply_enabled,
                 "smart_reply_tone": config.smart_reply_tone,
                 "smart_reply_max_per_hour": config.smart_reply_max_per_hour,
@@ -745,6 +758,13 @@ def _update_automation_config(selected):
         keywords = normalize_trigger_keywords(
             keyword_items
         )
+        followup_delay_value = request.form.get("followup_delay_minutes")
+        if followup_delay_value is None or str(followup_delay_value).strip() == "":
+            followup_delay_minutes = DEFAULT_FOLLOWUP_DELAY_MINUTES
+        else:
+            followup_delay_minutes = normalize_followup_delay_minutes(
+                followup_delay_value
+            )
         smart_reply_tone_value = request.form.get("smart_reply_tone")
         smart_reply_max_per_hour_value = request.form.get(
             "smart_reply_max_per_hour"
@@ -799,6 +819,12 @@ def _update_automation_config(selected):
                 )
                 or ""
             ).strip()
+            config.followup_enabled = (
+                request.form.get("followup_enabled") == "on"
+                if "followup_enabled" in request.form
+                else (config.followup_enabled if config.followup_enabled is not None else DEFAULT_FOLLOWUP_ENABLED)
+            )
+            config.followup_delay_minutes = followup_delay_minutes
 
             if smart_reply_controls_present:
                 config.smart_reply_enabled = (
