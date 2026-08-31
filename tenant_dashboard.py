@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 from datetime import datetime, timezone
 from functools import wraps
 
@@ -33,7 +34,15 @@ from auth import (
 from database import tenant_dashboard as tenant_data
 from database.lead_intelligence import LeadIntelligence, lead_analysis_context
 from database.oauth_deployment import oauth_deployment_readiness
-from database.models import InstagramAutomationConfig
+from database.content import (
+    CONTENT_TYPES,
+    MAX_CAPTION_LENGTH,
+    create_content_draft,
+    delete_content_draft,
+    transition_content_status,
+    update_content_draft,
+)
+from database.models import InstagramAutomationConfig, InstagramContentItem
 from database.tenant_automation import (
     DEFAULT_FOLLOWUP_DELAY_MINUTES,
     DEFAULT_FOLLOWUP_ENABLED,
@@ -57,6 +66,7 @@ ACCOUNT_UNAVAILABLE_MESSAGE = "Selected account is unavailable."
 LEAD_UNAVAILABLE_MESSAGE = "Lead is unavailable."
 LEAD_UPDATE_ERROR_MESSAGE = "Lead update could not be completed."
 AUTOMATION_UPDATE_ERROR_MESSAGE = "Automation update could not be completed."
+CONTENT_UPDATE_ERROR_MESSAGE = "Draft update could not be completed."
 
 MAX_INTERNAL_NOTE_LENGTH = 2000
 
@@ -301,6 +311,45 @@ def _safe_automation_update_error():
         ),
         400,
     )
+
+
+def _safe_content_update_error():
+    return (
+        _cache_control(
+            jsonify(
+                error=CONTENT_UPDATE_ERROR_MESSAGE
+            )
+        ),
+        400,
+    )
+
+
+def _content_draft_reference(user_id, item_id, *, purpose, now=None):
+    return action_reference_for_account(
+        user_id,
+        item_id,
+        purpose,
+        secret_key=current_app.secret_key,
+        now=now,
+    )
+
+
+def _resolve_owned_content_draft(session, *, user_id, selected_account_id, reference, purpose):
+    if not isinstance(reference, str):
+        return None
+    for draft in session.scalars(
+        select(InstagramContentItem).where(
+            InstagramContentItem.instagram_account_id == selected_account_id,
+        )
+    ):
+        expected = _content_draft_reference(
+            user_id,
+            draft.id,
+            purpose=purpose,
+        )
+        if hmac.compare_digest(expected, reference):
+            return draft
+    return None
 
 
 def _safe_scheduler_action_error():
@@ -1037,6 +1086,29 @@ def register_tenant_dashboard(app) -> None:
         if content_page is _DATABASE_UNAVAILABLE:
             return _workspace_unavailable()
 
+        session_factory = getattr(_auth_state(), "session_factory", None)
+        drafts = []
+        if session_factory is not None:
+            try:
+                with session_factory() as session:
+                    raw_drafts = tenant_data.content_drafts(
+                        session,
+                        instagram_account_id=selected.instagram_account_id,
+                    )
+                    drafts = [
+                        {
+                            **draft,
+                            "draft_ref": _content_draft_reference(
+                                user.id,
+                                draft["id"],
+                                purpose="content-draft-edit",
+                            ) if draft.get("id") else None,
+                        }
+                        for draft in raw_drafts
+                    ]
+            except SQLAlchemyError:
+                return _workspace_unavailable()
+
         return _render_page(
             "app_content.html",
             user=user,
@@ -1046,6 +1118,207 @@ def register_tenant_dashboard(app) -> None:
             content_page=content_page,
             content_filters=tenant_data.CONTENT_FILTER_LABELS,
             selected_filter=selected_filter,
+            drafts=drafts,
+            content_types=CONTENT_TYPES,
+        )
+
+    @dashboard.post("/content/drafts/create")
+    @_require_tenant
+    def app_content_create_draft(user, accounts, selected):
+        if not validate_csrf_token(request_csrf_token()):
+            return _safe_content_update_error()
+
+        session_factory = getattr(_auth_state(), "session_factory", None)
+        if session_factory is None:
+            return _workspace_unavailable()
+
+        try:
+            with session_factory.begin() as session:
+                media_value = (request.form.get("media_url") or request.form.get("media_reference") or "").strip()
+                create_content_draft(
+                    session,
+                    instagram_account_id=selected.instagram_account_id,
+                    content_type=request.form.get("content_type") or "image",
+                    caption=request.form.get("caption") or "",
+                    media_url=media_value,
+                )
+        except (SQLAlchemyError, ValueError):
+            return _safe_content_update_error()
+
+        return _cache_control(
+            redirect(
+                url_for(
+                    "tenant_dashboard.app_content",
+                    account=action_reference_for_account(
+                        user.id,
+                        selected.instagram_account_id,
+                        ACCOUNT_REFERENCE_PURPOSE,
+                        secret_key=current_app.secret_key,
+                    ),
+                ),
+                code=303,
+            )
+        )
+
+    @dashboard.post("/content/drafts/edit")
+    @_require_tenant
+    def app_content_edit_draft(user, accounts, selected):
+        if not validate_csrf_token(request_csrf_token()):
+            return _safe_content_update_error()
+
+        item_id = str(request.form.get("draft_id") or "").strip()
+        if not item_id:
+            return _safe_content_update_error()
+
+        session_factory = getattr(_auth_state(), "session_factory", None)
+        if session_factory is None:
+            return _workspace_unavailable()
+
+        draft_ref = str(request.form.get("draft_ref") or "").strip()
+        if not draft_ref:
+            return _safe_content_update_error()
+
+        try:
+            with session_factory.begin() as session:
+                draft = _resolve_owned_content_draft(
+                    session,
+                    user_id=user.id,
+                    selected_account_id=selected.instagram_account_id,
+                    reference=draft_ref,
+                    purpose="content-draft-edit",
+                )
+                if draft is None:
+                    raise PermissionError("Draft not found for this account.")
+                update_content_draft(
+                    session,
+                    selected.instagram_account_id,
+                    draft.id,
+                    content_type=request.form.get("content_type"),
+                    caption=request.form.get("caption"),
+                    media_url=request.form.get("media_url") or request.form.get("media_reference"),
+                )
+        except (PermissionError, SQLAlchemyError, ValueError):
+            return _safe_content_update_error()
+
+        return _cache_control(
+            redirect(
+                url_for(
+                    "tenant_dashboard.app_content",
+                    account=action_reference_for_account(
+                        user.id,
+                        selected.instagram_account_id,
+                        ACCOUNT_REFERENCE_PURPOSE,
+                        secret_key=current_app.secret_key,
+                    ),
+                ),
+                code=303,
+            )
+        )
+
+    @dashboard.post("/content/drafts/status")
+    @_require_tenant
+    def app_content_status_draft(user, accounts, selected):
+        if not validate_csrf_token(request_csrf_token()):
+            return _safe_content_update_error()
+
+        item_id = str(request.form.get("draft_id") or "").strip()
+        status_value = str(request.form.get("status") or "").strip().lower()
+        if not item_id or status_value not in {"draft", "ready"}:
+            return _safe_content_update_error()
+
+        session_factory = getattr(_auth_state(), "session_factory", None)
+        if session_factory is None:
+            return _workspace_unavailable()
+
+        draft_ref = str(request.form.get("draft_ref") or "").strip()
+        if not draft_ref:
+            return _safe_content_update_error()
+
+        try:
+            with session_factory.begin() as session:
+                draft = _resolve_owned_content_draft(
+                    session,
+                    user_id=user.id,
+                    selected_account_id=selected.instagram_account_id,
+                    reference=draft_ref,
+                    purpose="content-draft-status",
+                )
+                if draft is None:
+                    raise PermissionError("Draft not found for this account.")
+                transition_content_status(
+                    session,
+                    selected.instagram_account_id,
+                    draft.id,
+                    status_value,
+                )
+        except (PermissionError, SQLAlchemyError, ValueError):
+            return _safe_content_update_error()
+
+        return _cache_control(
+            redirect(
+                url_for(
+                    "tenant_dashboard.app_content",
+                    account=action_reference_for_account(
+                        user.id,
+                        selected.instagram_account_id,
+                        ACCOUNT_REFERENCE_PURPOSE,
+                        secret_key=current_app.secret_key,
+                    ),
+                ),
+                code=303,
+            )
+        )
+
+    @dashboard.post("/content/drafts/delete")
+    @_require_tenant
+    def app_content_delete_draft(user, accounts, selected):
+        if not validate_csrf_token(request_csrf_token()):
+            return _safe_content_update_error()
+
+        item_id = str(request.form.get("draft_id") or "").strip()
+        if not item_id:
+            return _safe_content_update_error()
+
+        session_factory = getattr(_auth_state(), "session_factory", None)
+        if session_factory is None:
+            return _workspace_unavailable()
+
+        draft_ref = str(request.form.get("draft_ref") or "").strip()
+        if not draft_ref:
+            return _safe_content_update_error()
+
+        try:
+            with session_factory.begin() as session:
+                draft = _resolve_owned_content_draft(
+                    session,
+                    user_id=user.id,
+                    selected_account_id=selected.instagram_account_id,
+                    reference=draft_ref,
+                    purpose="content-draft-delete",
+                )
+                if draft is None:
+                    raise PermissionError("Draft not found for this account.")
+                delete_content_draft(
+                    session,
+                    selected.instagram_account_id,
+                    draft.id,
+                )
+        except (PermissionError, SQLAlchemyError, ValueError):
+            return _safe_content_update_error()
+
+        return _cache_control(
+            redirect(
+                url_for(
+                    "tenant_dashboard.app_content",
+                    account=action_reference_for_account(
+                        user.id,
+                        selected.instagram_account_id,
+                        ACCOUNT_REFERENCE_PURPOSE,
+                        secret_key=current_app.secret_key,
+                    ),
+                ),
+                code=303,
+            )
         )
 
     @dashboard.get("/scheduler")

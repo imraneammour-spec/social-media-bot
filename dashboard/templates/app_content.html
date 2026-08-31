@@ -2,7 +2,8 @@
 {% block title %}Content{% endblock %}
 {% block heading %}Content{% endblock %}
 {% block content %}
-<p class="muted">Instagram posts with prepared prompts for the selected account.</p>
+<p class="muted">Instagram posts with prepared prompts and your draft content for the selected account.</p>
+
 <form method="get" action="{{ url_for('tenant_dashboard.app_content') }}" class="card activity-filters" aria-label="Content filters">
     <input type="hidden" name="account" value="{{ selected_account.selection_ref }}">
     <label>Show
@@ -12,6 +13,81 @@
     </label>
     <button type="submit">Apply filter</button>
 </form>
+
+<section class="page-stack" aria-label="Drafts section">
+    <div class="card">
+        <h2>Drafts</h2>
+        <form method="post" action="{{ url_for('tenant_dashboard.app_content_create_draft', account=selected_account.selection_ref) }}" class="card activity-filters" aria-label="Create draft">
+            <input type="hidden" name="account" value="{{ selected_account.selection_ref }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label>Type
+                <select name="content_type">
+                    {% for value in content_types %}<option value="{{ value }}">{{ value }}</option>{% endfor %}
+                </select>
+            </label>
+            <label>Caption
+                <textarea name="caption" rows="3" maxlength="2200" required></textarea>
+            </label>
+            <label>Media URL
+                <input type="url" name="media_url" placeholder="https://example.com/media.jpg">
+            </label>
+            <button type="submit">Create draft</button>
+        </form>
+
+        {% if drafts %}
+            {% for draft in drafts %}
+            <article class="card lead-card" aria-label="Draft {{ draft.content_type }}">
+                <div style="display:flex; justify-content:space-between; gap:1rem; align-items:center; flex-wrap:wrap;">
+                    <h3>{{ draft.content_type|upper }} · {{ draft.status|title }}</h3>
+                    <span class="muted">{{ draft.created_at }}</span>
+                </div>
+                {% if draft.media_url %}
+                <p><a href="{{ draft.media_url }}" target="_blank" rel="noopener noreferrer">Open media</a></p>
+                {% endif %}
+                <p>{{ draft.caption_preview or 'No caption yet.' }}</p>
+                <p class="muted">Updated: {{ draft.updated_at or draft.created_at }}</p>
+                <div style="display:flex; gap:0.75rem; flex-wrap:wrap;">
+                    <form method="post" action="{{ url_for('tenant_dashboard.app_content_status_draft', account=selected_account.selection_ref) }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <input type="hidden" name="draft_ref" value="{{ draft.draft_ref }}">
+                        {% if draft.status == 'draft' %}
+                        <input type="hidden" name="status" value="ready">
+                        <button type="submit">Mark ready</button>
+                        {% else %}
+                        <input type="hidden" name="status" value="draft">
+                        <button type="submit">Return to draft</button>
+                        {% endif %}
+                    </form>
+                    <form method="post" action="{{ url_for('tenant_dashboard.app_content_delete_draft', account=selected_account.selection_ref) }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <input type="hidden" name="draft_ref" value="{{ draft.draft_ref }}">
+                        <button type="submit">Delete</button>
+                    </form>
+                </div>
+                <form method="post" action="{{ url_for('tenant_dashboard.app_content_edit_draft', account=selected_account.selection_ref) }}" aria-label="Edit draft">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="draft_ref" value="{{ draft.draft_ref }}">
+                    <label>Type
+                        <select name="content_type">
+                            {% for value in content_types %}<option value="{{ value }}" {% if value == draft.content_type %}selected{% endif %}>{{ value }}</option>{% endfor %}
+                        </select>
+                    </label>
+                    <label>Caption
+                        <textarea name="caption" rows="3" maxlength="2200" required>{{ draft.caption_preview }}</textarea>
+                    </label>
+                    <label>Media URL
+                        <input type="url" name="media_url" value="{{ draft.media_url or '' }}" placeholder="https://example.com/media.jpg">
+                    </label>
+                    <button type="submit">Save changes</button>
+                </form>
+            </article>
+            {% endfor %}
+        {% else %}
+            <p class="empty-state">No drafts yet for this account. Create one to start your next content idea.</p>
+        {% endif %}
+    </div>
+</section>
+
 <section class="page-stack" aria-label="Account content">
 {% for item in content_items %}
 <article class="card lead-card">

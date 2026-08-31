@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from .lead_intelligence import lead_intelligence_from_values
 from .models import (
     InstagramAccount,
+    InstagramContentItem,
     InstagramCredential,
     InstagramEngagementEvent,
     InstagramOAuthFollowupJob,
@@ -857,6 +858,36 @@ class TenantContentPage:
     has_next: bool
 
 
+def content_drafts(
+    session: Session,
+    *,
+    instagram_account_id: uuid.UUID,
+    limit: int = 25,
+) -> list[dict[str, str | None]]:
+    """Return sanitized draft rows for the selected account."""
+
+    rows = []
+    for draft in session.scalars(
+        select(InstagramContentItem)
+        .where(InstagramContentItem.instagram_account_id == instagram_account_id)
+        .where(InstagramContentItem.status.in_({"draft", "ready"}))
+        .order_by(InstagramContentItem.updated_at.desc(), InstagramContentItem.id.desc())
+        .limit(limit)
+    ):
+        preview_url = _public_https_url(draft.cover_url) or _public_https_url(draft.media_url)
+        rows.append({
+            "id": str(draft.id),
+            "content_type": draft.content_type,
+            "caption_preview": (draft.caption[:160] + "…") if len(draft.caption) > 160 else draft.caption,
+            "status": draft.status,
+            "created_at": _timestamp(draft.created_at) or "",
+            "updated_at": _timestamp(draft.updated_at) or "",
+            "media_url": preview_url,
+            "media_link": preview_url,
+        })
+    return rows
+
+
 def content(
     session: Session,
     *,
@@ -867,10 +898,9 @@ def content(
     """Return sanitized prompt-post content records for one owned account.
 
     Only ``InstagramPromptPost`` records are shown — these are Instagram posts
-    for which the bot has extracted and prepared prompts.  No draft or
-    scheduled-post models exist in the current schema, so those filters are
-    not offered.  External URLs are sanitized via the existing URL safety
-    helpers already used in Leads.
+    for which the bot has extracted and prepared prompts.  Draft content is
+    handled separately on the content page and is not mixed into the prompt
+    feed.  External URLs are sanitized via the existing URL safety helpers.
     """
 
     selected_filter = content_filter(filter_value)

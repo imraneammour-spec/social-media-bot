@@ -76,6 +76,9 @@ class InstagramAccount(TimestampMixin, Base):
     automation_config: Mapped["InstagramAutomationConfig | None"] = relationship(
         back_populates="instagram_account", cascade="all, delete-orphan", uselist=False
     )
+    content_items: Mapped[list["InstagramContentItem"]] = relationship(
+        back_populates="instagram_account", cascade="all, delete-orphan"
+    )
 
 
 class InstagramCredential(TimestampMixin, Base):
@@ -171,6 +174,29 @@ class InstagramEngagementEvent(TimestampMixin, Base):
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class InstagramContentItem(TimestampMixin, Base):
+    """Minimal account-scoped content drafts and ready-to-publish assets."""
+
+    __tablename__ = "instagram_content_items"
+    __table_args__ = (
+        Index("ix_content_items_account_status", "instagram_account_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    instagram_account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("instagram_accounts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft", server_default="draft")
+    content_type: Mapped[str] = mapped_column(String(32), nullable=False, default="image", server_default="image")
+    caption: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default=text("''"))
+    media_url: Mapped[str] = mapped_column(Text, nullable=False)
+    cover_url: Mapped[str | None] = mapped_column(Text)
+    alt_text: Mapped[str | None] = mapped_column(Text)
+    metadata_json: Mapped[dict[str, object] | None] = mapped_column(JSON, default=dict, server_default=text("'{}'"))
+
+    instagram_account: Mapped[InstagramAccount] = relationship(back_populates="content_items")
 
 
 class InstagramPromptPost(TimestampMixin, Base):
