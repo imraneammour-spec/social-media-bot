@@ -22,9 +22,11 @@ from auth import (
     install_auth_route_guard,
     register_auth_routes,
 )
+from database.content import create_content_draft
 from database.models import (
     Base,
     InstagramAccount,
+    InstagramContentItem,
     InstagramCredential,
     InstagramEngagementEvent,
     InstagramOAuthFollowupJob,
@@ -33,7 +35,7 @@ from database.models import (
     InstagramSmartReplyActivity,
     User,
 )
-from tenant_dashboard import register_tenant_dashboard
+from tenant_dashboard import _content_draft_reference, register_tenant_dashboard
 
 
 class MessagesContentDashboardTest(unittest.TestCase):
@@ -451,6 +453,103 @@ class MessagesContentDashboardTest(unittest.TestCase):
         response = self.client.get(f"/app/content?account={empty_ref}")
         self.assertEqual(response.status_code, 200)
         self.assertIn("No prompt-enabled content yet", response.get_data(as_text=True))
+
+    def test_content_draft_edit_route_updates_owned_item(self):
+        """Draft edit succeeds with the correct opaque reference and saves the new values."""
+        self._login_as(self.owner_a)
+        ref = self._reference(self.owner_a, self.account_a)
+
+        with self.app.app_context():
+            with self.Session.begin() as session:
+                draft = create_content_draft(
+                    session,
+                    instagram_account_id=self.account_a.id,
+                    caption="Original caption",
+                    content_type="image",
+                    media_url="https://cdn.example.com/original.jpg",
+                )
+                draft_ref = _content_draft_reference(
+                    self.owner_a.id,
+                    draft.id,
+                    purpose="content-draft-edit",
+                    now=None,
+                )
+
+        response = self.client.post(
+            f"/app/content/drafts/edit?account={ref}",
+            data={
+                "csrf_token": "csrf-test-token",
+                "draft_ref": draft_ref,
+                "content_type": "video",
+                "caption": "Updated caption",
+                "media_url": "https://cdn.example.com/updated.mp4",
+            },
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 303)
+        self.assertIn("/app/content?account=", response.location)
+
+        with self.Session.begin() as session:
+            updated = session.get(InstagramContentItem, draft.id)
+            self.assertEqual(updated.caption, "Updated caption")
+            self.assertEqual(updated.content_type, "video")
+            self.assertEqual(updated.media_url, "https://cdn.example.com/updated.mp4")
+
+    def test_content_draft_edit_route_rejects_cross_account_and_invalid_input(self):
+        """Cross-account edits and invalid payloads are rejected without partial persistence."""
+        self._login_as(self.owner_a)
+        ref_a = self._reference(self.owner_a, self.account_a)
+        ref_b = self._reference(self.owner_b, self.account_b)
+
+        with self.app.app_context():
+            with self.Session.begin() as session:
+                draft = create_content_draft(
+                    session,
+                    instagram_account_id=self.account_a.id,
+                    caption="Locked caption",
+                    content_type="image",
+                    media_url="https://cdn.example.com/locked.jpg",
+                )
+                draft_ref = _content_draft_reference(
+                    self.owner_a.id,
+                    draft.id,
+                    purpose="content-draft-edit",
+                    now=None,
+                )
+
+        cross_account_response = self.client.post(
+            f"/app/content/drafts/edit?account={ref_b}",
+            data={
+                "csrf_token": "csrf-test-token",
+                "draft_ref": draft_ref,
+                "content_type": "carousel",
+                "caption": "Should not save",
+                "media_url": "https://cdn.example.com/forbidden.jpg",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(cross_account_response.status_code, 404)
+        self.assertNotIn("Should not save", cross_account_response.get_data(as_text=True))
+
+        invalid_response = self.client.post(
+            f"/app/content/drafts/edit?account={ref_a}",
+            data={
+                "csrf_token": "csrf-test-token",
+                "draft_ref": draft_ref,
+                "content_type": "story",
+                "caption": "",
+                "media_url": "https://cdn.example.com/invalid.mp4",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(invalid_response.status_code, 400)
+
+        with self.Session.begin() as session:
+            persisted = session.get(InstagramContentItem, draft.id)
+            self.assertEqual(persisted.caption, "Locked caption")
+            self.assertEqual(persisted.content_type, "image")
+            self.assertEqual(persisted.media_url, "https://cdn.example.com/locked.jpg")
 
     def test_content_filters_remain_tenant_scoped(self):
         """15. Filters remain tenant-scoped."""
