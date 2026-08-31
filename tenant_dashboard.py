@@ -1120,6 +1120,11 @@ def register_tenant_dashboard(app) -> None:
                                 draft["id"],
                                 purpose="content-draft-edit",
                             ) if draft.get("id") else None,
+                            "status_ref": _content_draft_reference(
+                                user.id,
+                                draft["id"],
+                                purpose="content-draft-status",
+                            ) if draft.get("id") else None,
                         }
                         for draft in raw_drafts
                     ]
@@ -1240,9 +1245,8 @@ def register_tenant_dashboard(app) -> None:
         if not validate_csrf_token(request_csrf_token()):
             return _safe_content_update_error()
 
-        item_id = str(request.form.get("draft_id") or "").strip()
         status_value = str(request.form.get("status") or "").strip().lower()
-        if not item_id or status_value not in {"draft", "ready"}:
+        if status_value not in {"draft", "ready"}:
             return _safe_content_update_error()
 
         session_factory = getattr(_auth_state(), "session_factory", None)

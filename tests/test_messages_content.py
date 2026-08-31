@@ -475,7 +475,12 @@ class MessagesContentDashboardTest(unittest.TestCase):
         self.assertIn('name="csrf_token"', page_response.get_data(as_text=True))
 
         page_html = page_response.get_data(as_text=True)
-        match = re.search(r'name="draft_ref" value="([^"]+)"', page_html)
+        match = re.search(
+            r'action="/app/content/drafts/edit\?account=[^"]+".*?'
+            r'name="draft_ref" value="([^"]+)"',
+            page_html,
+            re.DOTALL,
+        )
         self.assertIsNotNone(match)
         rendered_draft_ref = match.group(1)
         self.assertTrue(rendered_draft_ref)
@@ -560,6 +565,139 @@ class MessagesContentDashboardTest(unittest.TestCase):
             self.assertEqual(persisted.caption, "Locked caption")
             self.assertEqual(persisted.content_type, "image")
             self.assertEqual(persisted.media_url, "https://cdn.example.com/locked.jpg")
+
+    def test_content_draft_status_route_transitions_owned_item(self):
+        """Status changes use the page-generated reference for both supported transitions."""
+        self._login_as(self.owner_a)
+        ref_a = self._reference(self.owner_a, self.account_a)
+
+        with self.app.app_context():
+            with self.Session.begin() as session:
+                draft = create_content_draft(
+                    session,
+                    instagram_account_id=self.account_a.id,
+                    caption="Status caption",
+                    content_type="image",
+                    media_url="https://cdn.example.com/status.jpg",
+                )
+
+        page_html = self.client.get(f"/app/content?account={ref_a}").get_data(as_text=True)
+        csrf_match = re.search(r'name="csrf_token" value="([^"]+)"', page_html)
+        status_ref_match = re.search(
+            r'action="/app/content/drafts/status\?account=[^"]+".*?'
+            r'name="draft_ref" value="([^"]+)"',
+            page_html,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(csrf_match)
+        self.assertIsNotNone(status_ref_match)
+        csrf = csrf_match.group(1)
+        status_ref = status_ref_match.group(1)
+
+        ready_response = self.client.post(
+            f"/app/content/drafts/status?account={ref_a}",
+            data={"csrf_token": csrf, "draft_ref": status_ref, "status": "ready"},
+            follow_redirects=False,
+        )
+        self.assertEqual(ready_response.status_code, 303)
+        self.assertIn("/app/content?account=", ready_response.location)
+
+        with self.Session.begin() as session:
+            self.assertEqual(session.get(InstagramContentItem, draft.id).status, "ready")
+
+        draft_page_html = self.client.get(f"/app/content?account={ref_a}").get_data(as_text=True)
+        status_ref = re.search(
+            r'action="/app/content/drafts/status\?account=[^"]+".*?'
+            r'name="draft_ref" value="([^"]+)"',
+            draft_page_html,
+            re.DOTALL,
+        ).group(1)
+        csrf = re.search(r'name="csrf_token" value="([^"]+)"', draft_page_html).group(1)
+
+        draft_response = self.client.post(
+            f"/app/content/drafts/status?account={ref_a}",
+            data={"csrf_token": csrf, "draft_ref": status_ref, "status": "draft"},
+            follow_redirects=False,
+        )
+        self.assertEqual(draft_response.status_code, 303)
+
+        with self.Session.begin() as session:
+            self.assertEqual(session.get(InstagramContentItem, draft.id).status, "draft")
+
+    def test_content_draft_status_route_rejects_invalid_or_cross_account_updates_without_mutation(self):
+        """Invalid targets and a foreign account context leave the owned item unchanged."""
+        self._login_as(self.owner_a)
+        ref_a = self._reference(self.owner_a, self.account_a)
+        ref_b = self._reference(self.owner_b, self.account_b)
+
+        with self.app.app_context():
+            with self.Session.begin() as session:
+                draft = create_content_draft(
+                    session,
+                    instagram_account_id=self.account_a.id,
+                    caption="Protected status caption",
+                    content_type="image",
+                    media_url="https://cdn.example.com/protected-status.jpg",
+                )
+
+        page_html = self.client.get(f"/app/content?account={ref_a}").get_data(as_text=True)
+        csrf = re.search(r'name="csrf_token" value="([^"]+)"', page_html).group(1)
+        status_ref = re.search(
+            r'action="/app/content/drafts/status\?account=[^"]+".*?'
+            r'name="draft_ref" value="([^"]+)"',
+            page_html,
+            re.DOTALL,
+        ).group(1)
+
+        invalid_response = self.client.post(
+            f"/app/content/drafts/status?account={ref_a}",
+            data={"csrf_token": csrf, "draft_ref": status_ref, "status": "published"},
+            follow_redirects=False,
+        )
+        self.assertEqual(invalid_response.status_code, 400)
+
+        cross_account_response = self.client.post(
+            f"/app/content/drafts/status?account={ref_b}",
+            data={"csrf_token": csrf, "draft_ref": status_ref, "status": "ready"},
+            follow_redirects=False,
+        )
+        self.assertEqual(cross_account_response.status_code, 404)
+
+        with self.Session.begin() as session:
+            self.assertEqual(session.get(InstagramContentItem, draft.id).status, "draft")
+
+    def test_content_draft_status_route_rejects_invalid_csrf_without_mutation(self):
+        """A status form with a page-issued reference cannot bypass CSRF protection."""
+        self._login_as(self.owner_a)
+        ref_a = self._reference(self.owner_a, self.account_a)
+
+        with self.app.app_context():
+            with self.Session.begin() as session:
+                draft = create_content_draft(
+                    session,
+                    instagram_account_id=self.account_a.id,
+                    caption="CSRF protected status caption",
+                    content_type="image",
+                    media_url="https://cdn.example.com/csrf-status.jpg",
+                )
+
+        page_html = self.client.get(f"/app/content?account={ref_a}").get_data(as_text=True)
+        status_ref = re.search(
+            r'action="/app/content/drafts/status\?account=[^"]+".*?'
+            r'name="draft_ref" value="([^"]+)"',
+            page_html,
+            re.DOTALL,
+        ).group(1)
+
+        response = self.client.post(
+            f"/app/content/drafts/status?account={ref_a}",
+            data={"csrf_token": "incorrect-csrf-token", "draft_ref": status_ref, "status": "ready"},
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 400)
+
+        with self.Session.begin() as session:
+            self.assertEqual(session.get(InstagramContentItem, draft.id).status, "draft")
 
     def test_content_filters_remain_tenant_scoped(self):
         """15. Filters remain tenant-scoped."""
