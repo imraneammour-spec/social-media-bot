@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import uuid
 from datetime import datetime, timezone
 from functools import wraps
 
@@ -337,15 +338,31 @@ def _content_draft_reference(user_id, item_id, *, purpose, now=None):
 def _resolve_owned_content_draft(session, *, user_id, selected_account_id, reference, purpose):
     if not isinstance(reference, str):
         return None
+
+    parts = reference.split(".")
+    if len(parts) != 3 or parts[0] != "v1" or not parts[1].isdigit():
+        return None
+
+    try:
+        selected_account_uuid = uuid.UUID(str(selected_account_id))
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+    expires_at = int(parts[1])
+    current = int(datetime.now(timezone.utc).timestamp())
+    if expires_at < current or expires_at > current + 900:
+        return None
+
     for draft in session.scalars(
         select(InstagramContentItem).where(
-            InstagramContentItem.instagram_account_id == selected_account_id,
+            InstagramContentItem.instagram_account_id == selected_account_uuid,
         )
     ):
         expected = _content_draft_reference(
             user_id,
             draft.id,
             purpose=purpose,
+            now=expires_at - 900,
         )
         if hmac.compare_digest(expected, reference):
             return draft
@@ -1174,6 +1191,9 @@ def register_tenant_dashboard(app) -> None:
         if not draft_ref:
             return _safe_content_update_error()
 
+        caption_value = request.form.get("caption")
+        media_url_value = request.form.get("media_url")
+
         try:
             with session_factory.begin() as session:
                 draft = _resolve_owned_content_draft(
@@ -1190,8 +1210,8 @@ def register_tenant_dashboard(app) -> None:
                     selected.instagram_account_id,
                     draft.id,
                     content_type=request.form.get("content_type"),
-                    caption=request.form.get("caption"),
-                    media_url=request.form.get("media_url") or request.form.get("media_reference"),
+                    caption=caption_value,
+                    media_url=media_url_value,
                 )
         except (PermissionError, SQLAlchemyError, ValueError):
             app.logger.exception(

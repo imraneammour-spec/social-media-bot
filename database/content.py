@@ -128,7 +128,8 @@ def update_content_draft(
 
     item = _load_owned_item(session, instagram_account_id, item_id)
     if "caption" in changes:
-        value = str(changes["caption"] or "").strip()
+        raw_caption = changes["caption"]
+        value = str(raw_caption or "").strip()
         if not value:
             raise ValueError("Caption is required.")
         if len(value) > MAX_CAPTION_LENGTH:

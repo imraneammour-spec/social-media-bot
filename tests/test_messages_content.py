@@ -455,7 +455,7 @@ class MessagesContentDashboardTest(unittest.TestCase):
         self.assertIn("No prompt-enabled content yet", response.get_data(as_text=True))
 
     def test_content_draft_edit_route_updates_owned_item(self):
-        """Draft edit succeeds with the correct opaque reference and saves the new values."""
+        """Draft edit succeeds only when the page-generated opaque reference is used under the selected account."""
         self._login_as(self.owner_a)
         ref = self._reference(self.owner_a, self.account_a)
 
@@ -468,18 +468,28 @@ class MessagesContentDashboardTest(unittest.TestCase):
                     content_type="image",
                     media_url="https://cdn.example.com/original.jpg",
                 )
-                draft_ref = _content_draft_reference(
-                    self.owner_a.id,
-                    draft.id,
-                    purpose="content-draft-edit",
-                    now=None,
-                )
+
+        page_response = self.client.get(f"/app/content?account={ref}")
+        self.assertEqual(page_response.status_code, 200)
+        self.assertIn('name="draft_ref"', page_response.get_data(as_text=True))
+        self.assertIn('name="csrf_token"', page_response.get_data(as_text=True))
+
+        page_html = page_response.get_data(as_text=True)
+        match = re.search(r'name="draft_ref" value="([^"]+)"', page_html)
+        self.assertIsNotNone(match)
+        rendered_draft_ref = match.group(1)
+        self.assertTrue(rendered_draft_ref)
+
+        csrf_match = re.search(r'name="csrf_token" value="([^"]+)"', page_html)
+        self.assertIsNotNone(csrf_match)
+        rendered_csrf_token = csrf_match.group(1)
+        self.assertTrue(rendered_csrf_token)
 
         response = self.client.post(
             f"/app/content/drafts/edit?account={ref}",
             data={
-                "csrf_token": "csrf-test-token",
-                "draft_ref": draft_ref,
+                "csrf_token": rendered_csrf_token,
+                "draft_ref": rendered_draft_ref,
                 "content_type": "video",
                 "caption": "Updated caption",
                 "media_url": "https://cdn.example.com/updated.mp4",
