@@ -60,7 +60,7 @@
                     </form>
                     <form method="post" action="{{ url_for('tenant_dashboard.app_content_delete_draft', account=selected_account.selection_ref) }}">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                        <input type="hidden" name="draft_ref" value="{{ draft.draft_ref }}">
+                        <input type="hidden" name="draft_ref" value="{{ draft.delete_ref }}">
                         <button type="submit">Delete</button>
                     </form>
                 </div>

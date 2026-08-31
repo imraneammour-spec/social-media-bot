@@ -1125,6 +1125,11 @@ def register_tenant_dashboard(app) -> None:
                                 draft["id"],
                                 purpose="content-draft-status",
                             ) if draft.get("id") else None,
+                            "delete_ref": _content_draft_reference(
+                                user.id,
+                                draft["id"],
+                                purpose="content-draft-delete",
+                            ) if draft.get("id") else None,
                         }
                         for draft in raw_drafts
                     ]
@@ -1296,10 +1301,6 @@ def register_tenant_dashboard(app) -> None:
     @_require_tenant
     def app_content_delete_draft(user, accounts, selected):
         if not validate_csrf_token(request_csrf_token()):
-            return _safe_content_update_error()
-
-        item_id = str(request.form.get("draft_id") or "").strip()
-        if not item_id:
             return _safe_content_update_error()
 
         session_factory = getattr(_auth_state(), "session_factory", None)

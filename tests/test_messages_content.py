@@ -699,6 +699,129 @@ class MessagesContentDashboardTest(unittest.TestCase):
         with self.Session.begin() as session:
             self.assertEqual(session.get(InstagramContentItem, draft.id).status, "draft")
 
+    def test_content_draft_delete_route_removes_owned_item_from_rendered_form(self):
+        """Delete uses the page-issued token and selected-account context to remove its draft."""
+        self._login_as(self.owner_a)
+        ref_a = self._reference(self.owner_a, self.account_a)
+
+        with self.app.app_context():
+            with self.Session.begin() as session:
+                draft = create_content_draft(
+                    session,
+                    instagram_account_id=self.account_a.id,
+                    caption="Delete this owned draft",
+                    content_type="image",
+                    media_url="https://cdn.example.com/delete-owned.jpg",
+                )
+
+        page_html = self.client.get(f"/app/content?account={ref_a}").get_data(as_text=True)
+        csrf_match = re.search(r'name="csrf_token" value="([^"]+)"', page_html)
+        delete_ref_match = re.search(
+            r'action="/app/content/drafts/delete\?account=[^"]+".*?'
+            r'name="draft_ref" value="([^"]+)"',
+            page_html,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(csrf_match)
+        self.assertIsNotNone(delete_ref_match)
+
+        response = self.client.post(
+            f"/app/content/drafts/delete?account={ref_a}",
+            data={
+                "csrf_token": csrf_match.group(1),
+                "draft_ref": delete_ref_match.group(1),
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 303)
+        self.assertIn("/app/content?account=", response.location)
+
+        with self.Session.begin() as session:
+            self.assertIsNone(session.get(InstagramContentItem, draft.id))
+
+    def test_content_draft_delete_route_rejects_invalid_or_cross_account_requests_without_mutation(self):
+        """Invalid references and foreign account contexts cannot delete either account's draft."""
+        self._login_as(self.owner_a)
+        ref_a = self._reference(self.owner_a, self.account_a)
+        ref_b = self._reference(self.owner_b, self.account_b)
+
+        with self.app.app_context():
+            with self.Session.begin() as session:
+                owned_draft = create_content_draft(
+                    session,
+                    instagram_account_id=self.account_a.id,
+                    caption="Keep owned draft",
+                    content_type="image",
+                    media_url="https://cdn.example.com/keep-owned.jpg",
+                )
+                foreign_draft = create_content_draft(
+                    session,
+                    instagram_account_id=self.account_b.id,
+                    caption="Keep foreign draft",
+                    content_type="image",
+                    media_url="https://cdn.example.com/keep-foreign.jpg",
+                )
+
+        page_html = self.client.get(f"/app/content?account={ref_a}").get_data(as_text=True)
+        csrf = re.search(r'name="csrf_token" value="([^"]+)"', page_html).group(1)
+        delete_ref = re.search(
+            r'action="/app/content/drafts/delete\?account=[^"]+".*?'
+            r'name="draft_ref" value="([^"]+)"',
+            page_html,
+            re.DOTALL,
+        ).group(1)
+
+        invalid_ref_response = self.client.post(
+            f"/app/content/drafts/delete?account={ref_a}",
+            data={"csrf_token": csrf, "draft_ref": "invalid-delete-reference"},
+            follow_redirects=False,
+        )
+        self.assertEqual(invalid_ref_response.status_code, 400)
+
+        cross_account_response = self.client.post(
+            f"/app/content/drafts/delete?account={ref_b}",
+            data={"csrf_token": csrf, "draft_ref": delete_ref},
+            follow_redirects=False,
+        )
+        self.assertEqual(cross_account_response.status_code, 404)
+
+        with self.Session.begin() as session:
+            self.assertIsNotNone(session.get(InstagramContentItem, owned_draft.id))
+            self.assertIsNotNone(session.get(InstagramContentItem, foreign_draft.id))
+
+    def test_content_draft_delete_route_rejects_invalid_csrf_without_mutation(self):
+        """A valid delete reference alone cannot bypass CSRF protection."""
+        self._login_as(self.owner_a)
+        ref_a = self._reference(self.owner_a, self.account_a)
+
+        with self.app.app_context():
+            with self.Session.begin() as session:
+                draft = create_content_draft(
+                    session,
+                    instagram_account_id=self.account_a.id,
+                    caption="CSRF protected delete draft",
+                    content_type="image",
+                    media_url="https://cdn.example.com/csrf-delete.jpg",
+                )
+
+        page_html = self.client.get(f"/app/content?account={ref_a}").get_data(as_text=True)
+        delete_ref = re.search(
+            r'action="/app/content/drafts/delete\?account=[^"]+".*?'
+            r'name="draft_ref" value="([^"]+)"',
+            page_html,
+            re.DOTALL,
+        ).group(1)
+
+        response = self.client.post(
+            f"/app/content/drafts/delete?account={ref_a}",
+            data={"csrf_token": "incorrect-csrf-token", "draft_ref": delete_ref},
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 400)
+
+        with self.Session.begin() as session:
+            self.assertIsNotNone(session.get(InstagramContentItem, draft.id))
+
     def test_content_filters_remain_tenant_scoped(self):
         """15. Filters remain tenant-scoped."""
         self._login_as(self.owner_a)
