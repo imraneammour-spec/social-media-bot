@@ -18,6 +18,18 @@ ROOT = Path(__file__).resolve().parents[1]
 SERVICE_PATH = ROOT / "database" / "content_publishing.py"
 
 
+class _ProviderResponse:
+    def __init__(self, *, ok=True, status_code=None, payload=None):
+        self.ok = ok
+        self.status_code = status_code
+        self._payload = {} if payload is None else payload
+
+    def json(self):
+        if isinstance(self._payload, Exception):
+            raise self._payload
+        return self._payload
+
+
 class Phase7CScheduledPublishingTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
@@ -204,6 +216,116 @@ class Phase7CScheduledPublishingTest(unittest.TestCase):
         self.assertEqual(item.status, "failed")
         self.assertEqual(item.publish_error_code, "provider_request_ambiguous")
         self.assertTrue(item.provider_request_may_have_been_sent)
+
+    def test_container_rejection_emits_safe_diagnostics_and_preserves_terminal_lifecycle(self):
+        api = self._api()
+        item_id = self._scheduled()
+        authorization_token = "provider-token-must-not-leak"
+        provider_secret = "provider-secret-must-not-leak"
+        provider_response = _ProviderResponse(
+            ok=False,
+            status_code=400,
+            payload={
+                "error": {
+                    "type": "OAuthException",
+                    "code": 190,
+                    "error_subcode": 460,
+                    "message": provider_secret,
+                    "access_token": authorization_token,
+                }
+            },
+        )
+        with patch("database.content_publishing.requests.post", return_value=provider_response) as post, patch.object(
+            api.LOGGER, "info"
+        ) as info:
+            result = api.execute_due_scheduled_content(
+                self.Session,
+                now=self.now,
+                runtime_resolver=lambda *args, **kwargs: self._runtime_for(self.account_a),
+            )
+
+        item = self._item(item_id)
+        self.assertEqual((result.claimed, result.published, result.failed), (1, 0, 1))
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(item.status, "failed")
+        self.assertEqual(item.publish_error_code, "provider_rejected")
+        self.assertFalse(item.provider_request_may_have_been_sent)
+        info.assert_any_call(
+            "scheduled_content_publishing_failed "
+            "publish_stage=container_create "
+            "provider_http_status=400 "
+            "provider_error_classification=provider_error_metadata "
+            "provider_error_type=OAuthException "
+            "provider_error_code=190 "
+            "provider_error_subcode=460"
+        )
+        for sensitive_value in (authorization_token, provider_secret, "test-token-must-not-persist"):
+            self.assertNotIn(sensitive_value, str(info.call_args_list))
+
+    def test_final_publish_rejection_emits_media_publish_diagnostics(self):
+        api = self._api()
+        item_id = self._scheduled()
+        with patch(
+            "database.content_publishing.requests.post",
+            side_effect=(
+                _ProviderResponse(ok=True, status_code=200, payload={"id": "container-id"}),
+                _ProviderResponse(
+                    ok=False,
+                    status_code=403,
+                    payload={
+                        "error": {
+                            "type": "IGApiException",
+                            "code": 10,
+                            "error_subcode": 2018001,
+                        }
+                    },
+                ),
+            ),
+        ) as post, patch.object(api.LOGGER, "info") as info:
+            result = api.execute_due_scheduled_content(
+                self.Session,
+                now=self.now,
+                runtime_resolver=lambda *args, **kwargs: self._runtime_for(self.account_a),
+            )
+
+        item = self._item(item_id)
+        self.assertEqual((result.claimed, result.published, result.failed), (1, 0, 1))
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(item.publish_error_code, "provider_rejected")
+        self.assertFalse(item.provider_request_may_have_been_sent)
+        info.assert_any_call(
+            "scheduled_content_publishing_failed "
+            "publish_stage=media_publish "
+            "provider_http_status=403 "
+            "provider_error_classification=provider_error_metadata "
+            "provider_error_type=IGApiException "
+            "provider_error_code=10 "
+            "provider_error_subcode=2018001"
+        )
+
+    def test_malformed_provider_rejection_is_safely_classified_without_payload(self):
+        api = self._api()
+        item_id = self._scheduled()
+        with self.Session.begin() as session:
+            claimed = api.claim_due_scheduled_content(session, now=self.now, limit=1)[0]
+        provider_secret = "provider-body-must-not-leak"
+        with patch(
+            "database.content_publishing.requests.post",
+            return_value=_ProviderResponse(
+                ok=False, status_code=502, payload=ValueError(provider_secret)
+            ),
+        ):
+            with self.assertRaises(api.InstagramPublishError) as error:
+                api.publish_instagram_image(self._runtime_for(self.account_a), claimed)
+
+        self.assertEqual(error.exception.code, "provider_rejected")
+        self.assertFalse(error.exception.request_may_have_been_sent)
+        self.assertEqual(error.exception.safe_diagnostics, {
+            "publish_stage": "container_create",
+            "provider_http_status": 502,
+            "provider_error_classification": "provider_error_unparseable",
+        })
+        self.assertNotIn(provider_secret, str(error.exception.safe_diagnostics))
 
     def test_cli_runs_a_bounded_execution_and_prints_only_safe_counts(self):
         api = self._api()

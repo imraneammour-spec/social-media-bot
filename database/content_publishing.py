@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
+import re
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -34,14 +35,27 @@ SAFE_ERROR_CODES = {
     "provider_request_ambiguous",
     "unexpected_publish_error",
 }
+_SAFE_PUBLISH_STAGES = frozenset(("container_create", "media_publish"))
+_SAFE_PROVIDER_ERROR_TYPES = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+_SAFE_PROVIDER_ERROR_CLASSIFICATIONS = frozenset((
+    "provider_error_metadata",
+    "provider_error_unparseable",
+))
 
 
 class InstagramPublishError(ValueError):
     """A safe provider outcome classification with no provider payload."""
 
-    def __init__(self, code: str, *, request_may_have_been_sent: bool) -> None:
+    def __init__(
+        self,
+        code: str,
+        *,
+        request_may_have_been_sent: bool,
+        safe_diagnostics: Mapping[str, object] | None = None,
+    ) -> None:
         self.code = code if code in SAFE_ERROR_CODES else "unexpected_publish_error"
         self.request_may_have_been_sent = bool(request_may_have_been_sent)
+        self.safe_diagnostics = _safe_provider_diagnostics(safe_diagnostics)
         super().__init__("Instagram publishing is unavailable.")
 
 
@@ -72,6 +86,86 @@ def _now(value: datetime | None = None) -> datetime:
 
 def _safe_code(value: object) -> str:
     return value if isinstance(value, str) and value in SAFE_ERROR_CODES else "unexpected_publish_error"
+
+
+def _safe_provider_diagnostics(value: Mapping[str, object] | None) -> dict[str, object]:
+    """Keep only bounded, non-secret provider rejection diagnostics."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    diagnostics: dict[str, object] = {}
+    stage = value.get("publish_stage")
+    if isinstance(stage, str) and stage in _SAFE_PUBLISH_STAGES:
+        diagnostics["publish_stage"] = stage
+    status = value.get("provider_http_status")
+    if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+        diagnostics["provider_http_status"] = status
+    classification = value.get("provider_error_classification")
+    if isinstance(classification, str) and classification in _SAFE_PROVIDER_ERROR_CLASSIFICATIONS:
+        diagnostics["provider_error_classification"] = classification
+    error_type = value.get("provider_error_type")
+    if isinstance(error_type, str) and _SAFE_PROVIDER_ERROR_TYPES.fullmatch(error_type):
+        diagnostics["provider_error_type"] = error_type
+    for key in ("provider_error_code", "provider_error_subcode"):
+        number = value.get(key)
+        if isinstance(number, int) and not isinstance(number, bool) and 0 <= number <= 2_147_483_647:
+            diagnostics[key] = number
+    return diagnostics
+
+
+def _provider_rejection(stage: str, response: object) -> InstagramPublishError:
+    """Classify one provider non-2xx response without retaining its body."""
+
+    diagnostics: dict[str, object] = {
+        "publish_stage": stage,
+        "provider_error_classification": "provider_error_unparseable",
+    }
+    status = getattr(response, "status_code", None)
+    if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+        diagnostics["provider_http_status"] = status
+    try:
+        payload = response.json()  # type: ignore[union-attr]
+    except (AttributeError, TypeError, ValueError):
+        return InstagramPublishError(
+            "provider_rejected",
+            request_may_have_been_sent=False,
+            safe_diagnostics=diagnostics,
+        )
+    error = payload.get("error") if isinstance(payload, Mapping) else None
+    if not isinstance(error, Mapping):
+        return InstagramPublishError(
+            "provider_rejected",
+            request_may_have_been_sent=False,
+            safe_diagnostics=diagnostics,
+        )
+    diagnostics["provider_error_classification"] = "provider_error_metadata"
+    for source_key, diagnostic_key in (
+        ("type", "provider_error_type"),
+        ("code", "provider_error_code"),
+        ("error_subcode", "provider_error_subcode"),
+    ):
+        if source_key in error:
+            diagnostics[diagnostic_key] = error[source_key]
+    return InstagramPublishError(
+        "provider_rejected",
+        request_may_have_been_sent=False,
+        safe_diagnostics=diagnostics,
+    )
+
+
+def _provider_rejection_log_message(diagnostics: Mapping[str, object]) -> str:
+    """Render only allowlisted diagnostics because Railway drops log extras."""
+
+    safe = _safe_provider_diagnostics(diagnostics)
+    return (
+        "scheduled_content_publishing_failed "
+        f"publish_stage={safe.get('publish_stage')} "
+        f"provider_http_status={safe.get('provider_http_status')} "
+        f"provider_error_classification={safe.get('provider_error_classification')} "
+        f"provider_error_type={safe.get('provider_error_type')} "
+        f"provider_error_code={safe.get('provider_error_code')} "
+        f"provider_error_subcode={safe.get('provider_error_subcode')}"
+    )
 
 
 def claim_due_scheduled_content(
@@ -219,7 +313,7 @@ def publish_instagram_image(runtime: InstagramAccountRuntime, item: ClaimedSched
         {"image_url": item.media_url, "caption": item.caption},
     )
     if not bool(getattr(container, "ok", False)):
-        raise InstagramPublishError("provider_rejected", request_may_have_been_sent=False)
+        raise _provider_rejection("container_create", container)
     creation_id = _payload_id(container)
     if creation_id is None:
         raise InstagramPublishError("provider_response_invalid", request_may_have_been_sent=False)
@@ -230,7 +324,7 @@ def publish_instagram_image(runtime: InstagramAccountRuntime, item: ClaimedSched
         {"creation_id": creation_id},
     )
     if not bool(getattr(published, "ok", False)):
-        raise InstagramPublishError("provider_rejected", request_may_have_been_sent=False)
+        raise _provider_rejection("media_publish", published)
     media_id = _payload_id(published)
     if media_id is None:
         raise InstagramPublishError("provider_response_invalid", request_may_have_been_sent=True)
@@ -305,7 +399,10 @@ def execute_due_scheduled_content(
             LOGGER.info("scheduled_content_publishing_failed", extra={"content_id": str(item.id), "error_code": "instagram_connection_unavailable", "provider_request_may_have_been_sent": False})
         except InstagramPublishError as error:
             failed_count += int(_record_failure(session_factory, item, error.code, error.request_may_have_been_sent))
-            LOGGER.info("scheduled_content_publishing_failed", extra={"content_id": str(item.id), "error_code": error.code, "provider_request_may_have_been_sent": error.request_may_have_been_sent})
+            if error.code == "provider_rejected" and error.safe_diagnostics:
+                LOGGER.info(_provider_rejection_log_message(error.safe_diagnostics))
+            else:
+                LOGGER.info("scheduled_content_publishing_failed", extra={"content_id": str(item.id), "error_code": error.code, "provider_request_may_have_been_sent": error.request_may_have_been_sent})
         except Exception:
             failed_count += int(_record_failure(session_factory, item, "unexpected_publish_error", True))
             LOGGER.info("scheduled_content_publishing_failed", extra={"content_id": str(item.id), "error_code": "unexpected_publish_error", "provider_request_may_have_been_sent": True})
