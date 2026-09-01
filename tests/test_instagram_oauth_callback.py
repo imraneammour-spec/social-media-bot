@@ -673,16 +673,18 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
         warning.assert_called_once_with(OAUTH_CALLBACK_STAGE_SHORT_RESPONSE_INVALID)
         self._assert_no_database_writes()
 
-    def test_callback_logs_only_safe_long_exchange_diagnostics(self):
+    def test_callback_emits_safe_long_exchange_diagnostics_in_formatted_warning(self):
         client = self._authenticated_client()
         state = self._issue_state(client)
         authorization_code = "authorization-code-must-not-leak"
+        access_token = "access-token-must-not-leak"
         safe_diagnostics = {
             "provider_http_status": 400,
             "provider_error_classification": "provider_error_metadata",
             "provider_error_type": "OAuthException",
             "provider_error_code": 190,
             "provider_error_subcode": 460,
+            "provider_access_token": access_token,
         }
         with patch.dict("os.environ", self._oauth_environment(), clear=False), patch(
             "auth.complete_instagram_token_exchange",
@@ -698,11 +700,19 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 502)
         warning.assert_called_once_with(
-            OAUTH_CALLBACK_STAGE_LONG_EXCHANGE_FAILED,
-            extra=safe_diagnostics,
+            "oauth_long_exchange_failed "
+            "provider_http_status=400 "
+            "provider_error_classification=provider_error_metadata "
+            "provider_error_type=OAuthException "
+            "provider_error_code=190 "
+            "provider_error_subcode=460",
         )
-        self.assertNotIn(authorization_code, str(warning.call_args))
-        self.assertNotIn(self._oauth_environment()["META_APP_SECRET"], str(warning.call_args))
+        for sensitive_value in (
+            authorization_code,
+            access_token,
+            self._oauth_environment()["META_APP_SECRET"],
+        ):
+            self.assertNotIn(sensitive_value, str(warning.call_args))
         self._assert_no_database_writes()
 
 
