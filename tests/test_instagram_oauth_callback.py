@@ -34,9 +34,10 @@ from instagram_oauth import (
 
 
 class _ProviderResponse:
-    def __init__(self, *, ok=True, payload=None):
+    def __init__(self, *, ok=True, payload=None, status_code=None):
         self.ok = ok
         self._payload = {} if payload is None else payload
+        self.status_code = status_code
 
     def json(self):
         if isinstance(self._payload, Exception):
@@ -517,6 +518,80 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
         self.assertEqual(str(error.exception), "Instagram authorization could not be completed.")
         self.assertEqual(error.exception.diagnostic_stage, OAUTH_CALLBACK_STAGE_LONG_RESPONSE_INVALID)
 
+    def test_long_exchange_non_success_captures_only_safe_meta_error_diagnostics(self):
+        environment = self._oauth_environment()
+        configuration = oauth_configuration_from_environment(environment, production=True)
+        authorization_code = "authorization-code-must-not-leak"
+        short_token = "short-token-must-not-leak"
+        provider_secret = "provider-secret-must-not-leak"
+        provider_body = {
+            "error": {
+                "type": "OAuthException",
+                "code": 190,
+                "error_subcode": 460,
+                "message": provider_secret,
+                "access_token": short_token,
+            }
+        }
+        with patch.dict(os.environ, environment, clear=False), patch(
+            "instagram_oauth.requests.post",
+            return_value=_ProviderResponse(payload={
+                "access_token": short_token,
+                "permissions": "instagram_business_basic",
+            }),
+        ), patch(
+            "instagram_oauth.requests.get",
+            return_value=_ProviderResponse(ok=False, status_code=400, payload=provider_body),
+        ):
+            with self.assertRaises(OAuthExchangeError) as error:
+                complete_instagram_token_exchange(authorization_code, configuration)
+
+        self.assertEqual(error.exception.diagnostic_stage, OAUTH_CALLBACK_STAGE_LONG_EXCHANGE_FAILED)
+        self.assertEqual(error.exception.safe_diagnostics, {
+            "provider_http_status": 400,
+            "provider_error_classification": "provider_error_metadata",
+            "provider_error_type": "OAuthException",
+            "provider_error_code": 190,
+            "provider_error_subcode": 460,
+        })
+        diagnostics = str(error.exception.safe_diagnostics)
+        for sensitive_value in (
+            authorization_code,
+            short_token,
+            environment["META_APP_SECRET"],
+            provider_secret,
+        ):
+            self.assertNotIn(sensitive_value, diagnostics)
+
+    def test_long_exchange_non_json_failure_captures_status_without_provider_body(self):
+        environment = self._oauth_environment()
+        configuration = oauth_configuration_from_environment(environment, production=True)
+        authorization_code = "authorization-code-must-not-leak"
+        short_token = "short-token-must-not-leak"
+        provider_secret = "provider-error-body-must-not-leak"
+        with patch.dict(os.environ, environment, clear=False), patch(
+            "instagram_oauth.requests.post",
+            return_value=_ProviderResponse(payload={
+                "access_token": short_token,
+                "permissions": "instagram_business_basic",
+            }),
+        ), patch(
+            "instagram_oauth.requests.get",
+            return_value=_ProviderResponse(
+                ok=False,
+                status_code=502,
+                payload=ValueError(provider_secret),
+            ),
+        ):
+            with self.assertRaises(OAuthExchangeError) as error:
+                complete_instagram_token_exchange(authorization_code, configuration)
+
+        self.assertEqual(error.exception.safe_diagnostics, {
+            "provider_http_status": 502,
+            "provider_error_classification": "provider_error_unparseable",
+        })
+        self.assertNotIn(provider_secret, str(error.exception.safe_diagnostics))
+
     def test_exchange_diagnostics_distinguish_short_response_permissions_and_long_response(self):
         """Collapsing token-exchange boundaries would make staging diagnosis impossible."""
         environment = self._oauth_environment()
@@ -596,6 +671,38 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
         for sensitive_value in (authorization_code, secret, sensitive_url):
             self.assertNotIn(sensitive_value, rendered)
         warning.assert_called_once_with(OAUTH_CALLBACK_STAGE_SHORT_RESPONSE_INVALID)
+        self._assert_no_database_writes()
+
+    def test_callback_logs_only_safe_long_exchange_diagnostics(self):
+        client = self._authenticated_client()
+        state = self._issue_state(client)
+        authorization_code = "authorization-code-must-not-leak"
+        safe_diagnostics = {
+            "provider_http_status": 400,
+            "provider_error_classification": "provider_error_metadata",
+            "provider_error_type": "OAuthException",
+            "provider_error_code": 190,
+            "provider_error_subcode": 460,
+        }
+        with patch.dict("os.environ", self._oauth_environment(), clear=False), patch(
+            "auth.complete_instagram_token_exchange",
+            side_effect=OAuthExchangeError(
+                OAUTH_CALLBACK_STAGE_LONG_EXCHANGE_FAILED,
+                safe_diagnostics=safe_diagnostics,
+            ),
+        ), patch.object(self.app.logger, "warning") as warning:
+            response = client.get(
+                "/connect/instagram/callback",
+                query_string={"state": state, "code": authorization_code},
+            )
+
+        self.assertEqual(response.status_code, 502)
+        warning.assert_called_once_with(
+            OAUTH_CALLBACK_STAGE_LONG_EXCHANGE_FAILED,
+            extra=safe_diagnostics,
+        )
+        self.assertNotIn(authorization_code, str(warning.call_args))
+        self.assertNotIn(self._oauth_environment()["META_APP_SECRET"], str(warning.call_args))
         self._assert_no_database_writes()
 
 

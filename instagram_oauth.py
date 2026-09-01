@@ -49,6 +49,11 @@ _OAUTH_CALLBACK_DIAGNOSTIC_STAGES = frozenset((
     OAUTH_CALLBACK_STAGE_DISCOVERY_FAILED,
     OAUTH_CALLBACK_STAGE_CONNECTION_PRECOMMIT_FAILED,
 ))
+_SAFE_PROVIDER_ERROR_TYPES = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+_SAFE_PROVIDER_ERROR_CLASSIFICATIONS = frozenset((
+    "provider_error_metadata",
+    "provider_error_unparseable",
+))
 
 
 class OAuthConfigurationError(ValueError):
@@ -62,10 +67,16 @@ class OAuthStateError(ValueError):
 class OAuthExchangeError(ValueError):
     """Raised without provider content when an OAuth exchange fails."""
 
-    def __init__(self, diagnostic_stage: str):
+    def __init__(
+        self,
+        diagnostic_stage: str,
+        *,
+        safe_diagnostics: Mapping[str, object] | None = None,
+    ):
         if diagnostic_stage not in _OAUTH_CALLBACK_DIAGNOSTIC_STAGES:
             raise ValueError("Invalid OAuth callback diagnostic stage.")
         self.diagnostic_stage = diagnostic_stage
+        self.safe_diagnostics = _safe_exchange_diagnostics(safe_diagnostics)
         super().__init__("Instagram authorization could not be completed.")
 
 
@@ -174,8 +185,10 @@ def _app_secret_from_environment(environ: Mapping[str, str] | None = None) -> st
 
 def _exchange_error(
     diagnostic_stage: str = OAUTH_CALLBACK_STAGE_SHORT_RESPONSE_INVALID,
+    *,
+    safe_diagnostics: Mapping[str, object] | None = None,
 ) -> OAuthExchangeError:
-    return OAuthExchangeError(diagnostic_stage)
+    return OAuthExchangeError(diagnostic_stage, safe_diagnostics=safe_diagnostics)
 
 
 def _discovery_error() -> OAuthDiscoveryError:
@@ -198,6 +211,64 @@ def _successful_response_payload(
     if not isinstance(payload, dict):
         raise _exchange_error(invalid_response_stage)
     return payload
+
+
+def _safe_exchange_diagnostics(value: Mapping[str, object] | None) -> dict[str, object]:
+    """Keep only bounded non-secret provider diagnostics for a failed exchange."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    diagnostics: dict[str, object] = {}
+    status = value.get("provider_http_status")
+    if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+        diagnostics["provider_http_status"] = status
+    classification = value.get("provider_error_classification")
+    if isinstance(classification, str) and classification in _SAFE_PROVIDER_ERROR_CLASSIFICATIONS:
+        diagnostics["provider_error_classification"] = classification
+    error_type = value.get("provider_error_type")
+    if isinstance(error_type, str) and _SAFE_PROVIDER_ERROR_TYPES.fullmatch(error_type):
+        diagnostics["provider_error_type"] = error_type
+    for key in ("provider_error_code", "provider_error_subcode"):
+        number = value.get(key)
+        if isinstance(number, int) and not isinstance(number, bool) and 0 <= number <= 2_147_483_647:
+            diagnostics[key] = number
+    return diagnostics
+
+
+def _long_lived_non_success_error(response: object) -> OAuthExchangeError:
+    """Classify a long-lived provider failure without retaining its payload."""
+
+    diagnostics: dict[str, object] = {
+        "provider_error_classification": "provider_error_unparseable",
+    }
+    status = getattr(response, "status_code", None)
+    if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+        diagnostics["provider_http_status"] = status
+    try:
+        payload = response.json()  # type: ignore[union-attr]
+    except (AttributeError, TypeError, ValueError):
+        return _exchange_error(
+            OAUTH_CALLBACK_STAGE_LONG_EXCHANGE_FAILED,
+            safe_diagnostics=diagnostics,
+        )
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if not isinstance(error, dict):
+        return _exchange_error(
+            OAUTH_CALLBACK_STAGE_LONG_EXCHANGE_FAILED,
+            safe_diagnostics=diagnostics,
+        )
+    diagnostics["provider_error_classification"] = "provider_error_metadata"
+    for source_key, diagnostic_key in (
+        ("type", "provider_error_type"),
+        ("code", "provider_error_code"),
+        ("error_subcode", "provider_error_subcode"),
+    ):
+        if source_key in error:
+            diagnostics[diagnostic_key] = error[source_key]
+    return _exchange_error(
+        OAUTH_CALLBACK_STAGE_LONG_EXCHANGE_FAILED,
+        safe_diagnostics=diagnostics,
+    )
 
 
 def _access_token_from_payload(
@@ -288,6 +359,8 @@ def _short_lived_exchange_result(response: object) -> tuple[str, tuple[str, ...]
 def _long_lived_exchange_result(response: object) -> tuple[str, int | None]:
     """Return only the replacement token and optional expiry from Meta."""
 
+    if not bool(getattr(response, "ok", False)):
+        raise _long_lived_non_success_error(response)
     payload = _successful_response_payload(
         response,
         non_success_stage=OAUTH_CALLBACK_STAGE_LONG_EXCHANGE_FAILED,

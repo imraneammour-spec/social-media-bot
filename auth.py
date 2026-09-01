@@ -488,7 +488,10 @@ def register_auth_routes(app) -> None:
         except (OAuthConfigurationError, CredentialConfigurationError):
             return "Instagram connection configuration is unavailable.", 503
         except OAuthExchangeError as error:
-            current_app.logger.warning(error.diagnostic_stage)
+            if error.safe_diagnostics:
+                current_app.logger.warning(error.diagnostic_stage, extra=error.safe_diagnostics)
+            else:
+                current_app.logger.warning(error.diagnostic_stage)
             return "Instagram connection could not be completed.", 502
         except OAuthDiscoveryError as error:
             current_app.logger.warning(error.diagnostic_stage)
