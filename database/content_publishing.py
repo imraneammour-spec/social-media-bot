@@ -400,7 +400,7 @@ def execute_due_scheduled_content(
         except InstagramPublishError as error:
             failed_count += int(_record_failure(session_factory, item, error.code, error.request_may_have_been_sent))
             if error.code == "provider_rejected" and error.safe_diagnostics:
-                LOGGER.info(_provider_rejection_log_message(error.safe_diagnostics))
+                LOGGER.warning(_provider_rejection_log_message(error.safe_diagnostics))
             else:
                 LOGGER.info("scheduled_content_publishing_failed", extra={"content_id": str(item.id), "error_code": error.code, "provider_request_may_have_been_sent": error.request_may_have_been_sent})
         except Exception:

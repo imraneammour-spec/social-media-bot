@@ -236,8 +236,8 @@ class Phase7CScheduledPublishingTest(unittest.TestCase):
             },
         )
         with patch("database.content_publishing.requests.post", return_value=provider_response) as post, patch.object(
-            api.LOGGER, "info"
-        ) as info:
+            api.LOGGER, "warning"
+        ) as warning:
             result = api.execute_due_scheduled_content(
                 self.Session,
                 now=self.now,
@@ -250,7 +250,7 @@ class Phase7CScheduledPublishingTest(unittest.TestCase):
         self.assertEqual(item.status, "failed")
         self.assertEqual(item.publish_error_code, "provider_rejected")
         self.assertFalse(item.provider_request_may_have_been_sent)
-        info.assert_any_call(
+        warning.assert_any_call(
             "scheduled_content_publishing_failed "
             "publish_stage=container_create "
             "provider_http_status=400 "
@@ -260,7 +260,7 @@ class Phase7CScheduledPublishingTest(unittest.TestCase):
             "provider_error_subcode=460"
         )
         for sensitive_value in (authorization_token, provider_secret, "test-token-must-not-persist"):
-            self.assertNotIn(sensitive_value, str(info.call_args_list))
+            self.assertNotIn(sensitive_value, str(warning.call_args_list))
 
     def test_final_publish_rejection_emits_media_publish_diagnostics(self):
         api = self._api()
@@ -281,7 +281,7 @@ class Phase7CScheduledPublishingTest(unittest.TestCase):
                     },
                 ),
             ),
-        ) as post, patch.object(api.LOGGER, "info") as info:
+        ) as post, patch.object(api.LOGGER, "warning") as warning:
             result = api.execute_due_scheduled_content(
                 self.Session,
                 now=self.now,
@@ -293,7 +293,7 @@ class Phase7CScheduledPublishingTest(unittest.TestCase):
         self.assertEqual(post.call_count, 2)
         self.assertEqual(item.publish_error_code, "provider_rejected")
         self.assertFalse(item.provider_request_may_have_been_sent)
-        info.assert_any_call(
+        warning.assert_any_call(
             "scheduled_content_publishing_failed "
             "publish_stage=media_publish "
             "provider_http_status=403 "
