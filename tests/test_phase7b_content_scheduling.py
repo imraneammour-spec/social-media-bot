@@ -96,7 +96,12 @@ class Phase7BContentSchedulingTest(unittest.TestCase):
         self.assertNotIn(str(case.account_a.id), page)
         csrf = re.search(r'name="csrf_token" value="([^"]+)"', page).group(1)
         schedule_ref = re.search(r'action="/app/content/drafts/schedule\?account=[^"]+".*?name="draft_ref" value="([^"]+)"', page, re.DOTALL).group(1)
-        edit_ref = re.search(r'UI ready.*?action="/app/content/drafts/edit\?account=[^"]+".*?name="draft_ref" value="([^"]+)"', page, re.DOTALL).group(1)
+        with case.app.app_context():
+            edit_ref = _content_draft_reference(
+                case.owner_a.id,
+                ready.id,
+                purpose="content-draft-edit",
+            )
         future_date = (datetime.now(ZoneInfo("Africa/Casablanca")) + timedelta(days=2)).strftime("%Y-%m-%d")
         response = case.client.post(f"/app/content/drafts/schedule?account={account_a_ref}", data={"csrf_token": csrf, "draft_ref": schedule_ref, "date": future_date, "time": "12:30"}, follow_redirects=False)
         self.assertEqual(response.status_code, 303)

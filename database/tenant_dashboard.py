@@ -396,7 +396,7 @@ def list_tenant_accounts(
     return result
 
 
-def overview(session: Session, *, instagram_account_id: uuid.UUID) -> dict[str, int]:
+def overview(session: Session, *, instagram_account_id: uuid.UUID) -> dict[str, object]:
     """Return only aggregate, account-scoped tenant counts."""
 
     def count(model) -> int:
@@ -443,6 +443,34 @@ def overview(session: Session, *, instagram_account_id: uuid.UUID) -> dict[str, 
         label = followup_labels.get(str(state or "").strip().lower(), "unavailable")
         followup_state_counts[label] += int(total)
 
+    content_state_counts = {
+        "draft": 0,
+        "ready": 0,
+        "scheduled": 0,
+        "publishing": 0,
+        "published": 0,
+        "failed": 0,
+    }
+    for state, total in session.execute(
+        select(InstagramContentItem.status, func.count())
+        .where(InstagramContentItem.instagram_account_id == instagram_account_id)
+        .group_by(InstagramContentItem.status)
+    ):
+        normalized_state = str(state or "").strip().lower()
+        if normalized_state in content_state_counts:
+            content_state_counts[normalized_state] = int(total)
+
+    next_scheduled = session.scalar(
+        select(InstagramContentItem)
+        .where(
+            InstagramContentItem.instagram_account_id == instagram_account_id,
+            InstagramContentItem.status == "scheduled",
+            InstagramContentItem.scheduled_for.is_not(None),
+        )
+        .order_by(InstagramContentItem.scheduled_for.asc(), InstagramContentItem.id.asc())
+        .limit(1)
+    )
+
     return {
         "lead_count": count(InstagramPromptRequest),
         "lead_stage_counts": lead_stage_counts,
@@ -462,6 +490,19 @@ def overview(session: Session, *, instagram_account_id: uuid.UUID) -> dict[str, 
         "prompt_post_count": count(InstagramPromptPost),
         "followup_count": count(InstagramOAuthFollowupJob),
         "followup_state_counts": followup_state_counts,
+        "content_state_counts": content_state_counts,
+        "next_scheduled_content": (
+            {
+                "caption_preview": (next_scheduled.caption[:120] + "…")
+                if next_scheduled is not None and len(next_scheduled.caption) > 120
+                else (next_scheduled.caption if next_scheduled is not None else ""),
+                "scheduled_for": _timestamp(next_scheduled.scheduled_for)
+                if next_scheduled is not None
+                else None,
+            }
+            if next_scheduled is not None
+            else None
+        ),
         "recent_activity": activity(session, instagram_account_id=instagram_account_id, limit=5),
     }
 
@@ -870,7 +911,11 @@ def content_drafts(
     for draft in session.scalars(
         select(InstagramContentItem)
         .where(InstagramContentItem.instagram_account_id == instagram_account_id)
-        .where(InstagramContentItem.status.in_({"draft", "ready", "scheduled"}))
+        .where(
+            InstagramContentItem.status.in_(
+                {"draft", "ready", "scheduled", "publishing", "published", "failed"}
+            )
+        )
         .order_by(InstagramContentItem.updated_at.desc(), InstagramContentItem.id.desc())
         .limit(limit)
     ):
@@ -878,6 +923,7 @@ def content_drafts(
         rows.append({
             "id": str(draft.id),
             "content_type": draft.content_type,
+            "caption": draft.caption,
             "caption_preview": (draft.caption[:160] + "…") if len(draft.caption) > 160 else draft.caption,
             "status": draft.status,
             "created_at": _timestamp(draft.created_at) or "",

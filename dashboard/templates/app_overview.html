@@ -1,41 +1,11 @@
 {% extends "app_base.html" %}
-{% block title %}Home{% endblock %}
-{% block heading %}Home{% endblock %}
+{% block title %}Overview{% endblock %}
+{% block heading %}Overview{% endblock %}
 {% block content %}
-<section class="status-card card" aria-label="Instagram account status">
-    <div>
-        <p class="eyebrow">Connected Instagram account</p>
-        <h2>{{ selected_account.username }}</h2>
-        <p class="muted">Account availability is based on the saved connection and activation state.</p>
-    </div>
-    <div class="status-stack">
-        <p><span class="status-badge">Connection</span> <strong>Connection health: {{ selected_account.connection_label }}</strong></p>
-        <p class="muted">{{ selected_account.connection_detail }}</p>
-        <p><span class="status-badge">Automation</span> <strong>{{ selected_account.activation_label }}</strong></p>
-        {% if selected_account.activation_label == 'Active' %}
-            <p class="muted">Automation is active. {{ selected_account.activation_detail }}</p>
-        {% else %}
-            <p class="muted">Automation is not active. {{ selected_account.activation_detail }}</p>
-        {% endif %}
-    </div>
-</section>
-
-<section class="summary-grid" aria-label="Account activity summary">
-    <dl class="summary-card card"><dt>Leads</dt><dd>{{ overview.lead_count }}</dd></dl>
-    <dl class="summary-card card"><dt>Pending access</dt><dd>{{ overview.pending_access_count }}</dd></dl>
-    <dl class="summary-card card"><dt>Prompt posts</dt><dd>{{ overview.prompt_post_count }}</dd></dl>
-    <dl class="summary-card card"><dt>Follow-ups</dt><dd>{{ overview.followup_count }}</dd></dl>
-    <dl class="summary-card card"><dt>Activity</dt><dd>{{ overview.activity_count }}</dd></dl>
-</section>
-
-<section class="card detail-card">
-    <h2>Lead pipeline</h2>
-    <p>New {{ overview.lead_stage_counts.new }} &middot; Contacted {{ overview.lead_stage_counts.contacted }} &middot; Qualified {{ overview.lead_stage_counts.qualified }} &middot; Won {{ overview.lead_stage_counts.won }} &middot; Lost {{ overview.lead_stage_counts.lost }}</p>
-    <p class="muted">Archived leads: {{ overview.archived_lead_count }}</p>
-</section>
-<section class="card detail-card">
-    <h2>Follow-up delivery</h2>
-    <p>Scheduled {{ overview.followup_state_counts.scheduled }} &middot; Sending {{ overview.followup_state_counts.sending }} &middot; Sent {{ overview.followup_state_counts.sent }} &middot; Cancelled {{ overview.followup_state_counts.cancelled }} &middot; Delivery unavailable {{ overview.followup_state_counts.unavailable }}</p>
-</section>
-<section class="card detail-card"><h2>Recent activity</h2>{% for item in overview.recent_activity %}<p>{{ item.type }} &middot; {{ item.state }}{% if item.username %} &middot; {{ item.username }}{% endif %}</p>{% else %}<p class="muted">No activity yet.</p>{% endfor %}</section>
+<section class="connection-card card" aria-label="Your Instagram connection"><div><p class="eyebrow">Your Instagram connection</p><h2>{{ selected_account.username }}</h2><p class="muted">{{ selected_account.connection_detail }}</p></div><div class="connection-status"><span class="status-pill {% if selected_account.connection_label == 'Connected' %}status-success{% else %}status-warning{% endif %}">{{ selected_account.connection_label }}</span>{% if selected_account.connection_label != 'Connected' %}<a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_accounts', account=selected_account.selection_ref) }}">Review connection</a>{% endif %}</div></section>
+<section class="overview-actions" aria-label="Content actions"><a class="button button-primary" href="{{ url_for('tenant_dashboard.app_content', account=selected_account.selection_ref) }}">Create image post</a><a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_scheduler', account=selected_account.selection_ref) }}">View calendar</a></section>
+<section class="overview-grid" aria-label="Publishing overview"><article class="card overview-card"><p class="eyebrow">Next scheduled post</p>{% if overview.next_scheduled_content %}<h2>{{ overview.next_scheduled_content.caption_preview or 'Untitled image post' }}</h2><p class="muted">Scheduled for {{ overview.next_scheduled_content.scheduled_for }}</p>{% else %}<h2>Nothing scheduled</h2><p class="muted">Create an image post when you are ready.</p>{% endif %}</article><article class="card overview-card"><p class="eyebrow">Automation</p><h2>{% if selected_account.activation_label == 'Active' %}Automation is on{% else %}Automation is off{% endif %}</h2><p class="muted">{{ selected_account.activation_detail }}</p><a class="text-link" href="{{ url_for('tenant_dashboard.app_automations', account=selected_account.selection_ref) }}">Review automation</a></article></section>
+<section class="card" aria-label="Content at a glance"><div class="section-heading"><div><p class="eyebrow">Content at a glance</p><h2>Your publishing workflow</h2></div><a class="text-link" href="{{ url_for('tenant_dashboard.app_content', account=selected_account.selection_ref) }}">View content</a></div><dl class="metric-grid"><div><dt>Drafts</dt><dd>{{ overview.content_state_counts.draft + overview.content_state_counts.ready }}</dd></div><div><dt>Scheduled</dt><dd>{{ overview.content_state_counts.scheduled }}</dd></div><div><dt>Published</dt><dd>{{ overview.content_state_counts.published }}</dd></div><div><dt>Needs attention</dt><dd>{{ overview.content_state_counts.failed }}</dd></div></dl></section>
+{% if overview.content_state_counts.failed or selected_account.connection_label != 'Connected' %}<section class="alert alert-warning" aria-label="Needs attention"><strong>Needs attention</strong><span>{% if overview.content_state_counts.failed %}Some posts need review before you create another version.{% else %}Reconnect Instagram before publishing or automation can continue.{% endif %}</span></section>{% endif %}
+<section class="card" aria-label="Recent activity"><div class="section-heading"><div><p class="eyebrow">Recent activity</p><h2>What happened recently</h2></div></div><div class="activity-list">{% for item in overview.recent_activity %}<div class="list-row"><div><strong>{{ item.type }}</strong>{% if item.username %}<span class="muted"> · {{ item.username }}</span>{% endif %}</div><span class="status-pill status-neutral">{{ item.state }}</span></div>{% else %}<p class="empty-state">Activity will appear here when your account is used.</p>{% endfor %}</div></section>
 {% endblock %}

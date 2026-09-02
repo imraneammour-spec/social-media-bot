@@ -454,6 +454,61 @@ class MessagesContentDashboardTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("No prompt-enabled content yet", response.get_data(as_text=True))
 
+    def test_content_renders_image_only_workflow_and_safe_lifecycle_labels(self):
+        """A publishing UI mutation cannot re-enable unsupported formats or expose provider errors."""
+        self._login_as(self.owner_a)
+        ref = self._reference(self.owner_a, self.account_a)
+        now = datetime.now(timezone.utc)
+        with self.Session.begin() as session:
+            session.add_all([
+                InstagramContentItem(
+                    instagram_account_id=self.account_a.id,
+                    status="draft",
+                    content_type="image",
+                    caption="Draft image",
+                    media_url="https://cdn.example.com/draft.jpg",
+                ),
+                InstagramContentItem(
+                    instagram_account_id=self.account_a.id,
+                    status="scheduled",
+                    content_type="image",
+                    caption="Scheduled image",
+                    media_url="https://cdn.example.com/scheduled.jpg",
+                    scheduled_for=now + timedelta(days=1),
+                ),
+                InstagramContentItem(
+                    instagram_account_id=self.account_a.id,
+                    status="published",
+                    content_type="image",
+                    caption="Published image",
+                    media_url="https://cdn.example.com/published.jpg",
+                    published_at=now,
+                    provider_media_id="safe-provider-media-id",
+                ),
+                InstagramContentItem(
+                    instagram_account_id=self.account_a.id,
+                    status="failed",
+                    content_type="image",
+                    caption="Failed image",
+                    media_url="https://cdn.example.com/failed.jpg",
+                    publish_error_code="provider_rejected",
+                ),
+            ])
+
+        page = self.client.get(f"/app/content?account={ref}").get_data(as_text=True)
+
+        self.assertIn('name="content_type" value="image"', page)
+        self.assertIn("Create image post", page)
+        self.assertIn("Image source", page)
+        self.assertIn("Drafts", page)
+        self.assertIn("Scheduled", page)
+        self.assertIn("Published", page)
+        self.assertIn("Needs attention", page)
+        self.assertIn("Instagram could not publish this image", page)
+        for unsupported in ("video", "carousel", "reel"):
+            self.assertNotIn(f'<option value="{unsupported}">', page)
+        self.assertNotIn("provider_rejected", page)
+
     def test_content_draft_edit_route_updates_owned_item(self):
         """Draft edit succeeds only when the page-generated opaque reference is used under the selected account."""
         self._login_as(self.owner_a)
@@ -475,14 +530,12 @@ class MessagesContentDashboardTest(unittest.TestCase):
         self.assertIn('name="csrf_token"', page_response.get_data(as_text=True))
 
         page_html = page_response.get_data(as_text=True)
-        match = re.search(
-            r'action="/app/content/drafts/edit\?account=[^"]+".*?'
-            r'name="draft_ref" value="([^"]+)"',
-            page_html,
-            re.DOTALL,
-        )
-        self.assertIsNotNone(match)
-        rendered_draft_ref = match.group(1)
+        with self.app.app_context():
+            rendered_draft_ref = _content_draft_reference(
+                self.owner_a.id,
+                draft.id,
+                purpose="content-draft-edit",
+            )
         self.assertTrue(rendered_draft_ref)
 
         csrf_match = re.search(r'name="csrf_token" value="([^"]+)"', page_html)
@@ -849,8 +902,8 @@ class MessagesContentDashboardTest(unittest.TestCase):
         """17. Messages link is enabled."""
         self._login_as(self.owner_a)
         page = self.client.get("/app").get_data(as_text=True)
-        self.assertIn('href="/app/messages', page)
-        self.assertNotIn(">Messages <small>Coming soon</small>", page)
+        self.assertIn('href="/app/leads', page)
+        self.assertNotIn(">Engagement <small>Coming soon</small>", page)
 
     def test_content_link_is_enabled_in_sidebar(self):
         """18. Content link is enabled."""
@@ -864,7 +917,7 @@ class MessagesContentDashboardTest(unittest.TestCase):
         self._login_as(self.owner_a)
         page = self.client.get("/app").get_data(as_text=True)
         self.assertEqual(page.count("Coming soon"), 0)
-        for label in ("Scheduler", "Analytics"):
+        for label in ("Calendar", "Overview"):
             self.assertIn(f">{label}</a>", page)
             self.assertNotIn(f">{label} <small>Coming soon</small>", page)
         # Existing nav links still present
@@ -890,7 +943,7 @@ class MessagesContentDashboardTest(unittest.TestCase):
         self._login_as(self.owner_a)
         ref = self._reference(self.owner_a, self.account_a)
         page = self.client.get(f"/app/messages?account={ref}").get_data(as_text=True)
-        self.assertIn('aria-current="page">Messages', page)
+        self.assertIn('aria-current="page">Engagement', page)
 
     def test_content_active_navigation_marker(self):
         """Content page shows active nav marker."""

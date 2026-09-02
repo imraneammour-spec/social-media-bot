@@ -399,15 +399,15 @@ def _render_page(
 
     active_pages = {
         "tenant_dashboard.app_overview": "overview",
-        "tenant_dashboard.app_accounts": "accounts",
-        "tenant_dashboard.app_leads": "leads",
-        "tenant_dashboard.app_activity": "activity",
-        "tenant_dashboard.app_followups": "followups",
+        "tenant_dashboard.app_accounts": "instagram",
+        "tenant_dashboard.app_leads": "engagement",
+        "tenant_dashboard.app_activity": "engagement",
+        "tenant_dashboard.app_followups": "engagement",
         "tenant_dashboard.app_automations": "automations",
-        "tenant_dashboard.app_messages": "messages",
+        "tenant_dashboard.app_messages": "engagement",
         "tenant_dashboard.app_content": "content",
-        "tenant_dashboard.app_scheduler": "scheduler",
-        "tenant_dashboard.app_analytics": "analytics",
+        "tenant_dashboard.app_scheduler": "calendar",
+        "tenant_dashboard.app_analytics": "overview",
     }
 
     selected_account = next(

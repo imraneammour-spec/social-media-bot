@@ -400,7 +400,7 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertIsNotNone(disconnect_reference)
         self.assertEqual(
             len(re.findall(r'name="csrf_token" value="[^"]+"', page)),
-            3,
+            4,
         )
         self.assertEqual(self.client.post("/connect/instagram").status_code, 400)
         self.assertEqual(
@@ -772,18 +772,31 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertIn('class="app-shell"', page)
         self.assertIn('class="app-sidebar"', page)
         self.assertIn('/static/tenant_dashboard.css', page)
-        self.assertIn('aria-current="page">Home</a>', page)
-        self.assertIn('href="/app/leads', page)
-        self.assertIn('href="/app/automations', page)
-        self.assertIn('href="/app/accounts', page)
-        self.assertIn('href="/app/messages', page)
-        self.assertIn('href="/app/content', page)
-        for label in ("Scheduler", "Analytics"):
+        self.assertIn('aria-label="Primary navigation"', page)
+        self.assertIn('aria-current="page">Overview</a>', page)
+        for label in ("Content", "Calendar", "Engagement", "Automation", "Instagram"):
             self.assertIn(f">{label}</a>", page)
-            self.assertNotIn(f">{label} <small>Coming soon</small>", page)
-        self.assertEqual(page.count("Coming soon"), 0)
+        for legacy_label in ("Home", "Leads", "Messages", "Scheduler", "Analytics", "Accounts", "Activity", "Follow-ups"):
+            self.assertNotIn(f">{legacy_label}</a>", page)
+        self.assertIn('aria-label="Open navigation"', page)
+        self.assertIn('action="/logout"', page)
+        self.assertIn('>Sign out</button>', page)
+        self.assertIn("Social Media Bot", page)
+        self.assertNotIn("Imran Prompts", page)
         self.assertNotIn('href="/dashboard', page)
         self.assertNotIn('href="/api/', page)
+
+    def test_overview_prioritizes_connection_and_content_actions(self):
+        self._login_as(self.owner_a)
+
+        page = self.client.get("/app").get_data(as_text=True)
+
+        self.assertIn("Your Instagram connection", page)
+        self.assertIn("Create image post", page)
+        self.assertIn("Content at a glance", page)
+        self.assertIn("Next scheduled post", page)
+        self.assertIn("Automation is off", page)
+        self.assertNotIn("Deployment readiness", page)
 
     def test_shell_active_navigation_remains_page_specific_and_opaque(self):
         self._login_as(self.owner_a)
@@ -792,9 +805,9 @@ class TenantDashboardTest(unittest.TestCase):
         leads = self.client.get(f"/app/leads?account={selected}").get_data(as_text=True)
         accounts = self.client.get(f"/app/accounts?account={selected}").get_data(as_text=True)
 
-        self.assertIn('aria-current="page">Leads</a>', leads)
-        self.assertNotIn('aria-current="page">Home</a>', leads)
-        self.assertIn('aria-current="page">Accounts</a>', accounts)
+        self.assertIn('aria-current="page">Engagement</a>', leads)
+        self.assertNotIn('aria-current="page">Overview</a>', leads)
+        self.assertIn('aria-current="page">Instagram</a>', accounts)
         self.assertNotIn(str(self.account_a2.id), leads)
         self.assertNotIn(self.account_a2.instagram_user_id, leads)
 
@@ -823,7 +836,7 @@ class TenantDashboardTest(unittest.TestCase):
 
         page = self.client.get(f"/app/automations?account={selected}").get_data(as_text=True)
 
-        self.assertIn("<title>Automations | Imran Prompts</title>", page)
+        self.assertIn("<title>Automations | Social Media Bot</title>", page)
         self.assertIn('<h1>Automations</h1>', page)
         self.assertNotIn('<h1>Instagram workspace</h1>', page)
         self.assertIn('for="automation_enabled"', page)
@@ -914,10 +927,10 @@ class TenantDashboardTest(unittest.TestCase):
 
         page = self.client.get("/app").get_data(as_text=True)
 
-        self.assertIn("Connection health", page)
-        self.assertIn("Reconnect required", page)
-        self.assertIn("Automation is not active", page)
-        self.assertIn("Prompt posts", page)
+        self.assertIn("Your Instagram connection", page)
+        self.assertIn("Connected", page)
+        self.assertIn("Automation is off", page)
+        self.assertIn("Content at a glance", page)
         self.assertIn("Recent activity", page)
         self.assertNotIn("Instagram engagement automation is active.", page)
         for forbidden in (
@@ -930,7 +943,7 @@ class TenantDashboardTest(unittest.TestCase):
 
         empty_account = self._reference(self.owner_a, self.account_a2)
         empty_page = self.client.get(f"/app?account={empty_account}").get_data(as_text=True)
-        self.assertIn("No activity yet.", empty_page)
+        self.assertIn("Activity will appear here when your account is used.", empty_page)
 
     def test_tenant_dashboard_stylesheet_is_served_without_legacy_routes(self):
         response = self.client.get("/static/tenant_dashboard.css")
@@ -939,7 +952,7 @@ class TenantDashboardTest(unittest.TestCase):
         stylesheet = response.get_data(as_text=True)
         self.assertIn(".app-shell", stylesheet)
         self.assertIn("@media", stylesheet)
-        self.assertIn('input[type="checkbox"]', stylesheet)
+        self.assertIn('.mobile-nav-toggle', stylesheet)
         self.assertIn(":focus-visible", stylesheet)
         self.assertNotIn("/dashboard", stylesheet)
         self.assertNotIn("/api/", stylesheet)

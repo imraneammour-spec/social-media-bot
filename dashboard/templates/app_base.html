@@ -3,75 +3,32 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{% block title %}Workspace{% endblock %} | Imran Prompts</title>
+    <title>{% block title %}Workspace{% endblock %} | Social Media Bot</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='tenant_dashboard.css') }}">
 </head>
-
 <body class="tenant-dashboard">
     <div class="app-shell">
-
+        <button class="mobile-nav-toggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="primary-navigation"><span aria-hidden="true">☰</span></button>
+        <div class="mobile-nav-backdrop" hidden></div>
         <aside class="app-sidebar" aria-label="Workspace navigation">
-
-            <a class="app-brand" href="{{ url_for('tenant_dashboard.app_overview', account=selected_account.selection_ref) }}">Imran Prompts</a>
-
-            <nav class="workspace-nav" aria-label="Workspace sections">
-
-                <a href="{{ url_for('tenant_dashboard.app_overview', account=selected_account.selection_ref) }}" {% if active_page == 'overview' %}aria-current="page"{% endif %}>Home</a>
-
+            <a class="app-brand" href="{{ url_for('tenant_dashboard.app_overview', account=selected_account.selection_ref) }}"><span class="app-brand-mark" aria-hidden="true">S</span><span>Social Media Bot</span></a>
+            <nav id="primary-navigation" class="workspace-nav" aria-label="Primary navigation">
+                <a href="{{ url_for('tenant_dashboard.app_overview', account=selected_account.selection_ref) }}" {% if active_page == 'overview' %}aria-current="page"{% endif %}>Overview</a>
                 <a href="{{ url_for('tenant_dashboard.app_content', account=selected_account.selection_ref) }}" {% if active_page == 'content' %}aria-current="page"{% endif %}>Content</a>
-
-                <a href="{{ url_for('tenant_dashboard.app_automations', account=selected_account.selection_ref) }}" {% if active_page == 'automations' %}aria-current="page"{% endif %}>Automations</a>
-
-                <a href="{{ url_for('tenant_dashboard.app_leads', account=selected_account.selection_ref) }}" {% if active_page == 'leads' %}aria-current="page"{% endif %}>Leads</a>
-
-                <a href="{{ url_for('tenant_dashboard.app_messages', account=selected_account.selection_ref) }}" {% if active_page == 'messages' %}aria-current="page"{% endif %}>Messages</a>
-
-                <a href="{{ url_for('tenant_dashboard.app_scheduler', account=selected_account.selection_ref) }}" {% if active_page == 'scheduler' %}aria-current="page"{% endif %}>Scheduler</a>
-
-                <a href="{{ url_for('tenant_dashboard.app_analytics', account=selected_account.selection_ref) }}" {% if active_page == 'analytics' %}aria-current="page"{% endif %}>Analytics</a>
-
-                <a href="{{ url_for('tenant_dashboard.app_accounts', account=selected_account.selection_ref) }}" {% if active_page == 'accounts' %}aria-current="page"{% endif %}>Accounts</a>
-
+                <a href="{{ url_for('tenant_dashboard.app_scheduler', account=selected_account.selection_ref) }}" {% if active_page == 'calendar' %}aria-current="page"{% endif %}>Calendar</a>
+                <a href="{{ url_for('tenant_dashboard.app_leads', account=selected_account.selection_ref) }}" {% if active_page == 'engagement' %}aria-current="page"{% endif %}>Engagement</a>
+                <a href="{{ url_for('tenant_dashboard.app_automations', account=selected_account.selection_ref) }}" {% if active_page == 'automations' %}aria-current="page"{% endif %}>Automation</a>
+                <a href="{{ url_for('tenant_dashboard.app_accounts', account=selected_account.selection_ref) }}" {% if active_page == 'instagram' %}aria-current="page"{% endif %}>Instagram</a>
             </nav>
-
-            <nav class="workspace-nav workspace-nav-secondary" aria-label="Operational pages">
-
-                <a href="{{ url_for('tenant_dashboard.app_activity', account=selected_account.selection_ref) }}" {% if active_page == 'activity' %}aria-current="page"{% endif %}>Activity</a>
-
-                <a href="{{ url_for('tenant_dashboard.app_followups', account=selected_account.selection_ref) }}" {% if active_page == 'followups' %}aria-current="page"{% endif %}>Follow-ups</a>
-
-            </nav>
-
+            <div class="sidebar-footer"><p class="sidebar-user">{{ current_user.display_name }}</p><form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-quiet" type="submit">Sign out</button></form></div>
         </aside>
-
         <main class="app-main">
-
-            <header class="app-header">
-
-                <div>
-                    <p class="eyebrow">Instagram workspace</p>
-
-                    <h1>{% block heading %}Instagram workspace{% endblock %}</h1>
-
-                    <p class="muted">{{ current_user.display_name }}, viewing {{ selected_account.username }}.</p>
-                </div>
-
-                <nav class="account-switcher" aria-label="Choose an owned Instagram account">
-
-                    <span class="account-switcher-label">Account</span>
-
-                    {% for account in accounts %}
-                        <a href="{{ url_for(account_switch_endpoint, account=account.selection_ref) }}" {% if account.is_selected %}aria-current="true"{% endif %}>{{ account.username }}</a>
-                    {% endfor %}
-
-                </nav>
-
-            </header>
-
+            <header class="app-header"><div class="page-heading"><p class="eyebrow">Instagram workspace</p><h1>{% block heading %}Instagram workspace{% endblock %}</h1><p class="muted">Manage posts and automation for {{ selected_account.username }}.</p></div><nav class="account-switcher" aria-label="Choose an Instagram account"><span class="account-switcher-label">Instagram account</span>{% for account in accounts %}<a href="{{ url_for(account_switch_endpoint, account=account.selection_ref) }}" {% if account.is_selected %}aria-current="true"{% endif %}>{{ account.username }}</a>{% endfor %}</nav></header>
             {% block content %}{% endblock %}
-
         </main>
-
     </div>
+    <script>
+        (() => { const toggle = document.querySelector('.mobile-nav-toggle'); const backdrop = document.querySelector('.mobile-nav-backdrop'); if (!toggle || !backdrop) return; const setOpen = (open) => { document.body.classList.toggle('mobile-nav-open', open); toggle.setAttribute('aria-expanded', String(open)); toggle.setAttribute('aria-label', open ? 'Close navigation' : 'Open navigation'); backdrop.hidden = !open; }; toggle.addEventListener('click', () => setOpen(!document.body.classList.contains('mobile-nav-open'))); backdrop.addEventListener('click', () => setOpen(false)); document.addEventListener('keydown', (event) => { if (event.key === 'Escape') setOpen(false); }); })();
+    </script>
 </body>
 </html>
