@@ -957,3 +957,12 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertNotIn("/dashboard", stylesheet)
         self.assertNotIn("/api/", stylesheet)
         response.close()
+
+    def test_desktop_workspace_uses_the_full_width_after_the_sidebar(self):
+        """Large authenticated screens must not cap the workspace at document width."""
+        response = self.client.get("/static/tenant_dashboard.css")
+        stylesheet = response.get_data(as_text=True)
+
+        self.assertIn(".app-main{width:calc(100% - 248px);", stylesheet)
+        self.assertIn("@media(min-width:901px)", stylesheet)
+        response.close()
