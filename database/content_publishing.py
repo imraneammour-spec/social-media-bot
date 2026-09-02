@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -26,17 +27,22 @@ LOGGER = logging.getLogger(__name__)
 API_VERSION = "v25.0"
 GRAPH_ROOT = "https://graph.instagram.com"
 IMAGE_CONTENT_TYPE = "image"
+CONTAINER_STATUS_MAX_ATTEMPTS = 6
+CONTAINER_STATUS_POLL_INTERVAL_SECONDS = 2
 SAFE_ERROR_CODES = {
     "unsupported_content_type",
     "instagram_connection_unavailable",
     "tenant_identity_mismatch",
     "provider_rejected",
+    "provider_container_failed",
+    "provider_container_not_ready",
     "provider_response_invalid",
     "provider_request_ambiguous",
     "unexpected_publish_error",
 }
-_SAFE_PUBLISH_STAGES = frozenset(("container_create", "media_publish"))
+_SAFE_PUBLISH_STAGES = frozenset(("container_create", "container_status", "media_publish"))
 _SAFE_PROVIDER_ERROR_TYPES = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+_SAFE_CONTAINER_STATUSES = frozenset(("ERROR", "EXPIRED", "FINISHED", "IN_PROGRESS", "PUBLISHED"))
 _SAFE_PROVIDER_ERROR_CLASSIFICATIONS = frozenset((
     "provider_error_metadata",
     "provider_error_unparseable",
@@ -110,6 +116,9 @@ def _safe_provider_diagnostics(value: Mapping[str, object] | None) -> dict[str, 
         number = value.get(key)
         if isinstance(number, int) and not isinstance(number, bool) and 0 <= number <= 2_147_483_647:
             diagnostics[key] = number
+    container_status = value.get("provider_container_status")
+    if isinstance(container_status, str) and container_status in _SAFE_CONTAINER_STATUSES:
+        diagnostics["provider_container_status"] = container_status
     return diagnostics
 
 
@@ -164,7 +173,8 @@ def _provider_rejection_log_message(diagnostics: Mapping[str, object]) -> str:
         f"provider_error_classification={safe.get('provider_error_classification')} "
         f"provider_error_type={safe.get('provider_error_type')} "
         f"provider_error_code={safe.get('provider_error_code')} "
-        f"provider_error_subcode={safe.get('provider_error_subcode')}"
+        f"provider_error_subcode={safe.get('provider_error_subcode')} "
+        f"provider_container_status={safe.get('provider_container_status')}"
     )
 
 
@@ -300,6 +310,69 @@ def _provider_post(path: str, runtime: InstagramAccountRuntime, data: dict[str, 
         ) from exc
 
 
+def _provider_get(path: str, runtime: InstagramAccountRuntime, params: dict[str, str]) -> Any:
+    """Read provider state; this request cannot create a publication."""
+
+    try:
+        return requests.get(
+            f"{GRAPH_ROOT}/{API_VERSION}/{path.lstrip('/')}",
+            params=params,
+            headers={"Authorization": f"Bearer {runtime.access_token}"},
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        raise InstagramPublishError(
+            "provider_container_not_ready",
+            request_may_have_been_sent=False,
+            safe_diagnostics={
+                "publish_stage": "container_status",
+                "provider_error_classification": "provider_error_unparseable",
+            },
+        ) from exc
+
+
+def _container_status(response: object) -> str | None:
+    try:
+        payload = response.json()
+    except (AttributeError, TypeError, ValueError):
+        return None
+    value = payload.get("status_code") if isinstance(payload, Mapping) else None
+    return value if isinstance(value, str) and value in _SAFE_CONTAINER_STATUSES else None
+
+
+def _wait_for_container_ready(runtime: InstagramAccountRuntime, creation_id: str) -> None:
+    """Poll one existing container with fixed bounds; never create another."""
+
+    last_status: str | None = None
+    for attempt in range(CONTAINER_STATUS_MAX_ATTEMPTS):
+        response = _provider_get(creation_id, runtime, {"fields": "status_code"})
+        if not bool(getattr(response, "ok", False)):
+            raise _provider_rejection("container_status", response)
+        last_status = _container_status(response)
+        diagnostics = {
+            "publish_stage": "container_status",
+            "provider_container_status": last_status,
+        }
+        if last_status == "FINISHED":
+            return
+        if last_status in {"ERROR", "EXPIRED", "PUBLISHED"}:
+            raise InstagramPublishError(
+                "provider_container_failed",
+                request_may_have_been_sent=False,
+                safe_diagnostics=diagnostics,
+            )
+        if attempt + 1 < CONTAINER_STATUS_MAX_ATTEMPTS:
+            time.sleep(CONTAINER_STATUS_POLL_INTERVAL_SECONDS)
+    raise InstagramPublishError(
+        "provider_container_not_ready",
+        request_may_have_been_sent=False,
+        safe_diagnostics={
+            "publish_stage": "container_status",
+            "provider_container_status": last_status,
+        },
+    )
+
+
 def publish_instagram_image(runtime: InstagramAccountRuntime, item: ClaimedScheduledContent) -> str:
     """Publish one image through the tenant-bound Graph API runtime.
 
@@ -317,6 +390,8 @@ def publish_instagram_image(runtime: InstagramAccountRuntime, item: ClaimedSched
     creation_id = _payload_id(container)
     if creation_id is None:
         raise InstagramPublishError("provider_response_invalid", request_may_have_been_sent=False)
+
+    _wait_for_container_ready(runtime, creation_id)
 
     published = _provider_post(
         f"{runtime.instagram_user_id}/media_publish",
@@ -399,7 +474,7 @@ def execute_due_scheduled_content(
             LOGGER.info("scheduled_content_publishing_failed", extra={"content_id": str(item.id), "error_code": "instagram_connection_unavailable", "provider_request_may_have_been_sent": False})
         except InstagramPublishError as error:
             failed_count += int(_record_failure(session_factory, item, error.code, error.request_may_have_been_sent))
-            if error.code == "provider_rejected" and error.safe_diagnostics:
+            if error.safe_diagnostics:
                 LOGGER.warning(_provider_rejection_log_message(error.safe_diagnostics))
             else:
                 LOGGER.info("scheduled_content_publishing_failed", extra={"content_id": str(item.id), "error_code": error.code, "provider_request_may_have_been_sent": error.request_may_have_been_sent})
