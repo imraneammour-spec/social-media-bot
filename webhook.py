@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 
 from dotenv import load_dotenv
-from flask import Flask, request, send_file, Response, url_for, render_template
+from flask import Flask, request, send_file, Response, url_for, render_template, redirect, session
 from werkzeug.utils import secure_filename
 
 from database.cli import register_database_commands
@@ -70,12 +70,14 @@ from database.tenant_automation import oauth_automation_runtime_config
 from auth import (
     configure_auth,
     csrf_token,
+    validate_csrf_token,
     get_current_user,
     install_auth_route_guard,
     register_auth_routes,
     verify_meta_signature,
     webhook_signature_verification_active,
 )
+from dashboard.i18n import LOCALE_META, LOCALE_SESSION_KEY, locale_context, normalize_locale, translate
 from tenant_dashboard import register_tenant_dashboard
 
 from google import genai
@@ -280,11 +282,31 @@ else:
 
 @app.route("/", methods=["GET"])
 def home():
-
-    return (
-        "Imran Social Media Bot is running!",
-        200
+    locale = locale_context(session.get(LOCALE_SESSION_KEY))
+    return render_template(
+        "landing.html",
+        csrf_token=csrf_token(),
+        locale=locale,
+        locale_options=LOCALE_META,
+        t=lambda key: translate(locale["code"], key),
     )
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    """Return a constant liveness response without touching application state."""
+
+    return {"status": "ok"}, 200
+
+
+@app.route("/locale", methods=["POST"])
+def landing_locale():
+    """Store only an allowlisted public UI locale and return to the landing page."""
+
+    if not validate_csrf_token(request.form.get("csrf_token")):
+        return "Invalid form token.", 400
+    session[LOCALE_SESSION_KEY] = normalize_locale(request.form.get("locale"))
+    return redirect(url_for("home"), code=303)
 
 
 @app.route("/privacy", methods=["GET"])

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="{{ locale.code }}" dir="{{ locale.direction }}">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#081633">
+    <title>{{ t('landing_title') }}</title>
+    <meta name="description" content="{{ t('landing_description') }}">
+    <link rel="canonical" href="{{ url_for('home', _external=True) }}">
+    <meta property="og:title" content="{{ t('landing_title') }}">
+    <meta property="og:description" content="{{ t('landing_description') }}">
+    <meta property="og:image" content="{{ url_for('static', filename='brand/postenza-logo-light.png', _external=True) }}">
+    <meta property="og:type" content="website">
+    <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='brand/postenza-favicon-32.png') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='landing.css') }}">
+</head>
+<body>
+    <header class="site-header">
+        <nav class="site-nav landing-container" aria-label="Postenza">
+            <a class="site-brand" href="#top"><img src="{{ url_for('static', filename='brand/postenza-logo-light.png') }}" alt="Postenza"></a>
+            <button class="nav-toggle" type="button" aria-controls="landing-navigation" aria-expanded="false" aria-label="{{ t('landing_menu') }}"><span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"></span></button>
+            <div id="landing-navigation" class="nav-panel" data-open="false">
+                <div class="nav-links">
+                    <a href="#features">{{ t('landing_features') }}</a><a href="#how-it-works">{{ t('landing_how_it_works') }}</a><a href="#automation">{{ t('landing_automation') }}</a><a href="#faq">{{ t('landing_faq') }}</a>
+                </div>
+                <form class="locale-picker" method="post" action="{{ url_for('landing_locale') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label for="landing-locale" class="visually-hidden">{{ t('language') }}</label><select id="landing-locale" name="locale" onchange="this.form.submit()">{% for code, meta in locale_options.items() %}<option value="{{ code }}" {% if locale.code == code %}selected{% endif %}>{{ meta.label }}</option>{% endfor %}</select></form>
+                <a class="nav-login" href="{{ url_for('login') }}">{{ t('landing_login') }}</a><a class="button button-primary nav-cta" href="{{ url_for('register') }}">{{ t('landing_get_started') }}</a>
+            </div>
+        </nav>
+    </header>
+    <main id="top">
+        <section class="hero landing-container">
+            <div class="hero-copy"><p class="eyebrow">{{ t('social_tagline') }}</p><h1>{{ t('landing_hero_title') }}</h1><p class="hero-lede">{{ t('landing_hero_copy') }}</p><div class="button-row"><a class="button button-primary" href="{{ url_for('register') }}">{{ t('landing_get_started') }}</a><a class="button button-secondary" href="#how-it-works">{{ t('landing_see_how') }}</a></div></div>
+            <div class="product-stage" aria-label="{{ t('landing_eyebrow') }}"><div class="browser-frame"><div class="browser-top"><span></span><span></span><span></span><b>Postenza</b></div><div class="mockup-body"><aside><img src="{{ url_for('static', filename='brand/postenza-icon.png') }}" alt=""><i></i><i></i><i></i><i></i></aside><section><div class="mockup-heading"><div><small>{{ t('instagram_workspace') }}</small><strong>{{ t('overview') }}</strong></div><em>{{ t('landing_strip_instagram') }}</em></div><div class="mockup-stats"><div><small>{{ t('landing_schedule') }}</small><b>04</b></div><div><small>{{ t('landing_publish') }}</small><b>12</b></div><div><small>{{ t('landing_automation') }}</small><b>On</b></div></div><div class="mockup-card"><div class="post-thumb"></div><div><small>{{ t('landing_image_only') }}</small><b>{{ t('landing_schedule_title') }}</b><p>{{ t('landing_schedule_copy') }}</p></div><span>{{ t('landing_track') }}</span></div></section></div></div></div>
+        </section>
+        <section class="value-strip"><div class="landing-container">{% for key in ('landing_strip_instagram', 'landing_strip_publish', 'landing_strip_controls', 'landing_strip_accounts') %}<span>✦ {{ t(key) }}</span>{% endfor %}</div></section>
+        <section id="features" class="section landing-container"><div class="section-intro"><p class="eyebrow">{{ t('landing_eyebrow') }}</p><h2>{{ t('landing_features') }}</h2></div><div class="feature-grid">{% for title, copy, icon in [('landing_schedule_title', 'landing_schedule_copy', '01'), ('landing_replies_title', 'landing_replies_copy', '02'), ('landing_followups_title', 'landing_followups_copy', '03'), ('landing_smart_title', 'landing_smart_copy', '04'), ('landing_engagement_title', 'landing_engagement_copy', '05'), ('landing_accounts_title', 'landing_accounts_copy', '06')] %}<article class="feature-card"><span>{{ icon }}</span><h3>{{ t(title) }}</h3><p>{{ t(copy) }}</p></article>{% endfor %}</div></section>
+        <section id="how-it-works" class="section section-tint"><div class="landing-container"><div class="section-intro"><p class="eyebrow">{{ t('landing_how_it_works') }}</p><h2>{{ t('landing_workflow_title') }}</h2></div><ol class="steps">{% for title, copy in [('landing_step_connect', 'landing_step_connect_copy'), ('landing_step_configure', 'landing_step_configure_copy'), ('landing_step_schedule', 'landing_step_schedule_copy'), ('landing_step_monitor', 'landing_step_monitor_copy')] %}<li><span>{{ loop.index }}</span><h3>{{ t(title) }}</h3><p>{{ t(copy) }}</p></li>{% endfor %}</ol></div></section>
+        <section class="section landing-container split-section"><div><p class="eyebrow">{{ t('landing_publishing_label') }}</p><h2>{{ t('landing_publishing_title') }}</h2><p>{{ t('landing_publishing_copy') }}</p><span class="scope-pill">{{ t('landing_image_only') }}</span></div><div class="flow-card" aria-label="{{ t('landing_publishing_title') }}">{% for key in ('landing_create', 'landing_schedule', 'landing_publish', 'landing_track') %}<span>{{ t(key) }}</span>{% if not loop.last %}<b aria-hidden="true">→</b>{% endif %}{% endfor %}</div></section>
+        <section id="automation" class="section section-dark"><div class="landing-container split-section"><div><p class="eyebrow">{{ t('landing_automation') }}</p><h2>{{ t('landing_automation_title') }}</h2><p>{{ t('landing_automation_copy') }}</p></div><div class="automation-flow" aria-label="{{ t('landing_automation_title') }}">{% for key in ('landing_comment', 'landing_public_reply', 'landing_private', 'landing_followup', 'landing_smart_replies') %}<span>{{ t(key) }}</span>{% if not loop.last %}<i aria-hidden="true">↓</i>{% endif %}{% endfor %}</div></div></section>
+        <section class="section landing-container split-section engagement-section"><div class="engagement-panel"><div class="engagement-tabs"><span>{{ t('engagement') }}</span><span>{{ t('landing_feature_engagement_title') }}</span></div><ul><li>{{ t('landing_feature_engagement_title') }}</li><li>{{ t('landing_feature_followups_title') }}</li><li>{{ t('landing_track') }}</li></ul></div><div><p class="eyebrow">{{ t('engagement') }}</p><h2>{{ t('landing_engagement_title') }}</h2><p>{{ t('landing_engagement_copy') }}</p><p class="eyebrow connection-label">{{ t('landing_connection_label') }}</p><h3>{{ t('landing_connection_title') }}</h3><p>{{ t('landing_connection_copy') }}</p></div></section>
+        <section id="faq" class="section section-tint"><div class="landing-container faq-wrap"><div class="section-intro"><p class="eyebrow">{{ t('landing_faq') }}</p><h2>{{ t('landing_faq_title') }}</h2></div><div class="faq-list">{% for question, answer in [('landing_faq_accounts_q', 'landing_faq_accounts_a'), ('landing_faq_schedule_q', 'landing_faq_schedule_a'), ('landing_faq_replies_q', 'landing_faq_replies_a'), ('landing_faq_off_q', 'landing_faq_off_a'), ('landing_faq_multi_q', 'landing_faq_multi_a'), ('landing_faq_video_q', 'landing_faq_video_a')] %}<details><summary>{{ t(question) }}</summary><p>{{ t(answer) }}</p></details>{% endfor %}</div></div></section>
+        <section class="final-cta"><div class="landing-container"><img src="{{ url_for('static', filename='brand/postenza-icon.png') }}" alt=""><div><h2>{{ t('landing_final_title') }}</h2><p>{{ t('landing_final_copy') }}</p></div><div class="button-row"><a class="button button-primary" href="{{ url_for('register') }}">{{ t('landing_get_started') }}</a><a class="button button-secondary" href="{{ url_for('login') }}">{{ t('landing_login') }}</a></div></div></section>
+    </main>
+    <footer class="site-footer"><div class="landing-container"><div><img src="{{ url_for('static', filename='brand/postenza-logo-dark.png') }}" alt="Postenza"><p>{{ t('social_tagline') }}</p></div><div><b>{{ t('landing_product') }}</b><a href="#features">{{ t('landing_features') }}</a><a href="{{ url_for('login') }}">{{ t('landing_login') }}</a><a href="{{ url_for('register') }}">{{ t('landing_get_started') }}</a></div><div><b>{{ t('landing_faq') }}</b><a href="{{ url_for('privacy') }}">{{ t('landing_privacy') }}</a><a href="{{ url_for('terms') }}">{{ t('landing_terms') }}</a></div></div></footer>
+    <script>const toggle=document.querySelector('.nav-toggle'),panel=document.querySelector('.nav-panel');toggle.addEventListener('click',()=>{const open=toggle.getAttribute('aria-expanded')==='true';toggle.setAttribute('aria-expanded',String(!open));toggle.setAttribute('aria-label',open?'{{ t("landing_menu") }}':'{{ t("landing_close_menu") }}');panel.dataset.open=String(!open)});</script>
+</body>
+</html>
