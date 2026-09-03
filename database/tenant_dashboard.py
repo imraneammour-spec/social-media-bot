@@ -931,6 +931,7 @@ def content_drafts(
             "media_url": preview_url,
             "media_link": preview_url,
             "scheduled_for": _timestamp(draft.scheduled_for),
+            "published_at": _timestamp(draft.published_at),
         })
     return rows
 

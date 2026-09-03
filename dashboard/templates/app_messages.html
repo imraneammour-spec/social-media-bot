@@ -2,7 +2,8 @@
 {% block title %}Messages{% endblock %}
 {% block heading %}Messages{% endblock %}
 {% block content %}
-<p class="muted">Recent conversations and automation interactions for the selected account.</p>
+{% set engagement_section = 'messages' %}{% include "_engagement_tabs.html" %}
+<section class="page-intro"><p class="eyebrow">Engagement</p><h2>Conversations</h2><p class="muted">Recent messages and interactions for the selected Instagram account.</p></section>
 <form method="get" action="{{ url_for('tenant_dashboard.app_messages') }}" class="card activity-filters" aria-label="Message filters">
     <input type="hidden" name="account" value="{{ selected_account.selection_ref }}">
     <label>Show

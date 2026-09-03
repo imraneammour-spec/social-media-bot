@@ -2,6 +2,8 @@
 {% block title %}Leads{% endblock %}
 {% block heading %}Leads{% endblock %}
 {% block content %}
+{% set engagement_section = 'leads' %}{% include "_engagement_tabs.html" %}
+<section class="page-intro"><p class="eyebrow">Engagement</p><h2>People who asked for your prompts</h2><p class="muted">Review requests, keep notes, and update each lead when you are ready.</p></section>
 <form method="get" action="{{ url_for('tenant_dashboard.app_leads') }}" class="card lead-filters" aria-label="Lead filters">
     <input type="hidden" name="account" value="{{ selected_account.selection_ref }}">
     <label>View

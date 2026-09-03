@@ -1,59 +1,32 @@
 {% extends "app_base.html" %}
-{% block title %}Scheduler{% endblock %}
-{% block heading %}Scheduler{% endblock %}
+{% block title %}Calendar{% endblock %}
+{% block heading %}Calendar{% endblock %}
 {% block content %}
-<p class="muted">Scheduled jobs and upcoming automation actions for the selected account.</p>
-<section class="page-stack" aria-label="Content schedule">
-    <h2>Content schedule</h2>
-    {% for item in scheduled_content %}
-    <article class="card lead-card">
-        <h3>{{ item.content_type|upper }} · Scheduled</h3>
-        <p>{{ item.caption_preview }}</p>
-        <p class="muted">Scheduled: {{ item.scheduled_for }}</p>
-        <form method="post" action="{{ url_for('tenant_dashboard.app_content_unschedule_draft', account=selected_account.selection_ref) }}">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <input type="hidden" name="draft_ref" value="{{ item.unschedule_ref }}">
-            <button type="submit">Return to ready</button>
-        </form>
+<section class="page-intro"><p class="eyebrow">Publishing calendar</p><h2>See what is scheduled, shared, and ready for review.</h2><p class="muted">Your publishing agenda is shown first. Follow-up activity is listed separately below.</p></section>
+
+<section class="agenda-section" aria-label="Content schedule">
+  <div class="section-heading"><div><p class="eyebrow">Publishing agenda</p><h2>Your image posts</h2></div></div>
+  <nav class="segmented-nav" aria-label="Publishing agenda filters">
+    {% for value, label in (('all', 'All'), ('scheduled', 'Scheduled'), ('published', 'Published'), ('failed', 'Needs attention')) %}
+    <a href="{{ url_for('tenant_dashboard.app_scheduler', account=selected_account.selection_ref, content_status=value) }}" {% if selected_content_status == value %}aria-current="page"{% endif %}>{{ label }}</a>
+    {% endfor %}
+  </nav>
+  <div class="agenda-list">
+    {% for agenda_day, items in agenda_content|groupby('agenda_day') %}
+    <section class="agenda-day-group"><h3>{{ agenda_day }}</h3>{% for item in items %}
+    <article class="agenda-row card">
+      <div class="agenda-thumbnail">{% if item.media_url %}<img src="{{ item.media_url }}" alt="Image post preview" loading="lazy" referrerpolicy="no-referrer">{% else %}<span>Image</span>{% endif %}</div>
+      <div class="agenda-copy"><p class="agenda-date">{{ item.display_time or 'Date unavailable' }}</p><h3>{{ item.caption_preview or 'Untitled image post' }}</h3><p class="muted">{% if item.status == 'scheduled' %}Scheduled for {{ item.display_time }}{% elif item.status == 'published' %}Published {{ item.display_time }}{% else %}Instagram could not publish this image. Review the image and your Instagram connection before creating a new post.{% endif %}</p></div>
+      <div class="agenda-actions"><span class="status-pill {% if item.status == 'scheduled' %}status-primary{% elif item.status == 'published' %}status-success{% else %}status-error{% endif %}">{% if item.status == 'failed' %}Needs attention{% else %}{{ item.status|capitalize }}{% endif %}</span>{% if item.status == 'scheduled' %}<form method="post" action="{{ url_for('tenant_dashboard.app_content_unschedule_draft', account=selected_account.selection_ref) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="draft_ref" value="{{ item.unschedule_ref }}"><button class="button button-secondary" type="submit">Return to draft</button></form>{% endif %}</div>
     </article>
-    {% else %}<p class="empty-state">No content is scheduled for this account.</p>{% endfor %}
+    {% endfor %}</section>{% else %}<p class="empty-state">No image posts match this filter yet.</p>{% endfor %}
+  </div>
 </section>
-<form method="get" action="{{ url_for('tenant_dashboard.app_scheduler') }}" class="card activity-filters" aria-label="Scheduler filters">
-    <input type="hidden" name="account" value="{{ selected_account.selection_ref }}">
-    <label>Status
-        <select name="status">
-            {% for value, label in status_filters %}<option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
-        </select>
-    </label>
-    <label>Job type
-        <select name="job_type">
-            {% for value, label in job_type_filters %}<option value="{{ value }}" {% if selected_job_type == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
-        </select>
-    </label>
-    <button type="submit">Apply filters</button>
-</form>
-<section class="page-stack" aria-label="Scheduled jobs">
-{% for job in jobs %}
-<article class="card lead-card">
-    <h2>{{ job.job_type }}</h2>
-    <p><span class="status-badge">{{ job.status }}</span></p>
-    <p class="muted">Scheduled: {{ job.scheduled_at or "N/A" }}</p>
-    {% if job.completed_at %}<p class="muted">Completed: {{ job.completed_at }}</p>{% endif %}
-    <p class="muted">Created: {{ job.created_at or "N/A" }}</p>
-    <p class="muted">{{ job.source_context }}</p>
-    {% if job.can_cancel and job.cancel_action %}
-    <form method="post" action="{{ url_for('tenant_dashboard.app_scheduler_cancel', account=selected_account.selection_ref, status=selected_status, job_type=selected_job_type) }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <input type="hidden" name="scheduler_action" value="{{ job.cancel_action }}">
-        <button type="submit">Cancel follow-up</button>
-    </form>
-    {% endif %}
-</article>
-{% else %}<p class="empty-state">No scheduled jobs yet. Follow-up jobs will appear here when automation is active.</p>{% endfor %}
+
+<section class="secondary-work card" aria-label="Automation follow-ups">
+  <div class="section-heading"><div><p class="eyebrow">Automation follow-ups</p><h2>Scheduled follow-ups</h2></div></div>
+  <form method="get" action="{{ url_for('tenant_dashboard.app_scheduler') }}" class="compact-filters" aria-label="Follow-up filters"><input type="hidden" name="account" value="{{ selected_account.selection_ref }}"><label>Status<select name="status">{% for value, label in status_filters %}<option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label><label>Type<select name="job_type">{% for value, label in job_type_filters %}<option value="{{ value }}" {% if selected_job_type == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label><button class="button button-secondary" type="submit">Apply</button></form>
+  <div class="secondary-work-list">{% for job in jobs %}<article class="list-row"><div><strong>{{ job.job_type }}</strong><p class="muted">Scheduled for {{ job.scheduled_at or 'Date unavailable' }}</p></div><div class="agenda-actions"><span class="status-pill status-neutral">{{ job.status }}</span>{% if job.can_cancel and job.cancel_action %}<form method="post" action="{{ url_for('tenant_dashboard.app_scheduler_cancel', account=selected_account.selection_ref, status=selected_status, job_type=selected_job_type) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="scheduler_action" value="{{ job.cancel_action }}"><button class="button button-secondary" type="submit">Cancel follow-up</button></form>{% endif %}</div></article>{% else %}<p class="empty-state">No follow-ups need attention right now.</p>{% endfor %}</div>
+  <nav aria-label="Follow-up pagination">{% if scheduler_page.has_previous %}<a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_scheduler', account=selected_account.selection_ref, status=selected_status, job_type=selected_job_type, page=scheduler_page.page - 1) }}">Previous</a>{% endif %}<span class="muted">Page {{ scheduler_page.page }}</span>{% if scheduler_page.has_next %}<a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_scheduler', account=selected_account.selection_ref, status=selected_status, job_type=selected_job_type, page=scheduler_page.page + 1) }}">Next</a>{% endif %}</nav>
 </section>
-<nav aria-label="Scheduler pagination">
-    {% if scheduler_page.has_previous %}<a href="{{ url_for('tenant_dashboard.app_scheduler', account=selected_account.selection_ref, status=selected_status, job_type=selected_job_type, page=scheduler_page.page - 1) }}">Previous</a>{% endif %}
-    <span>Page {{ scheduler_page.page }}</span>
-    {% if scheduler_page.has_next %}<a href="{{ url_for('tenant_dashboard.app_scheduler', account=selected_account.selection_ref, status=selected_status, job_type=selected_job_type, page=scheduler_page.page + 1) }}">Next</a>{% endif %}
-</nav>
 {% endblock %}

@@ -24,6 +24,7 @@ from database.models import (
     InstagramAccount,
     InstagramAutomationConfig,
     InstagramCredential,
+    InstagramContentItem,
     InstagramEngagementEvent,
     InstagramOAuthFollowupJob,
     InstagramPromptPost,
@@ -277,7 +278,7 @@ class TenantDashboardTest(unittest.TestCase):
         ):
             self.assertNotIn(secret_or_internal, rendered)
 
-    def test_accounts_renders_safe_deployment_readiness_separately_from_active_account(self):
+    def test_accounts_hides_deployment_readiness_while_showing_active_account_state(self):
         self._login_as(self.owner_a)
         key = Fernet.generate_key().decode("ascii")
         environment = {
@@ -288,15 +289,17 @@ class TenantDashboardTest(unittest.TestCase):
         }
         with patch.dict("os.environ", environment, clear=False):
             page = self.client.get("/app/accounts").get_data(as_text=True)
-        self.assertIn("Deployment readiness: Ready", page)
+        self.assertIn("Your Instagram accounts", page)
         self.assertIn("Active", page)
+        self.assertNotIn("Deployment readiness", page)
         self.assertNotIn(key, page)
 
-    def test_accounts_renders_safe_degraded_deployment_readiness(self):
+    def test_accounts_hides_degraded_deployment_details(self):
         self._login_as(self.owner_a)
         with patch.dict("os.environ", {"INSTAGRAM_OAUTH_ENGAGEMENT_ENABLED": "true", "PUBLIC_BASE_URL": "http://unsafe.example"}, clear=False):
             page = self.client.get("/app/accounts").get_data(as_text=True)
-        self.assertIn("Multiple OAuth deployment prerequisites are unavailable.", page)
+        self.assertIn("Your Instagram accounts", page)
+        self.assertNotIn("Deployment readiness", page)
         self.assertNotIn("http://unsafe.example", page)
 
     def test_selection_failures_are_generic_and_do_not_cross_tenants(self):
@@ -382,7 +385,7 @@ class TenantDashboardTest(unittest.TestCase):
         self._login_as(self.owner_a)
         page = self.client.get("/app/accounts").get_data(as_text=True)
 
-        self.assertEqual(page.count("Disconnect from this app"), 1)
+        self.assertEqual(page.count("Confirm disconnect"), 1)
         self.assertEqual(page.count('action="/connect/instagram/disconnect"'), 1)
 
     def test_accounts_state_changing_actions_require_csrf_tokens(self):
@@ -836,12 +839,12 @@ class TenantDashboardTest(unittest.TestCase):
 
         page = self.client.get(f"/app/automations?account={selected}").get_data(as_text=True)
 
-        self.assertIn("<title>Automations | Social Media Bot</title>", page)
-        self.assertIn('<h1>Automations</h1>', page)
+        self.assertIn("<title>Automation | Social Media Bot</title>", page)
+        self.assertIn('<h1>Automation</h1>', page)
         self.assertNotIn('<h1>Instagram workspace</h1>', page)
         self.assertIn('for="automation_enabled"', page)
         self.assertIn('for="public_reply_enabled"', page)
-        self.assertIn("Smart Comment Assistant", page)
+        self.assertIn("Smart replies", page)
         self.assertIn('for="smart_reply_enabled"', page)
         self.assertIn('id="smart_reply_tone"', page)
         self.assertIn('id="smart_reply_max_per_hour"', page)
@@ -966,3 +969,99 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertIn(".app-main{width:calc(100% - 248px);", stylesheet)
         self.assertIn("@media(min-width:901px)", stylesheet)
         response.close()
+
+    def test_calendar_prioritizes_safe_publishing_agenda_states(self):
+        """Removing a lifecycle section would hide a publishing outcome from its owner."""
+        self._login_as(self.owner_a)
+        selected = self._reference(self.owner_a, self.account_a1)
+        now = datetime.now(timezone.utc)
+        with self.Session.begin() as session:
+            session.add_all([
+                InstagramContentItem(
+                    instagram_account_id=self.account_a1.id,
+                    status="scheduled",
+                    content_type="image",
+                    caption="Agenda scheduled image",
+                    media_url="https://cdn.example.com/scheduled.jpg",
+                    scheduled_for=now + timedelta(hours=1),
+                ),
+                InstagramContentItem(
+                    instagram_account_id=self.account_a1.id,
+                    status="published",
+                    content_type="image",
+                    caption="Agenda published image",
+                    media_url="https://cdn.example.com/published.jpg",
+                    published_at=now - timedelta(hours=1),
+                ),
+                InstagramContentItem(
+                    instagram_account_id=self.account_a1.id,
+                    status="failed",
+                    content_type="image",
+                    caption="Agenda needs review",
+                    media_url="https://cdn.example.com/failed.jpg",
+                    publish_error_code="provider_rejected",
+                ),
+                InstagramContentItem(
+                    instagram_account_id=self.account_b.id,
+                    status="published",
+                    content_type="image",
+                    caption="Private foreign agenda image",
+                    media_url="https://cdn.example.com/private.jpg",
+                ),
+            ])
+
+        page = self.client.get(f"/app/scheduler?account={selected}").get_data(as_text=True)
+
+        for label in ("Publishing agenda", "All", "Scheduled", "Published", "Needs attention"):
+            self.assertIn(label, page)
+        for caption in ("Agenda scheduled image", "Agenda published image", "Agenda needs review"):
+            self.assertIn(caption, page)
+        self.assertNotIn("Private foreign agenda image", page)
+        self.assertNotIn("provider_rejected", page)
+
+    def test_instagram_page_uses_safe_connection_cards_and_disconnect_confirmation(self):
+        """A connection problem must be understandable without OAuth diagnostics."""
+        self._login_as(self.owner_a)
+        with self.Session.begin() as session:
+            account = session.get(InstagramAccount, self.account_a1.id)
+            account.connection_status = "reconnect_required"
+
+        page = self.client.get("/app/accounts").get_data(as_text=True)
+
+        self.assertIn("Your Instagram accounts", page)
+        self.assertIn("Reconnect required", page)
+        self.assertIn("Confirm disconnect", page)
+        self.assertNotIn("Deployment readiness", page)
+        self.assertNotIn("credential", page.lower())
+
+    def test_automation_groups_existing_controls_by_public_private_and_smart_outcomes(self):
+        """The same automation inputs remain available in outcome-oriented groups."""
+        self._login_as(self.owner_a)
+        with self.Session.begin() as session:
+            session.add(InstagramAutomationConfig(
+                instagram_account_id=self.account_a1.id,
+                enabled=True,
+                public_reply_enabled=True,
+                followup_enabled=True,
+                smart_reply_enabled=True,
+            ))
+        page = self.client.get("/app/automations").get_data(as_text=True)
+
+        for label in ("Automation status", "Public interactions", "Private interactions", "Smart replies"):
+            self.assertIn(label, page)
+        for field in ("automation_enabled", "public_reply_enabled", "followup_enabled", "smart_reply_enabled"):
+            self.assertIn(f'id="{field}"', page)
+        self.assertIn("visible publicly", page)
+        self.assertNotIn("Required system step", page)
+
+    def test_engagement_routes_share_accessible_tabs_without_sidebar_duplication(self):
+        """Each Engagement view must provide the same route-preserving subnavigation."""
+        self._login_as(self.owner_a)
+        selected = self._reference(self.owner_a, self.account_a1)
+
+        for path in ("leads", "messages", "activity", "followups"):
+            page = self.client.get(f"/app/{path}?account={selected}").get_data(as_text=True)
+            self.assertIn('class="engagement-tabs"', page)
+            self.assertIn('aria-label="Engagement sections"', page)
+            for label in ("Leads", "Conversations", "Activity", "Follow-ups"):
+                self.assertIn(f">{label}</a>", page)

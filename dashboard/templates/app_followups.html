@@ -2,6 +2,8 @@
 {% block title %}Follow-ups{% endblock %}
 {% block heading %}Follow-ups{% endblock %}
 {% block content %}
+{% set engagement_section = 'followups' %}{% include "_engagement_tabs.html" %}
+<section class="page-intro"><p class="eyebrow">Engagement</p><h2>Follow-ups</h2><p class="muted">See the follow-ups scheduled for the selected Instagram account.</p></section>
 <section class="page-stack" aria-label="Account follow-ups">
 {% for followup in followups %}<article class="card followup-card"><h2>{{ followup.status }}</h2><p class="muted">Scheduled: {{ followup.scheduled_at }}</p>{% if followup.completed_at %}<p class="muted">Updated: {{ followup.completed_at }}</p>{% endif %}</article>{% else %}<p class="empty-state">No follow-ups yet. Scheduled follow-ups will appear here.</p>{% endfor %}
 </section>

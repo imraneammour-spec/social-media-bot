@@ -1,0 +1,6 @@
+<nav class="engagement-tabs" aria-label="Engagement sections">
+  <a href="{{ url_for('tenant_dashboard.app_leads', account=selected_account.selection_ref) }}" {% if engagement_section == 'leads' %}aria-current="page"{% endif %}>Leads</a>
+  <a href="{{ url_for('tenant_dashboard.app_messages', account=selected_account.selection_ref) }}" {% if engagement_section == 'messages' %}aria-current="page"{% endif %}>Conversations</a>
+  <a href="{{ url_for('tenant_dashboard.app_activity', account=selected_account.selection_ref) }}" {% if engagement_section == 'activity' %}aria-current="page"{% endif %}>Activity</a>
+  <a href="{{ url_for('tenant_dashboard.app_followups', account=selected_account.selection_ref) }}" {% if engagement_section == 'followups' %}aria-current="page"{% endif %}>Follow-ups</a>
+</nav>

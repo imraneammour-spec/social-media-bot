@@ -1405,6 +1405,11 @@ def register_tenant_dashboard(app) -> None:
         selected_job_type = tenant_data.scheduler_job_type_filter(
             request.args.get("job_type")
         )
+        selected_content_status = str(
+            request.args.get("content_status") or "all"
+        ).strip().lower()
+        if selected_content_status not in {"all", "scheduled", "published", "failed"}:
+            selected_content_status = "all"
         page = request.args.get("page")
         scheduler_page = _query(
             selected,
@@ -1417,19 +1422,44 @@ def register_tenant_dashboard(app) -> None:
         if scheduler_page is _DATABASE_UNAVAILABLE:
             return _workspace_unavailable()
 
-        scheduled_content = []
+        agenda_content = []
         session_factory = getattr(_auth_state(), "session_factory", None)
         if session_factory is not None:
             try:
                 with session_factory() as session:
-                    scheduled_content = [
+                    agenda_content = [
                         {
                             **draft,
-                            "unschedule_ref": _content_draft_reference(user.id, draft["id"], purpose="content-unschedule"),
+                            "unschedule_ref": _content_draft_reference(
+                                user.id,
+                                draft["id"],
+                                purpose="content-unschedule",
+                            ) if draft.get("status") == "scheduled" else None,
+                            "display_time": (
+                                draft.get("scheduled_for")
+                                if draft.get("status") == "scheduled"
+                                else draft.get("published_at") or draft.get("updated_at")
+                            ),
                         }
                         for draft in tenant_data.content_drafts(session, instagram_account_id=selected.instagram_account_id)
-                        if draft.get("status") == "scheduled"
+                        if draft.get("status") in {"scheduled", "published", "failed"}
+                        and (
+                            selected_content_status == "all"
+                            or draft.get("status") == selected_content_status
+                        )
                     ]
+                    for item in agenda_content:
+                        item["agenda_day"] = (
+                            item["display_time"][:10]
+                            if item.get("display_time")
+                            else "Date unavailable"
+                        )
+                    agenda_content.sort(
+                        key=lambda item: (
+                            item["agenda_day"] == "Date unavailable",
+                            item.get("display_time") or "",
+                        )
+                    )
             except SQLAlchemyError:
                 return _workspace_unavailable()
 
@@ -1444,7 +1474,8 @@ def register_tenant_dashboard(app) -> None:
             job_type_filters=tenant_data.SCHEDULER_JOB_TYPE_FILTER_LABELS,
             selected_status=selected_status,
             selected_job_type=selected_job_type,
-            scheduled_content=scheduled_content,
+            agenda_content=agenda_content,
+            selected_content_status=selected_content_status,
         )
 
     @dashboard.get("/analytics")

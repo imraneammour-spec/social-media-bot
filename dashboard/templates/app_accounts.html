@@ -1,41 +1,16 @@
 {% extends "app_base.html" %}
-{% block title %}Accounts{% endblock %}
-{% block heading %}Accounts{% endblock %}
+{% block title %}Instagram{% endblock %}
+{% block heading %}Instagram{% endblock %}
 {% block content %}
-{% if deployment_readiness.state == 'ready' %}
-<section class="card"><p><strong>Deployment readiness: Ready</strong></p></section>
-{% elif deployment_readiness.state == 'engagement_disabled' %}
-<section class="card"><p><strong>Deployment readiness</strong></p><p class="muted">OAuth engagement is disabled for this deployment.</p></section>
-{% elif deployment_readiness.state == 'public_base_unavailable' %}
-<section class="card"><p><strong>Deployment readiness</strong></p><p class="muted">Public HTTPS base URL is not ready.</p></section>
-{% elif deployment_readiness.state == 'credential_keyring_unavailable' %}
-<section class="card"><p><strong>Deployment readiness</strong></p><p class="muted">Credential keyring is unavailable.</p></section>
-{% else %}
-<section class="card"><p><strong>Deployment readiness</strong></p><p class="muted">Multiple OAuth deployment prerequisites are unavailable.</p></section>
-{% endif %}
-<section class="account-list page-stack" aria-label="Owned Instagram accounts">
+<section class="page-intro"><p class="eyebrow">Instagram</p><h2>Your Instagram accounts</h2><p class="muted">Review each connection and choose the account you want to manage.</p></section>
+<section class="account-grid" aria-label="Your Instagram accounts">
 {% for account in accounts %}
-    <article class="card account-card {% if account.is_selected %}active{% endif %}">
-        <h2><a href="{{ url_for('tenant_dashboard.app_accounts', account=account.selection_ref) }}">{{ account.username }}</a></h2>
-        {% if account.is_selected %}<p><strong>Selected account</strong></p>{% endif %}
-        <p><strong>Connection health:</strong> {{ account.connection_label }}</p>
-        <p class="muted">{{ account.connection_detail }}</p>
-        <p><strong>{{ account.activation_label }}</strong></p>
-        <p class="muted">{{ account.activation_detail }}</p>
-        {% if account.can_reconnect %}
-        <form method="post" action="{{ url_for('start_instagram_connection') }}">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button type="submit">Reconnect Instagram</button>
-        </form>
-        {% endif %}
-        {% if account.can_disconnect %}
-        <form method="post" action="{{ url_for('disconnect_instagram_connection') }}">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <input type="hidden" name="account_action" value="{{ account.disconnect_action }}">
-            <button type="submit">Disconnect from this app</button>
-        </form>
-        {% endif %}
-    </article>
+  <article class="account-state-card card {% if account.is_selected %}is-selected{% endif %}">
+    <div class="section-heading"><div><p class="eyebrow">{% if account.is_selected %}Selected account{% else %}Instagram account{% endif %}</p><h2>{{ account.username }}</h2></div><span class="status-pill {% if account.connection_label == 'Connected' %}status-success{% else %}status-warning{% endif %}">{{ account.connection_label }}</span></div>
+    <p class="muted">{{ account.connection_detail }}</p><p class="account-health"><strong>{{ account.activation_label }}</strong><span>{{ account.activation_detail }}</span></p>
+    <div class="account-actions"><a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_accounts', account=account.selection_ref) }}">{% if account.is_selected %}Currently selected{% else %}Manage this account{% endif %}</a>{% if account.can_reconnect %}<form method="post" action="{{ url_for('start_instagram_connection') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-primary" type="submit">Reconnect Instagram</button></form>{% endif %}</div>
+    {% if account.can_disconnect %}<details class="disconnect-confirm"><summary>Disconnect account</summary><p class="muted">Disconnecting stops this app from using this Instagram account. You can reconnect it later.</p><form method="post" action="{{ url_for('disconnect_instagram_connection') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="account_action" value="{{ account.disconnect_action }}"><button class="button button-destructive" type="submit">Confirm disconnect</button></form></details>{% endif %}
+  </article>
 {% endfor %}
 </section>
 {% endblock %}

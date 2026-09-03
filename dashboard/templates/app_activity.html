@@ -2,6 +2,8 @@
 {% block title %}Activity{% endblock %}
 {% block heading %}Activity{% endblock %}
 {% block content %}
+{% set engagement_section = 'activity' %}{% include "_engagement_tabs.html" %}
+<section class="page-intro"><p class="eyebrow">Engagement</p><h2>Recent activity</h2><p class="muted">Review activity for the selected Instagram account.</p></section>
 <form method="get" action="{{ url_for('tenant_dashboard.app_activity') }}" class="card activity-filters" aria-label="Activity filters">
     <input type="hidden" name="account" value="{{ selected_account.selection_ref }}">
     <label>Show
