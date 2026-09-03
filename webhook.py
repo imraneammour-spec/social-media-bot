@@ -3897,6 +3897,37 @@ def _oauth_prompt_post_for_comment(session_factory, account_id, external_id, med
         return record.public_id
 
 
+def _log_oauth_engagement_failure(exc, *, context):
+    """Print a credential-safe diagnostic for a swallowed OAuth engagement failure.
+
+    The original code used a bare ``except Exception:`` that printed a generic
+    "processing unavailable" message, hiding the real failing condition (e.g.
+    capability gate, credential resolution, provider rejection).  This helper
+    surfaces the exception type and a sanitized message so operators can
+    diagnose the exact blocker without exposing tokens, secrets, or raw
+    provider payloads.
+    """
+
+    exc_type = type(exc).__name__
+    raw_message = str(exc) or ""
+    # Never print raw exception text that might contain a token, URL, or
+    # provider payload fragment.  Only surface known-safe sentinel messages.
+    safe_messages = {
+        "oauth comment delivery unavailable",
+        "oauth prompt media unavailable",
+        "oauth prompt extraction unavailable",
+        "oauth public reply unavailable",
+        "oauth private reply unavailable",
+        "oauth prompt access unavailable",
+        "Instagram engagement is temporarily unavailable.",
+    }
+    safe_message = raw_message if raw_message in safe_messages else "sanitized"
+    print(
+        f"OAUTH ENGAGEMENT: {context} processing unavailable. "
+        f"reason={exc_type}:{safe_message}"
+    )
+
+
 def _process_oauth_comment(value, route, entry_external_id, public_base_url, session_factory):
     comment_id = str(value.get("id") or "").strip()
     comment_text = str(value.get("text") or "").strip()
@@ -4017,9 +4048,9 @@ def _process_oauth_comment(value, route, entry_external_id, public_base_url, ses
                     run_at=datetime.now(timezone.utc) + timedelta(minutes=followup_delay_minutes),
                 )
             complete_oauth_event(db_session, route.instagram_account_id, comment_id, "comment")
-    except Exception:
+    except Exception as exc:
         _oauth_complete(session_factory, route.instagram_account_id, comment_id, "comment", failed=True)
-        print("OAUTH ENGAGEMENT: comment processing unavailable.")
+        _log_oauth_engagement_failure(exc, context="comment")
 
 
 def _process_oauth_message(event, route, entry_external_id, session_factory):
@@ -4088,9 +4119,9 @@ def _process_oauth_message(event, route, entry_external_id, session_factory):
                     run_at=datetime.now(timezone.utc) + timedelta(minutes=followup_delay_minutes),
                 )
             complete_oauth_event(db_session, route.instagram_account_id, message_id, "message")
-    except Exception:
+    except Exception as exc:
         _oauth_complete(session_factory, route.instagram_account_id, message_id, "message", failed=True)
-        print("OAUTH ENGAGEMENT: message processing unavailable.")
+        _log_oauth_engagement_failure(exc, context="message")
 
 
 def process_due_oauth_followups(now=None):

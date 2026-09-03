@@ -381,9 +381,19 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
                 event, self._route(self.account_a_id), "17841438617458101", self.Session
             )
 
-        log.assert_called_once_with(
-            "OAUTH ENGAGEMENT: message processing unavailable."
-        )
+        # The diagnostic must include the context and a credential-safe reason.
+        # It must NOT include the raw exception text, provider payload, or any
+        # temporary/intermediate stage label.
+        log.assert_called_once()
+        printed = str(log.call_args)
+        self.assertIn("OAUTH ENGAGEMENT: message processing unavailable.", printed)
+        self.assertIn("reason=", printed)
+        # Must surface the real exception type (RuntimeError from the
+        # "oauth prompt access unavailable" sentinel).
+        self.assertIn("RuntimeError", printed)
+        # Must not print any raw provider payload or intermediate stage.
+        self.assertNotIn("temporary", printed.lower())
+        self.assertNotIn("internal.test", printed)
 
     def test_oauth_access_message_reaches_button_dispatch_for_https_pending_url(self):
         from database import oauth_graph
