@@ -976,7 +976,7 @@ class TenantDashboardTest(unittest.TestCase):
         response = self.client.get("/static/tenant_dashboard.css")
         stylesheet = response.get_data(as_text=True)
 
-        self.assertIn(".app-brand{display:block;width:min(100%,184px);margin:4px auto 36px}", stylesheet)
+        self.assertIn(".app-brand{display:block;width:min(100%,196px);margin:4px auto 36px}", stylesheet)
         self.assertIn(".app-brand img{display:block;width:100%;height:auto}", stylesheet)
         response.close()
 
@@ -1083,7 +1083,7 @@ class TenantDashboardTest(unittest.TestCase):
         page = self.client.get("/app").get_data(as_text=True)
 
         self.assertIn("Postenza", page)
-        self.assertIn("postenza-logo-dark.png", page)
+        self.assertIn("postenza-sidebar-logo-dark.png", page)
         self.assertIn("postenza-favicon.png", page)
         self.assertIn('sizes="16x16" href="/static/brand/postenza-favicon-16.png"', page)
         self.assertIn('sizes="32x32" href="/static/brand/postenza-favicon-32.png"', page)

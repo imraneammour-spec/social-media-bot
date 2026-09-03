@@ -17,7 +17,7 @@
         <button class="mobile-nav-toggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="primary-navigation"><span aria-hidden="true">☰</span></button>
         <div class="mobile-nav-backdrop" hidden></div>
         <aside class="app-sidebar" aria-label="Workspace navigation">
-            <a class="app-brand" href="{{ url_for('tenant_dashboard.app_overview', account=selected_account.selection_ref) }}"><img src="{{ url_for('static', filename='brand/postenza-logo-dark.png') }}" alt="{{ t('product_name') }}"></a>
+            <a class="app-brand" href="{{ url_for('tenant_dashboard.app_overview', account=selected_account.selection_ref) }}"><img src="{{ url_for('static', filename='brand/postenza-sidebar-logo-dark.png') }}" alt="{{ t('product_name') }}"></a>
             <nav id="primary-navigation" class="workspace-nav" aria-label="Primary navigation">
                 <a href="{{ url_for('tenant_dashboard.app_overview', account=selected_account.selection_ref) }}" {% if active_page == 'overview' %}aria-current="page"{% endif %}><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m3 11 9-8 9 8v10h-6v-6H9v6H3z"/></svg>{{ t('overview') }}</a>
                 <a href="{{ url_for('tenant_dashboard.app_content', account=selected_account.selection_ref) }}" {% if active_page == 'content' %}aria-current="page"{% endif %}><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><circle cx="9" cy="9" r="1.5"/><path d="m5 18 5-5 3 3 2-2 4 4"/></svg>{{ t('content') }}</a>
