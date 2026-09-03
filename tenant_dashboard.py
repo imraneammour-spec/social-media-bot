@@ -120,17 +120,6 @@ def _tenant_context():
             ),
         )
 
-    if current_user_has_legacy_workspace_access():
-        return (
-            None,
-            None,
-            _cache_control(
-                redirect(
-                    url_for("dashboard")
-                )
-            ),
-        )
-
     state = _auth_state()
 
     session_factory = getattr(
@@ -166,6 +155,16 @@ def _tenant_context():
         )
 
     if not accounts:
+        if current_user_has_legacy_workspace_access():
+            return (
+                None,
+                None,
+                _cache_control(
+                    redirect(
+                        url_for("dashboard")
+                    )
+                ),
+            )
         return (
             None,
             None,

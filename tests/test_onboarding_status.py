@@ -243,7 +243,7 @@ class OnboardingStatusTest(unittest.TestCase):
 
         self.assertLess(page.index("earlier_account"), page.index("later_account"))
 
-    def test_legacy_owner_redirects_to_dashboard_and_non_legacy_user_stays_blocked(self):
+    def test_legacy_owner_login_uses_onboarding_and_non_legacy_user_stays_blocked(self):
         legacy_owner_id = self._create_user("legacy-login@example.test")
         other_owner_id = self._create_user("other-login@example.test")
         self._create_account(
@@ -262,7 +262,8 @@ class OnboardingStatusTest(unittest.TestCase):
         legacy_client = self.app.test_client()
         with legacy_client.session_transaction() as browser_session:
             browser_session["user_id"] = str(legacy_owner_id)
-        self.assertTrue(legacy_client.get("/login").headers["Location"].endswith("/dashboard"))
+        self.assertTrue(legacy_client.get("/login").headers["Location"].endswith("/onboarding"))
+        self.assertEqual(legacy_client.get("/dashboard").status_code, 200)
 
         non_legacy_client = self.app.test_client()
         with non_legacy_client.session_transaction() as browser_session:

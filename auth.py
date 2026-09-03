@@ -353,6 +353,35 @@ def _auth_template(template_name: str, *, status: int = 200, error: str | None =
     return render_template(template_name, csrf_token=csrf_token(), error=error), status
 
 
+def user_has_connected_instagram_account(user: User | None) -> bool:
+    """Return True if the user owns at least one connected and error-free Instagram account."""
+    if user is None:
+        return False
+    state = _auth_state()
+    if not state.session_factory:
+        return False
+    try:
+        with state.session_factory() as db_session:
+            accounts = list_owned_instagram_accounts(db_session, user_id=user.id)
+            for account in accounts:
+                status = str(account.connection_status or "").strip().lower()
+                has_error = bool(str(account.last_connection_error_code or "").strip())
+                if status in READY_CONNECTION_STATUSES and not has_error:
+                    return True
+    except SQLAlchemyError:
+        return False
+    return False
+
+
+def post_login_destination(user: User | None) -> str:
+    """Direct connected users to /app and disconnected users to onboarding."""
+    if user_has_connected_instagram_account(user):
+        if "tenant_dashboard.app_overview" in current_app.view_functions:
+            return url_for("tenant_dashboard.app_overview")
+        return "/app"
+    return url_for("onboarding")
+
+
 def register_auth_routes(app) -> None:
     """Register only additive Phase 3A browser authentication routes."""
 
@@ -403,8 +432,7 @@ def register_auth_routes(app) -> None:
             return _unavailable_response()
         user = get_current_user()
         if request.method == "GET" and user is not None:
-            destination = "dashboard" if current_user_has_legacy_workspace_access() else "onboarding"
-            return redirect(url_for(destination))
+            return redirect(post_login_destination(user))
         if request.method == "GET":
             return _auth_template("login.html")
         if not validate_csrf_token(request_csrf_token()):
@@ -422,8 +450,7 @@ def register_auth_routes(app) -> None:
         if user is None or not check_password_hash(user.password_hash, password):
             return _auth_template("login.html", status=401, error="Invalid email or password.")
         rotate_authenticated_session(user)
-        destination = "dashboard" if current_user_has_legacy_workspace_access() else "onboarding"
-        return redirect(url_for(destination))
+        return redirect(post_login_destination(user))
 
     @app.post("/logout")
     @login_required
@@ -478,7 +505,7 @@ def register_auth_routes(app) -> None:
             state = _auth_state()
             if state.session_factory is None:
                 return _unavailable_response()
-            complete_discovered_instagram_connection(
+            account = complete_discovered_instagram_connection(
                 state.session_factory,
                 user_id=user.id,
                 legacy_instagram_user_id=state.legacy_instagram_user_id,
@@ -508,7 +535,15 @@ def register_auth_routes(app) -> None:
         except InstagramConnectionError:
             current_app.logger.warning(OAUTH_CALLBACK_STAGE_CONNECTION_PRECOMMIT_FAILED)
             return "Instagram connection could not be completed.", 502
-        return redirect(url_for("onboarding"))
+        account_ref = action_reference_for_account(
+            user.id,
+            account.id,
+            "tenant-dashboard-select",
+            secret_key=current_app.secret_key,
+        )
+        if "tenant_dashboard.app_overview" in current_app.view_functions:
+            return redirect(url_for("tenant_dashboard.app_overview", account=account_ref))
+        return redirect(f"/app?account={account_ref}")
 
     @app.post("/connect/instagram/disconnect")
     @login_required

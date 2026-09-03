@@ -169,7 +169,7 @@ class AuthenticationCoreTest(unittest.TestCase):
         )
 
         self.assertEqual(login.status_code, 302)
-        self.assertTrue(login.headers["Location"].endswith("/dashboard"))
+        self.assertTrue(login.headers["Location"].endswith("/onboarding"))
         with client.session_transaction() as browser_session:
             self.assertEqual(browser_session["user_id"], str(owner.id))
             rotated_token = browser_session["_csrf_token"]
@@ -179,6 +179,79 @@ class AuthenticationCoreTest(unittest.TestCase):
         self.assertEqual(logout.status_code, 302)
         with client.session_transaction() as browser_session:
             self.assertNotIn("user_id", browser_session)
+
+    def test_connected_user_login_redirects_to_tenant_app(self):
+        """A normal OAuth-ready account must never re-enter the legacy workspace."""
+
+        with self.Session.begin() as db_session:
+            user = User(
+                email="connected@example.test",
+                display_name="Connected user",
+                password_hash=generate_password_hash("correct horse battery staple"),
+            )
+            db_session.add(user)
+            db_session.flush()
+            db_session.add(
+                InstagramAccount(
+                    user_id=user.id,
+                    instagram_user_id="connected-account-id",
+                    connection_status="connected",
+                )
+            )
+            user_id = user.id
+
+        client = self.app.test_client()
+        with client.session_transaction() as browser_session:
+            browser_session["_csrf_token"] = "connected-login-csrf-token"
+
+        response = client.post(
+            "/login",
+            data={
+                "csrf_token": "connected-login-csrf-token",
+                "email": "connected@example.test",
+                "password": "correct horse battery staple",
+            },
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.headers["Location"].endswith("/app"))
+        with client.session_transaction() as browser_session:
+            self.assertEqual(browser_session["user_id"], str(user_id))
+
+    def test_disconnected_user_login_redirects_to_onboarding(self):
+        with self.Session.begin() as db_session:
+            user = User(
+                email="disconnected@example.test",
+                display_name="Disconnected user",
+                password_hash=generate_password_hash("correct horse battery staple"),
+            )
+            db_session.add(user)
+            db_session.flush()
+            db_session.add(
+                InstagramAccount(
+                    user_id=user.id,
+                    instagram_user_id="disconnected-account-id",
+                    connection_status="disconnected",
+                )
+            )
+
+        client = self.app.test_client()
+        with client.session_transaction() as browser_session:
+            browser_session["_csrf_token"] = "disconnected-login-csrf-token"
+
+        response = client.post(
+            "/login",
+            data={
+                "csrf_token": "disconnected-login-csrf-token",
+                "email": "disconnected@example.test",
+                "password": "correct horse battery staple",
+            },
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.headers["Location"].endswith("/onboarding"))
 
     def test_auth_forms_render_a_session_bound_csrf_token(self):
         response = self.app.test_client().get("/register")

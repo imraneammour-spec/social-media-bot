@@ -323,6 +323,37 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
         legacy_json.assert_not_called()
         legacy_graph.assert_not_called()
 
+    def test_master_disabled_prevents_smart_reply_dispatch(self):
+        """The master automation switch applies to smart replies as well as keywords."""
+
+        comment = {"id": "comment-master-disabled", "text": "hello", "from": {"id": "customer"}}
+        with self.Session.begin() as session:
+            session.add(InstagramAutomationConfig(
+                instagram_account_id=self.account_a_id,
+                enabled=False,
+                trigger_keywords=["prompt"],
+                public_reply_enabled=True,
+                public_reply_text="Configured reply",
+                smart_reply_enabled=True,
+                smart_reply_tone="friendly",
+                smart_reply_max_per_hour=20,
+            ))
+
+        with patch.dict(os.environ, {"INSTAGRAM_OAUTH_ENGAGEMENT_ENABLED": "true"}, clear=False), patch.object(
+            self.module, "generate_oauth_smart_reply", return_value="Hello!"
+        ) as generate, patch.object(
+            self.module, "send_oauth_public_comment_reply", return_value=True
+        ) as reply:
+            self.module.process_oauth_webhook_entry(
+                {"changes": [{"field": "comments", "value": comment}]},
+                self._route(self.account_a_id),
+                "17841438617458101",
+                "https://example.test",
+            )
+
+        generate.assert_not_called()
+        reply.assert_not_called()
+
     def test_messages_require_mid_and_pending_access_is_scoped(self):
         from database.oauth_engagement import save_oauth_pending_access
         with self.Session.begin() as session:

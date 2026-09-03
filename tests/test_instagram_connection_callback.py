@@ -9,7 +9,12 @@ from flask import Flask
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
-from auth import configure_auth, install_auth_route_guard, register_auth_routes
+from auth import (
+    action_reference_for_account,
+    configure_auth,
+    install_auth_route_guard,
+    register_auth_routes,
+)
 from database.models import Base, InstagramAccount, InstagramCredential, User
 from database.oauth_webhook_subscription import OAuthWebhookSubscriptionError
 from database.instagram_connection import InstagramConnectionError
@@ -99,7 +104,7 @@ class InstagramConnectionCallbackTest(unittest.TestCase):
             username="connected_callback_account",
         )
 
-    def test_callback_persists_encrypted_connection_then_redirects_to_onboarding(self):
+    def test_callback_persists_encrypted_connection_then_redirects_to_tenant_app(self):
         client = self._client_with_state()
         with patch.dict("os.environ", self.environment, clear=False), patch(
             "auth.complete_instagram_token_exchange", return_value=self._token_result()
@@ -112,7 +117,7 @@ class InstagramConnectionCallbackTest(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 302)
-        self.assertTrue(response.headers["Location"].endswith("/onboarding"))
+        self.assertTrue(response.headers["Location"].startswith("/app?account="))
         response_text = response.get_data(as_text=True) + response.headers["Location"]
         for secret in (self.authorization_code, self.long_lived_token, self.external_id):
             self.assertNotIn(secret, response_text)
@@ -145,6 +150,49 @@ class InstagramConnectionCallbackTest(unittest.TestCase):
             key_id,
         ):
             self.assertNotIn(secret, onboarding_page)
+
+    def test_callback_selects_newly_connected_account_for_multi_account_user(self):
+        """OAuth completion keeps the newly connected account in app context."""
+
+        with self.Session.begin() as session:
+            session.add(
+                InstagramAccount(
+                    user_id=self.user_id,
+                    instagram_user_id="17841438617458005",
+                    username="existing_account",
+                    connection_status="connected",
+                )
+            )
+
+        client = self._client_with_state()
+        with patch.dict("os.environ", self.environment, clear=False), patch(
+            "auth.complete_instagram_token_exchange", return_value=self._token_result()
+        ), patch("auth.discover_instagram_account", return_value=self._discovery()), patch(
+            "database.instagram_connection.subscribe_oauth_account_webhooks", return_value=True
+        ):
+            response = client.get(
+                "/connect/instagram/callback",
+                query_string={"state": "connection-callback-state", "code": self.authorization_code},
+            )
+
+        with self.Session() as session:
+            connected = session.scalar(
+                select(InstagramAccount).where(
+                    InstagramAccount.instagram_user_id == self.external_id
+                )
+            )
+            self.assertIsNotNone(connected)
+            expected_reference = action_reference_for_account(
+                self.user_id,
+                connected.id,
+                "tenant-dashboard-select",
+                secret_key=self.app.secret_key,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(
+            response.headers["Location"].endswith(f"/app?account={expected_reference}")
+        )
 
     def test_subscription_failure_returns_generic_response_and_leaves_account_reconnect_required(self):
         """A provider failure must not let OAuth callback report an active connection."""

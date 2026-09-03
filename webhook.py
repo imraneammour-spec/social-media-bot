@@ -3933,6 +3933,7 @@ def _process_oauth_comment(value, route, entry_external_id, public_base_url, ses
         if not is_prompt_request:
             if (
                 automation_config is None
+                or not automation_config.enabled
                 or not automation_config.smart_reply_enabled
                 or not _oauth_smart_reply_eligible(comment_text)
             ):
