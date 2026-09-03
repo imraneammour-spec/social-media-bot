@@ -1085,6 +1085,12 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertIn("Postenza", page)
         self.assertIn("postenza-logo-dark.png", page)
         self.assertIn("postenza-favicon.png", page)
+        self.assertIn('sizes="16x16" href="/static/brand/postenza-favicon-16.png"', page)
+        self.assertIn('sizes="32x32" href="/static/brand/postenza-favicon-32.png"', page)
+        self.assertIn('sizes="48x48" href="/static/brand/postenza-favicon-48.png"', page)
+        self.assertIn('sizes="192x192" href="/static/brand/postenza-icon-192.png"', page)
+        favicon_markup = page.split("<head>", 1)[1].split("</head>", 1)[0]
+        self.assertNotIn("postenza-logo", favicon_markup)
         self.assertIn('alt="Postenza"', page)
         self.assertNotIn("Sociora", page)
         self.assertNotIn("Social Media Bot", page)

@@ -5,7 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#101828">
     <title>{% block title %}{{ t('overview') }}{% endblock %} | {{ t('product_name') }}</title>
-    <link rel="icon" type="image/png" href="{{ url_for('static', filename='brand/postenza-favicon.png') }}">
+    <link rel="icon" type="image/png" sizes="16x16" href="{{ url_for('static', filename='brand/postenza-favicon-16.png') }}">
+    <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='brand/postenza-favicon-32.png') }}">
+    <link rel="icon" type="image/png" sizes="48x48" href="{{ url_for('static', filename='brand/postenza-favicon-48.png') }}">
+    <link rel="icon" type="image/png" sizes="192x192" href="{{ url_for('static', filename='brand/postenza-icon-192.png') }}">
+    <link rel="icon" type="image/png" sizes="512x512" href="{{ url_for('static', filename='brand/postenza-favicon.png') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='tenant_dashboard.css') }}">
 </head>
 <body class="tenant-dashboard">
