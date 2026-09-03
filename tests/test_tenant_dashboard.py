@@ -784,7 +784,7 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertIn('aria-label="Open navigation"', page)
         self.assertIn('action="/logout"', page)
         self.assertIn('>Sign out</button>', page)
-        self.assertIn("Sociora", page)
+        self.assertIn("Postenza", page)
         self.assertNotIn("Imran Prompts", page)
         self.assertNotIn('href="/dashboard', page)
         self.assertNotIn('href="/api/', page)
@@ -840,7 +840,7 @@ class TenantDashboardTest(unittest.TestCase):
 
         page = self.client.get(f"/app/automations?account={selected}").get_data(as_text=True)
 
-        self.assertIn("<title>Automation | Sociora</title>", page)
+        self.assertIn("<title>Automation | Postenza</title>", page)
         self.assertIn('<h1>Automation</h1>', page)
         self.assertNotIn('<h1>Instagram workspace</h1>', page)
         self.assertIn('for="automation_enabled"', page)
@@ -1067,16 +1067,17 @@ class TenantDashboardTest(unittest.TestCase):
             for label in ("Leads", "Conversations", "Activity", "Follow-ups"):
                 self.assertIn(f">{label}</a>", page)
 
-    def test_sociora_brand_assets_and_browser_identity_render_in_workspace(self):
-        """The authenticated product must use the approved Sociora identity."""
+    def test_postenza_brand_assets_and_browser_identity_render_in_workspace(self):
+        """A rebrand must update the visible authenticated product identity."""
         self._login_as(self.owner_a)
 
         page = self.client.get("/app").get_data(as_text=True)
 
-        self.assertIn("Sociora", page)
-        self.assertIn("sociora-logo-dark.png", page)
-        self.assertIn("sociora-favicon.png", page)
-        self.assertIn('alt="Sociora"', page)
+        self.assertIn("Postenza", page)
+        self.assertIn("postenza-logo-dark.png", page)
+        self.assertIn("postenza-favicon.png", page)
+        self.assertIn('alt="Postenza"', page)
+        self.assertNotIn("Sociora", page)
         self.assertNotIn("Social Media Bot", page)
 
     def test_overview_automation_status_uses_selected_account_config(self):
@@ -1122,6 +1123,40 @@ class TenantDashboardTest(unittest.TestCase):
             page = self.client.get(f"/app/{path}?account={selected}").get_data(as_text=True)
             self.assertNotIn("Prompt request", page)
             self.assertNotIn("prepared prompts", page.lower())
+
+    def test_postenza_identity_is_preserved_for_each_supported_locale(self):
+        """Locale selection must never translate or hide the product name."""
+        self._login_as(self.owner_a)
+
+        for locale in ("en", "fr", "ar"):
+            with self.client.session_transaction() as browser_session:
+                browser_session["_csrf_token"] = f"locale-{locale}-csrf-token-with-32-byte-minimum"
+            response = self.client.post(
+                "/app/locale",
+                data={
+                    "locale": locale,
+                    "csrf_token": f"locale-{locale}-csrf-token-with-32-byte-minimum",
+                },
+                follow_redirects=False,
+            )
+            self.assertEqual(response.status_code, 303)
+            page = self.client.get("/app").get_data(as_text=True)
+            self.assertIn("Postenza", page)
+            self.assertNotIn("Sociora", page)
+
+    def test_current_tenant_pages_do_not_render_retired_sociora_branding(self):
+        """A stale tenant template must not reveal the retired product name."""
+        self._login_as(self.owner_a)
+        selected = self._reference(self.owner_a, self.account_a1)
+        with self.Session.begin() as session:
+            session.add(InstagramAutomationConfig(instagram_account_id=self.account_a1.id))
+
+        for path in ("automations", "content", "", "scheduler", "leads", "messages", "activity", "accounts"):
+            with self.subTest(path=path or "overview"):
+                route = "/app" if not path else f"/app/{path}"
+                page = self.client.get(f"{route}?account={selected}").get_data(as_text=True)
+                self.assertIn("Postenza", page)
+                self.assertNotIn("Sociora", page)
 
     def test_activity_feed_uses_readable_time_without_exposing_raw_timestamp(self):
         """Activity presentation must not render the database ISO timestamp directly."""

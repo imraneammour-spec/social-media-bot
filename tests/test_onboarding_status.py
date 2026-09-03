@@ -113,6 +113,18 @@ class OnboardingStatusTest(unittest.TestCase):
         self.assertNotIn(b"account_id", response.data)
         self.assertNotIn(b"instagram_user_id", response.data)
 
+    def test_onboarding_renders_postenza_branding_and_favicon(self):
+        """The account-connection page must carry the current product identity."""
+        user_id = self._create_user("brand@example.test")
+
+        page = self._onboarding(user_id).get_data(as_text=True)
+
+        self.assertIn("Postenza", page)
+        self.assertIn("postenza-logo-dark.png", page)
+        self.assertIn("postenza-favicon.png", page)
+        self.assertIn('alt="Postenza"', page)
+        self.assertNotIn("Sociora", page)
+
     def test_onboarding_shows_only_owned_sanitized_accounts(self):
         owner_id = self._create_user("owner@example.test")
         other_owner_id = self._create_user("other@example.test")

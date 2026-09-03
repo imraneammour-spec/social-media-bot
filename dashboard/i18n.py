@@ -14,6 +14,7 @@ LOCALE_META = {
 
 TRANSLATIONS = {
     "en": {
+        "product_name": "Postenza",
         "overview": "Overview", "content": "Content", "calendar": "Calendar",
         "engagement": "Engagement", "automation": "Automation", "instagram": "Instagram",
         "sign_out": "Sign out", "instagram_workspace": "Instagram workspace",
@@ -22,6 +23,7 @@ TRANSLATIONS = {
         "social_tagline": "Social media, on autopilot.",
     },
     "fr": {
+        "product_name": "Postenza",
         "overview": "Vue d’ensemble", "content": "Contenu", "calendar": "Calendrier",
         "engagement": "Interactions", "automation": "Automatisation", "instagram": "Instagram",
         "sign_out": "Se déconnecter", "instagram_workspace": "Espace Instagram",
@@ -30,6 +32,7 @@ TRANSLATIONS = {
         "social_tagline": "Les réseaux sociaux en pilote automatique.",
     },
     "ar": {
+        "product_name": "Postenza",
         "overview": "نظرة عامة", "content": "المحتوى", "calendar": "التقويم",
         "engagement": "التفاعل", "automation": "الأتمتة", "instagram": "إنستغرام",
         "sign_out": "تسجيل الخروج", "instagram_workspace": "مساحة عمل إنستغرام",

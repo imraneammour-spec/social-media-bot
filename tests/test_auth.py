@@ -186,6 +186,18 @@ class AuthenticationCoreTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(b'name="csrf_token"', response.data)
 
+    def test_auth_pages_render_postenza_branding_and_favicon(self):
+        """A rebrand must cover every public account-access page."""
+        client = self.app.test_client()
+
+        for path in ("/login", "/register"):
+            page = client.get(path).get_data(as_text=True)
+            self.assertIn("Postenza", page)
+            self.assertIn("postenza-logo-dark.png", page)
+            self.assertIn("postenza-favicon.png", page)
+            self.assertIn('alt="Postenza"', page)
+            self.assertNotIn("Sociora", page)
+
     def test_private_api_requires_legacy_owner_and_csrf(self):
         owner = self._create_owner()
         client = self.app.test_client()
