@@ -403,7 +403,7 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertIsNotNone(disconnect_reference)
         self.assertEqual(
             len(re.findall(r'name="csrf_token" value="[^"]+"', page)),
-            4,
+            5,
         )
         self.assertEqual(self.client.post("/connect/instagram").status_code, 400)
         self.assertEqual(
@@ -667,9 +667,9 @@ class TenantDashboardTest(unittest.TestCase):
         page = self.client.get(
             f"/app/leads?account={account}&view=all"
         ).get_data(as_text=True)
-        self.assertIn('href="/p/o/opaque-prompt-a">View prepared prompts</a>', page)
+        self.assertNotIn('href="/p/o/opaque-prompt-a"', page)
         self.assertIn('href="https://www.instagram.com/p/public-alpha/"', page)
-        self.assertIn("View Instagram Post", page)
+        self.assertIn("View Instagram post", page)
         self.assertIn('src="https://cdn.instagram.com/public-alpha.jpg"', page)
         self.assertNotIn("https://www.instagram.com/p/cross-owner/", page)
         self.assertNotIn("https://cdn.instagram.com/cross-owner.jpg", page)
@@ -747,7 +747,7 @@ class TenantDashboardTest(unittest.TestCase):
             f"/app/api/activity?account={account}&event_type=all"
         ).get_json()["activity"]
         all_types = {item["type"] for item in all_activity}
-        self.assertIn("Prompt request", all_types)
+        self.assertIn("Comment interaction", all_types)
         self.assertIn("Smart reply", all_types)
         self.assertIn("Message received", all_types)
         self.assertIn("Follow-up scheduled", all_types)
@@ -776,7 +776,7 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertIn('class="app-sidebar"', page)
         self.assertIn('/static/tenant_dashboard.css', page)
         self.assertIn('aria-label="Primary navigation"', page)
-        self.assertIn('aria-current="page">Overview</a>', page)
+        self.assertIn('aria-current="page"><svg', page)
         for label in ("Content", "Calendar", "Engagement", "Automation", "Instagram"):
             self.assertIn(f">{label}</a>", page)
         for legacy_label in ("Home", "Leads", "Messages", "Scheduler", "Analytics", "Accounts", "Activity", "Follow-ups"):
@@ -784,7 +784,7 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertIn('aria-label="Open navigation"', page)
         self.assertIn('action="/logout"', page)
         self.assertIn('>Sign out</button>', page)
-        self.assertIn("Social Media Bot", page)
+        self.assertIn("Sociora", page)
         self.assertNotIn("Imran Prompts", page)
         self.assertNotIn('href="/dashboard', page)
         self.assertNotIn('href="/api/', page)
@@ -808,9 +808,10 @@ class TenantDashboardTest(unittest.TestCase):
         leads = self.client.get(f"/app/leads?account={selected}").get_data(as_text=True)
         accounts = self.client.get(f"/app/accounts?account={selected}").get_data(as_text=True)
 
-        self.assertIn('aria-current="page">Engagement</a>', leads)
-        self.assertNotIn('aria-current="page">Overview</a>', leads)
-        self.assertIn('aria-current="page">Instagram</a>', accounts)
+        self.assertIn('aria-current="page"><svg aria-hidden="true"', leads)
+        self.assertIn('</svg>Engagement</a>', leads)
+        self.assertIn('aria-current="page"><svg aria-hidden="true"', accounts)
+        self.assertIn('</svg>Instagram</a>', accounts)
         self.assertNotIn(str(self.account_a2.id), leads)
         self.assertNotIn(self.account_a2.instagram_user_id, leads)
 
@@ -839,7 +840,7 @@ class TenantDashboardTest(unittest.TestCase):
 
         page = self.client.get(f"/app/automations?account={selected}").get_data(as_text=True)
 
-        self.assertIn("<title>Automation | Social Media Bot</title>", page)
+        self.assertIn("<title>Automation | Sociora</title>", page)
         self.assertIn('<h1>Automation</h1>', page)
         self.assertNotIn('<h1>Instagram workspace</h1>', page)
         self.assertIn('for="automation_enabled"', page)
@@ -1065,3 +1066,68 @@ class TenantDashboardTest(unittest.TestCase):
             self.assertIn('aria-label="Engagement sections"', page)
             for label in ("Leads", "Conversations", "Activity", "Follow-ups"):
                 self.assertIn(f">{label}</a>", page)
+
+    def test_sociora_brand_assets_and_browser_identity_render_in_workspace(self):
+        """The authenticated product must use the approved Sociora identity."""
+        self._login_as(self.owner_a)
+
+        page = self.client.get("/app").get_data(as_text=True)
+
+        self.assertIn("Sociora", page)
+        self.assertIn("sociora-logo-dark.png", page)
+        self.assertIn("sociora-favicon.png", page)
+        self.assertIn('alt="Sociora"', page)
+        self.assertNotIn("Social Media Bot", page)
+
+    def test_overview_automation_status_uses_selected_account_config(self):
+        """A config change on one account cannot leak into another overview."""
+        self._login_as(self.owner_a)
+        with self.Session.begin() as session:
+            session.add_all([
+                InstagramAutomationConfig(instagram_account_id=self.account_a1.id, enabled=True),
+                InstagramAutomationConfig(instagram_account_id=self.account_a2.id, enabled=False),
+            ])
+
+        enabled_page = self.client.get(
+            f"/app?account={self._reference(self.owner_a, self.account_a1)}"
+        ).get_data(as_text=True)
+        disabled_page = self.client.get(
+            f"/app?account={self._reference(self.owner_a, self.account_a2)}"
+        ).get_data(as_text=True)
+
+        self.assertIn("Automation is on", enabled_page)
+        self.assertIn("Automation is off", disabled_page)
+
+    def test_locale_selection_is_session_backed_and_sets_arabic_direction(self):
+        """Changing the UI locale must not require or mutate a tenant record."""
+        self._login_as(self.owner_a)
+        response = self.client.post(
+            "/app/locale",
+            data={"locale": "ar", "csrf_token": "csrf-test-token"},
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 303)
+
+        page = self.client.get("/app").get_data(as_text=True)
+        self.assertIn('lang="ar"', page)
+        self.assertIn('dir="rtl"', page)
+        self.assertIn("نظرة عامة", page)
+
+    def test_content_and_engagement_pages_use_general_product_copy(self):
+        """Normal dashboard pages must not present Sociora as prompt delivery software."""
+        self._login_as(self.owner_a)
+        selected = self._reference(self.owner_a, self.account_a1)
+
+        for path in ("content", "leads", "activity", "automations"):
+            page = self.client.get(f"/app/{path}?account={selected}").get_data(as_text=True)
+            self.assertNotIn("Prompt request", page)
+            self.assertNotIn("prepared prompts", page.lower())
+
+    def test_activity_feed_uses_readable_time_without_exposing_raw_timestamp(self):
+        """Activity presentation must not render the database ISO timestamp directly."""
+        self._login_as(self.owner_a)
+        page = self.client.get("/app/activity").get_data(as_text=True)
+
+        self.assertIn("UTC", page)
+        activity_markup = page.split('aria-label="Account activity"', 1)[1].split("</section>", 1)[0]
+        self.assertIsNone(re.search(r"\d{4}-\d{2}-\d{2}T", activity_markup))

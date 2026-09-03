@@ -1,9 +1,11 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{ locale.code }}" dir="{{ locale.direction }}">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{% block title %}Workspace{% endblock %} | Social Media Bot</title>
+    <meta name="theme-color" content="#101828">
+    <title>{% block title %}{{ t('overview') }}{% endblock %} | Sociora</title>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='brand/sociora-favicon.png') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='tenant_dashboard.css') }}">
 </head>
 <body class="tenant-dashboard">
@@ -11,19 +13,19 @@
         <button class="mobile-nav-toggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="primary-navigation"><span aria-hidden="true">☰</span></button>
         <div class="mobile-nav-backdrop" hidden></div>
         <aside class="app-sidebar" aria-label="Workspace navigation">
-            <a class="app-brand" href="{{ url_for('tenant_dashboard.app_overview', account=selected_account.selection_ref) }}"><span class="app-brand-mark" aria-hidden="true">S</span><span>Social Media Bot</span></a>
+            <a class="app-brand" href="{{ url_for('tenant_dashboard.app_overview', account=selected_account.selection_ref) }}"><img src="{{ url_for('static', filename='brand/sociora-logo-dark.png') }}" alt="Sociora"></a>
             <nav id="primary-navigation" class="workspace-nav" aria-label="Primary navigation">
-                <a href="{{ url_for('tenant_dashboard.app_overview', account=selected_account.selection_ref) }}" {% if active_page == 'overview' %}aria-current="page"{% endif %}>Overview</a>
-                <a href="{{ url_for('tenant_dashboard.app_content', account=selected_account.selection_ref) }}" {% if active_page == 'content' %}aria-current="page"{% endif %}>Content</a>
-                <a href="{{ url_for('tenant_dashboard.app_scheduler', account=selected_account.selection_ref) }}" {% if active_page == 'calendar' %}aria-current="page"{% endif %}>Calendar</a>
-                <a href="{{ url_for('tenant_dashboard.app_leads', account=selected_account.selection_ref) }}" {% if active_page == 'engagement' %}aria-current="page"{% endif %}>Engagement</a>
-                <a href="{{ url_for('tenant_dashboard.app_automations', account=selected_account.selection_ref) }}" {% if active_page == 'automations' %}aria-current="page"{% endif %}>Automation</a>
-                <a href="{{ url_for('tenant_dashboard.app_accounts', account=selected_account.selection_ref) }}" {% if active_page == 'instagram' %}aria-current="page"{% endif %}>Instagram</a>
+                <a href="{{ url_for('tenant_dashboard.app_overview', account=selected_account.selection_ref) }}" {% if active_page == 'overview' %}aria-current="page"{% endif %}><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m3 11 9-8 9 8v10h-6v-6H9v6H3z"/></svg>{{ t('overview') }}</a>
+                <a href="{{ url_for('tenant_dashboard.app_content', account=selected_account.selection_ref) }}" {% if active_page == 'content' %}aria-current="page"{% endif %}><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><circle cx="9" cy="9" r="1.5"/><path d="m5 18 5-5 3 3 2-2 4 4"/></svg>{{ t('content') }}</a>
+                <a href="{{ url_for('tenant_dashboard.app_scheduler', account=selected_account.selection_ref) }}" {% if active_page == 'calendar' %}aria-current="page"{% endif %}><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4m10-4v4M3 10h18"/></svg>{{ t('calendar') }}</a>
+                <a href="{{ url_for('tenant_dashboard.app_leads', account=selected_account.selection_ref) }}" {% if active_page == 'engagement' %}aria-current="page"{% endif %}><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M21 11.5a8 8 0 0 1-8.5 8A8.7 8.7 0 0 1 8 18.2L3 20l1.8-4.4A8 8 0 1 1 21 11.5Z"/></svg>{{ t('engagement') }}</a>
+                <a href="{{ url_for('tenant_dashboard.app_automations', account=selected_account.selection_ref) }}" {% if active_page == 'automations' %}aria-current="page"{% endif %}><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M13 2 3 14h7l-1 8 10-12h-7z"/></svg>{{ t('automation') }}</a>
+                <a href="{{ url_for('tenant_dashboard.app_accounts', account=selected_account.selection_ref) }}" {% if active_page == 'instagram' %}aria-current="page"{% endif %}><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r="1"/></svg>{{ t('instagram') }}</a>
             </nav>
-            <div class="sidebar-footer"><p class="sidebar-user">{{ current_user.display_name }}</p><form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-quiet" type="submit">Sign out</button></form></div>
+            <div class="sidebar-footer"><p class="sidebar-user">{{ current_user.display_name }}</p><form method="post" action="{{ url_for('tenant_dashboard.app_locale') }}" class="locale-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>{{ t('language') }}<select name="locale" onchange="this.form.submit()">{% for code, details in locale_options.items() %}<option value="{{ code }}" {% if locale.code == code %}selected{% endif %}>{{ details.label }}</option>{% endfor %}</select></label></form><form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-quiet" type="submit"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M10 17l5-5-5-5m5 5H3m9-9h7v18h-7"/></svg>{{ t('sign_out') }}</button></form></div>
         </aside>
         <main class="app-main">
-            <header class="app-header"><div class="page-heading"><p class="eyebrow">Instagram workspace</p><h1>{% block heading %}Instagram workspace{% endblock %}</h1><p class="muted">Manage posts and automation for {{ selected_account.username }}.</p></div><nav class="account-switcher" aria-label="Choose an Instagram account"><span class="account-switcher-label">Instagram account</span>{% for account in accounts %}<a href="{{ url_for(account_switch_endpoint, account=account.selection_ref) }}" {% if account.is_selected %}aria-current="true"{% endif %}>{{ account.username }}</a>{% endfor %}</nav></header>
+            <header class="app-header"><div class="page-heading"><p class="eyebrow">{{ t('instagram_workspace') }}</p><h1>{% block heading %}{{ t('instagram_workspace') }}{% endblock %}</h1><p class="muted">Manage posts and automation for {{ selected_account.username }}.</p></div><nav class="account-switcher" aria-label="Choose an Instagram account"><span class="account-switcher-label">{{ t('account') }}</span>{% for account in accounts %}<a href="{{ url_for(account_switch_endpoint, account=account.selection_ref) }}" {% if account.is_selected %}aria-current="true"{% endif %}>{{ account.username }}</a>{% endfor %}</nav></header>
             {% block content %}{% endblock %}
         </main>
     </div>

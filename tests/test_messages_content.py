@@ -391,12 +391,13 @@ class MessagesContentDashboardTest(unittest.TestCase):
         self.assertNotIn("opaque-prompt-a1", public_ids)
 
     def test_content_viewer_links_use_opaque_public_ids(self):
-        """11. Prompt viewer links use opaque public IDs."""
+        """11. Interaction-detail links retain opaque public IDs."""
         self._login_as(self.owner_a)
         ref = self._reference(self.owner_a, self.account_a)
         page = self.client.get(f"/app/content?account={ref}").get_data(as_text=True)
         self.assertIn('href="/p/o/opaque-prompt-a1"', page)
         self.assertIn('href="/p/o/opaque-prompt-a2"', page)
+        self.assertIn("View interaction details", page)
         # Internal media IDs must not appear
         self.assertNotIn("media-a-1-secret", page)
         self.assertNotIn("media-a-2-secret", page)
@@ -452,7 +453,7 @@ class MessagesContentDashboardTest(unittest.TestCase):
             )
         response = self.client.get(f"/app/content?account={empty_ref}")
         self.assertEqual(response.status_code, 200)
-        self.assertIn("No prompt-enabled content yet", response.get_data(as_text=True))
+        self.assertIn("No Instagram posts have been recorded for this account yet", response.get_data(as_text=True))
 
     def test_content_renders_image_only_workflow_and_safe_lifecycle_labels(self):
         """A publishing UI mutation cannot re-enable unsupported formats or expose provider errors."""
@@ -943,14 +944,16 @@ class MessagesContentDashboardTest(unittest.TestCase):
         self._login_as(self.owner_a)
         ref = self._reference(self.owner_a, self.account_a)
         page = self.client.get(f"/app/messages?account={ref}").get_data(as_text=True)
-        self.assertIn('aria-current="page">Engagement', page)
+        self.assertIn('aria-current="page"><svg aria-hidden="true"', page)
+        self.assertIn('</svg>Engagement</a>', page)
 
     def test_content_active_navigation_marker(self):
         """Content page shows active nav marker."""
         self._login_as(self.owner_a)
         ref = self._reference(self.owner_a, self.account_a)
         page = self.client.get(f"/app/content?account={ref}").get_data(as_text=True)
-        self.assertIn('aria-current="page">Content', page)
+        self.assertIn('aria-current="page"><svg aria-hidden="true"', page)
+        self.assertIn('</svg>Content</a>', page)
 
 
 if __name__ == "__main__":

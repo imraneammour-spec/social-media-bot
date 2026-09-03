@@ -34,6 +34,7 @@ from auth import (
     validate_csrf_token,
 )
 from database import tenant_dashboard as tenant_data
+from dashboard.i18n import LOCALE_META, LOCALE_SESSION_KEY, locale_context, normalize_locale, translate
 from database.lead_intelligence import LeadIntelligence, lead_analysis_context
 from database.oauth_deployment import oauth_deployment_readiness
 from database.content import (
@@ -416,6 +417,7 @@ def _render_page(
         if item["is_selected"]
     )
 
+    locale = locale_context(browser_session.get(LOCALE_SESSION_KEY))
     return _cache_control(
         render_template(
             template_name,
@@ -428,6 +430,9 @@ def _render_page(
             ),
             account_switch_endpoint=request.endpoint,
             csrf_token=csrf_token(),
+            locale=locale,
+            locale_options=LOCALE_META,
+            t=lambda key: translate(locale["code"], key),
             **context,
         )
     )
@@ -917,6 +922,14 @@ def register_tenant_dashboard(app) -> None:
         url_prefix="/app",
         template_folder="dashboard/templates",
     )
+
+    @dashboard.post("/locale")
+    @_require_tenant
+    def app_locale(user, accounts, selected):
+        if not validate_csrf_token(request_csrf_token()):
+            return _safe_content_update_error()
+        browser_session[LOCALE_SESSION_KEY] = normalize_locale(request.form.get("locale"))
+        return _cache_control(redirect(request.referrer or url_for("tenant_dashboard.app_overview"), code=303))
 
     @dashboard.after_request
     def tenant_no_store(response):

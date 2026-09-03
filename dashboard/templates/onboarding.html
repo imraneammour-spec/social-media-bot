@@ -3,7 +3,8 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Workspace access | Imran Prompts</title>
+    <title>Workspace access | Sociora</title>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='brand/sociora-favicon.png') }}">
     <style>
         :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; background: #0b0b0e; color: #f5f5f7; }
         body { min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 24px; box-sizing: border-box; }
@@ -14,6 +15,7 @@
 </head>
 <body>
     <main>
+        <img src="{{ url_for('static', filename='brand/sociora-logo-dark.png') }}" alt="Sociora" style="width:260px;max-width:100%;height:auto;margin-bottom:18px">
         <h1>Instagram workspace status</h1>
         <p>{{ current_user.display_name }}, your Instagram connection status is shown below.</p>
         {% if account_statuses %}

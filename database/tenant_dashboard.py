@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from .lead_intelligence import lead_intelligence_from_values
 from .models import (
     InstagramAccount,
+    InstagramAutomationConfig,
     InstagramContentItem,
     InstagramCredential,
     InstagramEngagementEvent,
@@ -50,7 +51,7 @@ ACTIVITY_EVENT_TYPES = (
 )
 ACTIVITY_EVENT_TYPE_LABELS = (
     ("all", "All activity"),
-    ("prompt_requests", "Prompt requests"),
+    ("prompt_requests", "Comment interactions"),
     ("smart_replies", "Smart replies"),
     ("webhook_events", "Webhook events"),
     ("followups", "Follow-ups"),
@@ -106,6 +107,14 @@ class TenantLeadPage:
 
 def _timestamp(value: datetime | None) -> str | None:
     return value.isoformat() if isinstance(value, datetime) else None
+
+
+def _display_timestamp(value: object) -> str:
+    """Render a stable, readable UTC time from sanitized timestamp data."""
+
+    if not isinstance(value, datetime):
+        return "Time unavailable"
+    return value.astimezone(timezone.utc).strftime("%b %d, %Y · %H:%M UTC")
 
 
 def _username(value: object) -> str:
@@ -470,6 +479,11 @@ def overview(session: Session, *, instagram_account_id: uuid.UUID) -> dict[str, 
         .order_by(InstagramContentItem.scheduled_for.asc(), InstagramContentItem.id.asc())
         .limit(1)
     )
+    automation = session.scalar(
+        select(InstagramAutomationConfig).where(
+            InstagramAutomationConfig.instagram_account_id == instagram_account_id
+        )
+    )
 
     return {
         "lead_count": count(InstagramPromptRequest),
@@ -504,6 +518,7 @@ def overview(session: Session, *, instagram_account_id: uuid.UUID) -> dict[str, 
             else None
         ),
         "recent_activity": activity(session, instagram_account_id=instagram_account_id, limit=5),
+        "automation_enabled": bool(automation.enabled) if automation is not None else False,
     }
 
 
@@ -569,7 +584,7 @@ def leads(
                 prompt_request_id=request.id,
                 username=_username(request.username),
                 requested_at=_timestamp(request.created_at) or "",
-                prompt_state="Prompts prepared" if request.media_id in prompt_posts else "Request received",
+                prompt_state="Interaction recorded" if request.media_id in prompt_posts else "Comment received",
                 base_stage=_lead_status(request.lead_status),
                 base_stage_label=_lead_status_label(request.lead_status),
                 archived=request.lead_archived_at is not None,
@@ -629,7 +644,8 @@ def activity(
         ):
             records.append({
                 "occurred_at": _timestamp(request.created_at) or "",
-                "type": "Prompt request",
+                "display_time": _display_timestamp(request.created_at),
+                "type": "Comment interaction",
                 "state": "Completed",
                 "username": _username(request.username),
             })
@@ -642,6 +658,7 @@ def activity(
         ):
             records.append({
                 "occurred_at": _timestamp(reply.created_at) or "",
+                "display_time": _display_timestamp(reply.created_at),
                 "type": "Smart reply",
                 "state": "Completed",
                 "username": _username(reply.username),
@@ -657,6 +674,7 @@ def activity(
         ):
             records.append({
                 "occurred_at": _timestamp(event.created_at) or "",
+                "display_time": _display_timestamp(event.created_at),
                 "type": type_labels.get(event.event_type, "Engagement activity"),
                 "state": state_labels.get(event.state, "Unavailable"),
                 "username": "",
@@ -682,6 +700,7 @@ def activity(
             occurred_at = getattr(job, completed_at) if completed_at else None
             records.append({
                 "occurred_at": _timestamp(occurred_at or job.created_at) or "",
+                "display_time": _display_timestamp(occurred_at or job.created_at),
                 "type": event_name,
                 "state": state,
                 "username": "",
@@ -722,7 +741,7 @@ def followups(session: Session, *, instagram_account_id: uuid.UUID) -> list[dict
 MESSAGE_FILTERS = ("all", "prompt", "messages", "followups", "smart_replies")
 MESSAGE_FILTER_LABELS = (
     ("all", "All"),
-    ("prompt", "Prompt interactions"),
+    ("prompt", "Comment interactions"),
     ("messages", "Messages"),
     ("followups", "Follow-ups"),
     ("smart_replies", "Smart replies"),
@@ -775,7 +794,7 @@ def messages(
 
     The backend does not persist inbound Instagram message text, so this is
     a *persisted-interaction* view — not a true inbox.  Each row is built from
-    engagement events, prompt requests, smart replies, and follow-up jobs
+    engagement events, comment interactions, smart replies, and follow-up jobs
     that are already scoped by ``instagram_account_id``.
     """
 
@@ -796,10 +815,11 @@ def messages(
         ):
             records.append({
                 "occurred_at": _timestamp(request.created_at) or "",
-                "type": "Prompt request",
+                "display_time": _display_timestamp(request.created_at),
+                "type": "Comment interaction",
                 "status": "Completed",
                 "username": _username(request.username),
-                "detail": "Trigger comment received",
+                "detail": "Matching comment received",
             })
 
     if selected_filter in {"all", "smart_replies"}:
@@ -812,6 +832,7 @@ def messages(
         ):
             records.append({
                 "occurred_at": _timestamp(reply.created_at) or "",
+                "display_time": _display_timestamp(reply.created_at),
                 "type": "Smart reply",
                 "status": "Completed",
                 "username": _username(reply.username),
@@ -819,7 +840,7 @@ def messages(
             })
 
     if selected_filter in {"all", "messages"}:
-        type_labels = {"comment": "Comment received", "message": "Incoming message"}
+        type_labels = {"comment": "Comment received", "message": "Message received"}
         state_labels = {"done": "Completed", "processing": "Processing", "failed": "Failed"}
         for event in session.scalars(
             select(InstagramEngagementEvent)
@@ -830,6 +851,7 @@ def messages(
         ):
             records.append({
                 "occurred_at": _timestamp(event.created_at) or "",
+                "display_time": _display_timestamp(event.created_at),
                 "type": type_labels.get(event.event_type, "Engagement event"),
                 "status": state_labels.get(event.state, "Unknown"),
                 "username": "",
@@ -857,6 +879,7 @@ def messages(
             event_name, state = label
             records.append({
                 "occurred_at": _timestamp(job.created_at) or "",
+                "display_time": _display_timestamp(job.created_at),
                 "type": event_name,
                 "status": state,
                 "username": "",
@@ -982,7 +1005,7 @@ def content(
             "permalink": _instagram_permalink(post.permalink),
             "cover_url": _public_https_url(post.cover_url),
             "prompt_count": str(prompt_count),
-            "prompt_state": "Prompts prepared" if prompt_count > 0 else "No prompts",
+            "prompt_state": "Recorded interaction" if prompt_count > 0 else "No recorded interaction",
             "created_at": _timestamp(post.created_at) or "",
         })
 
