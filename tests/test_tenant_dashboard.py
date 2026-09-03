@@ -971,6 +971,15 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertIn("@media(min-width:901px)", stylesheet)
         response.close()
 
+    def test_sidebar_brand_uses_a_centered_readable_logo_width(self):
+        """The sidebar logo must remain legible without widening the navigation."""
+        response = self.client.get("/static/tenant_dashboard.css")
+        stylesheet = response.get_data(as_text=True)
+
+        self.assertIn(".app-brand{display:block;width:min(100%,184px);margin:4px auto 36px}", stylesheet)
+        self.assertIn(".app-brand img{display:block;width:100%;height:auto}", stylesheet)
+        response.close()
+
     def test_calendar_prioritizes_safe_publishing_agenda_states(self):
         """Removing a lifecycle section would hide a publishing outcome from its owner."""
         self._login_as(self.owner_a)
