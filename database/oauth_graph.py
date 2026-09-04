@@ -238,6 +238,34 @@ def send_oauth_private_access_reply(session_factory: Callable[[], Any], *, insta
         return None
 
 
+def send_oauth_private_comment_reply(
+    session_factory: Callable[[], Any], *, instagram_account_id: object,
+    instagram_user_id: object, comment_id: object, message: object,
+) -> str | None:
+    """Send one configured direct private reply to a trigger comment."""
+
+    comment = str(comment_id or "").strip()
+    text = str(message or "").strip()
+    if not comment or not text:
+        return None
+    try:
+        payload = _request_with_runtime(
+            session_factory,
+            instagram_account_id=instagram_account_id,
+            instagram_user_id=instagram_user_id,
+            method="POST",
+            path=f"/{instagram_user_id}/messages",
+            json_body={
+                "recipient": {"comment_id": comment},
+                "message": {"text": text},
+            },
+        )
+        recipient = payload.get("recipient_id")
+        return str(recipient).strip() if recipient is not None and str(recipient).strip() else None
+    except OAuthGraphOperationError:
+        return None
+
+
 def send_oauth_prompt_access_button(session_factory: Callable[[], Any], *, instagram_account_id: object, instagram_user_id: object, recipient_id: object, page_url: object) -> bool:
     recipient = str(recipient_id or "").strip()
     url = str(page_url or "").strip()
@@ -258,7 +286,7 @@ def send_oauth_prompt_access_button(session_factory: Callable[[], Any], *, insta
 
 def send_oauth_delayed_followup(
     session_factory: Callable[[], Any], *, instagram_account_id: object,
-    instagram_user_id: object, recipient_id: object,
+    instagram_user_id: object, recipient_id: object, message_text: object | None = None,
 ) -> str:
     """Send one OAuth-only follow-up with a sanitized delivery outcome.
 
@@ -269,6 +297,7 @@ def send_oauth_delayed_followup(
     account_id = _account_id(instagram_account_id)
     external_id = str(instagram_user_id or "").strip()
     recipient = str(recipient_id or "").strip()
+    message = str(message_text or "").strip()
     if not external_id or not recipient:
         return "retryable_pre_dispatch"
     capability = oauth_engagement_capability_state(
@@ -296,7 +325,7 @@ def send_oauth_delayed_followup(
                         "recipient": {"id": recipient},
                         "messaging_type": "RESPONSE",
                         "message": {
-                            "text": "Hope the prompts helped. Comment AI anytime for another set."
+                            "text": message or "Hope the prompts helped. Comment AI anytime for another set."
                         },
                     },
                     timeout=20,

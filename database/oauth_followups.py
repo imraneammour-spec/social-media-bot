@@ -32,7 +32,8 @@ class ClaimedOAuthFollowup:
     instagram_account_id: uuid.UUID
     source_message_id: str
     recipient_id: str
-    page_url: str
+    page_url: str | None
+    message_text: str | None
     lease_token: str
     state: str = "processing"
 
@@ -59,17 +60,24 @@ def schedule_oauth_followup(
     instagram_account_id: object,
     source_message_id: object,
     recipient_id: object,
-    page_url: object,
+    page_url: object | None = None,
+    message_text: object | None = None,
     prompt_request_id: object | None = None,
     run_at: datetime | None = None,
     now: datetime | None = None,
 ) -> InstagramOAuthFollowupJob | None:
     """Create one account-scoped delayed follow-up, or return its replay/active job."""
     account_id = _uuid(instagram_account_id)
-    source_id, recipient, url = _text(source_message_id), _text(recipient_id), _text(page_url)
+    source_id, recipient, url, message = (
+        _text(source_message_id),
+        _text(recipient_id),
+        _text(page_url),
+        _text(message_text),
+    )
     request_id = _uuid(prompt_request_id) if prompt_request_id is not None else None
     current = _now(now)
-    if account_id is None or not source_id or not recipient or not url.startswith("https://"):
+    has_prompt_url = url.startswith("https://")
+    if account_id is None or not source_id or not recipient or (has_prompt_url == bool(message)):
         return None
     if request_id is not None:
         request_record = session.scalar(select(InstagramPromptRequest).where(
@@ -104,7 +112,8 @@ def schedule_oauth_followup(
         prompt_request_id=request_id,
         source_message_id=source_id,
         recipient_id=recipient,
-        page_url=url,
+        page_url=url if has_prompt_url else None,
+        message_text=message or None,
         run_at=_now(run_at) if run_at is not None else current + FOLLOWUP_DELAY,
     )
     session.add(job)
@@ -152,6 +161,7 @@ def claim_due_oauth_followups(session: Session, *, now: datetime | None = None, 
             source_message_id=job.source_message_id,
             recipient_id=job.recipient_id,
             page_url=job.page_url,
+            message_text=job.message_text,
             lease_token=lease_token,
         ))
     session.flush()

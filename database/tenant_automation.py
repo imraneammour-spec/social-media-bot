@@ -32,6 +32,7 @@ SMART_REPLY_MIN_PER_HOUR = 1
 SMART_REPLY_MAX_PER_HOUR = 100
 FOLLOWUP_MIN_DELAY_MINUTES = 5
 FOLLOWUP_MAX_DELAY_MINUTES = 10080
+AUTOMATION_DELIVERY_MODES = ("prompt_request", "direct_message")
 _KEYWORD_PATTERN = re.compile(r"^\w{1,32}$")
 
 
@@ -47,8 +48,11 @@ class OAuthAutomationRuntimeConfig:
     trigger_keywords: tuple[str, ...]
     public_reply_enabled: bool
     public_reply_text: str
+    delivery_mode: str
+    private_message_text: str
     followup_enabled: bool
     followup_delay_minutes: int
+    followup_message_text: str
     smart_reply_enabled: bool
     smart_reply_tone: str
     smart_reply_max_per_hour: int
@@ -85,6 +89,15 @@ def normalize_followup_delay_minutes(value: object) -> int:
     if not FOLLOWUP_MIN_DELAY_MINUTES <= delay <= FOLLOWUP_MAX_DELAY_MINUTES:
         raise TenantAutomationConfigurationError("Invalid follow-up delay.")
     return delay
+
+
+def normalize_automation_delivery_mode(value: object) -> str:
+    """Return one explicit keyword automation delivery mode."""
+
+    mode = str(value or "").strip().lower()
+    if mode not in AUTOMATION_DELIVERY_MODES:
+        raise TenantAutomationConfigurationError("Invalid automation delivery mode.")
+    return mode
 
 
 def _legacy_followup_settings(config: object) -> tuple[bool, int]:
@@ -151,7 +164,12 @@ def oauth_automation_runtime_config(
         enabled = config.enabled
         public_reply_enabled = config.public_reply_enabled
         public_reply_text = config.public_reply_text
+        delivery_mode = normalize_automation_delivery_mode(
+            getattr(config, "delivery_mode", "prompt_request")
+        )
+        private_message_text = getattr(config, "private_message_text", "")
         followup_enabled, followup_delay_minutes = _legacy_followup_settings(config)
+        followup_message_text = getattr(config, "followup_message_text", "")
         smart_reply_enabled = config.smart_reply_enabled
         smart_reply_tone = normalize_smart_reply_tone(config.smart_reply_tone)
         smart_reply_max_per_hour = normalize_smart_reply_max_per_hour(
@@ -161,7 +179,9 @@ def oauth_automation_runtime_config(
             not isinstance(enabled, bool)
             or not isinstance(public_reply_enabled, bool)
             or not isinstance(public_reply_text, str)
+            or not isinstance(private_message_text, str)
             or not isinstance(followup_enabled, bool)
+            or not isinstance(followup_message_text, str)
             or not isinstance(smart_reply_enabled, bool)
         ):
             return None
@@ -173,8 +193,11 @@ def oauth_automation_runtime_config(
             trigger_keywords=keywords,
             public_reply_enabled=public_reply_enabled,
             public_reply_text=public_reply_text,
+            delivery_mode=delivery_mode,
+            private_message_text=private_message_text.strip(),
             followup_enabled=followup_enabled,
             followup_delay_minutes=followup_delay_minutes,
+            followup_message_text=followup_message_text.strip(),
             smart_reply_enabled=smart_reply_enabled,
             smart_reply_tone=smart_reply_tone,
             smart_reply_max_per_hour=smart_reply_max_per_hour,
@@ -241,8 +264,11 @@ def ensure_initial_oauth_automation_config(
         trigger_keywords=current_default_trigger_keywords(),
         public_reply_enabled=True,
         public_reply_text=current_default_public_reply_text(),
+        delivery_mode="prompt_request",
+        private_message_text="",
         followup_enabled=DEFAULT_FOLLOWUP_ENABLED,
         followup_delay_minutes=DEFAULT_FOLLOWUP_DELAY_MINUTES,
+        followup_message_text="",
         smart_reply_enabled=False,
         smart_reply_tone=DEFAULT_SMART_REPLY_TONE,
         smart_reply_max_per_hour=DEFAULT_SMART_REPLY_MAX_PER_HOUR,
@@ -294,6 +320,9 @@ def backfill_oauth_automation_configs(
     for column_name, column_type in (
         ("followup_enabled", Boolean()),
         ("followup_delay_minutes", Integer()),
+        ("delivery_mode", Text()),
+        ("private_message_text", Text()),
+        ("followup_message_text", Text()),
         ("smart_reply_enabled", Boolean()),
         ("smart_reply_tone", Text()),
         ("smart_reply_max_per_hour", Integer()),
@@ -326,6 +355,12 @@ def backfill_oauth_automation_configs(
             insert_values["followup_enabled"] = DEFAULT_FOLLOWUP_ENABLED
         if "followup_delay_minutes" in config_columns:
             insert_values["followup_delay_minutes"] = DEFAULT_FOLLOWUP_DELAY_MINUTES
+        if "delivery_mode" in config_columns:
+            insert_values["delivery_mode"] = "prompt_request"
+        if "private_message_text" in config_columns:
+            insert_values["private_message_text"] = ""
+        if "followup_message_text" in config_columns:
+            insert_values["followup_message_text"] = ""
         if "smart_reply_enabled" in config_columns:
             insert_values["smart_reply_enabled"] = False
         if "smart_reply_tone" in config_columns:

@@ -182,8 +182,78 @@ class OAuthFollowupStorageTest(unittest.TestCase):
             )
         self.assertIsNone(job)
 
+    def test_general_message_followup_is_deduped_without_a_prompt_page_url(self):
+        """A direct-message flow may persist explicit follow-up text without prompt metadata."""
+
+        from database.oauth_followups import claim_due_oauth_followups, schedule_oauth_followup
+
+        now = datetime.now(timezone.utc)
+        with self.Session.begin() as session:
+            job = schedule_oauth_followup(
+                session,
+                instagram_account_id=self.account_a_id,
+                source_message_id="general-mid",
+                recipient_id="general-recipient",
+                page_url=None,
+                message_text="Configured general follow-up",
+                run_at=now - timedelta(seconds=1),
+            )
+            replay = schedule_oauth_followup(
+                session,
+                instagram_account_id=self.account_a_id,
+                source_message_id="general-mid",
+                recipient_id="general-recipient",
+                page_url=None,
+                message_text="Changed text must not duplicate",
+                run_at=now,
+            )
+            empty = schedule_oauth_followup(
+                session,
+                instagram_account_id=self.account_a_id,
+                source_message_id="empty-general-mid",
+                recipient_id="empty-general-recipient",
+                page_url=None,
+                message_text="",
+            )
+
+            self.assertIsNotNone(job)
+            self.assertEqual(job.id, replay.id)
+            self.assertIsNone(job.page_url)
+            self.assertEqual(job.message_text, "Configured general follow-up")
+            self.assertIsNone(empty)
+
+        with self.Session.begin() as session:
+            claimed = claim_due_oauth_followups(session, now=now, limit=10)
+        self.assertEqual(len(claimed), 1)
+        self.assertEqual(claimed[0].message_text, "Configured general follow-up")
+
 
 class OAuthFollowupGraphTest(unittest.TestCase):
+    def test_delayed_followup_uses_explicit_general_message_text(self):
+        """A general follow-up must never be replaced by legacy prompt wording."""
+
+        from database import oauth_graph
+
+        account_id = __import__("uuid").uuid4()
+        response = Mock(ok=True)
+        runtime = InstagramAccountRuntime(account_id, "17841438617459211", "oauth", "oauth-token")
+        with patch.object(oauth_graph, "oauth_engagement_capability_state", return_value="active"), patch.object(
+            oauth_graph, "resolve_oauth_instagram_account_runtime", return_value=runtime
+        ), patch.object(oauth_graph.requests, "post", return_value=response) as graph_post:
+            outcome = oauth_graph.send_oauth_delayed_followup(
+                lambda: nullcontext(object()),
+                instagram_account_id=account_id,
+                instagram_user_id="17841438617459211",
+                recipient_id="recipient-general",
+                message_text="Configured general follow-up",
+            )
+
+        self.assertEqual(outcome, "success")
+        self.assertEqual(
+            graph_post.call_args.kwargs["json"]["message"]["text"],
+            "Configured general follow-up",
+        )
+
     def test_delayed_followup_uses_only_the_resolved_oauth_runtime_and_sanitizes_outcomes(self):
         from database import oauth_graph
 

@@ -194,3 +194,36 @@ class TenantAutomationMigrationTests(unittest.TestCase):
             "smart_reply_tone",
             "smart_reply_max_per_hour",
         } & downgraded_columns)
+
+    def test_general_keyword_migration_defaults_legacy_configs_and_allows_message_only_followups(self):
+        """The additive migration must retain legacy prompt semantics while enabling direct jobs."""
+
+        baseline = self._alembic("upgrade", "20260831_04")
+        self.assertEqual(baseline.returncode, 0, baseline.stderr)
+        upgrade = self._alembic("upgrade", "head")
+        self.assertEqual(upgrade.returncode, 0, upgrade.stderr)
+        engine = create_engine(self.environment["DATABASE_URL"])
+        try:
+            with engine.connect() as connection:
+                config_columns = {
+                    column["name"]
+                    for column in inspect(connection).get_columns("instagram_automation_configs")
+                }
+                followup_columns = {
+                    column["name"]
+                    for column in inspect(connection).get_columns("instagram_oauth_followup_jobs")
+                }
+                page_url_column = next(
+                    column for column in inspect(connection).get_columns("instagram_oauth_followup_jobs")
+                    if column["name"] == "page_url"
+                )
+        finally:
+            engine.dispose()
+
+        self.assertTrue({
+            "delivery_mode",
+            "private_message_text",
+            "followup_message_text",
+        }.issubset(config_columns))
+        self.assertIn("message_text", followup_columns)
+        self.assertTrue(page_url_column["nullable"])

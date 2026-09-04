@@ -66,6 +66,9 @@ class TenantAutomationModelTests(unittest.TestCase):
             self.assertFalse(config.smart_reply_enabled)
             self.assertEqual(config.smart_reply_tone, "friendly")
             self.assertEqual(config.smart_reply_max_per_hour, 20)
+            self.assertEqual(config.delivery_mode, "prompt_request")
+            self.assertEqual(config.private_message_text, "")
+            self.assertEqual(config.followup_message_text, "")
 
     def test_configuration_model_allows_only_one_row_per_account(self):
         """Removing the per-account uniqueness guard must fail this test."""
@@ -197,6 +200,71 @@ class TenantAutomationHelperTests(unittest.TestCase):
         self.assertEqual(runtime_b.smart_reply_max_per_hour, 3)
         self.assertFalse(runtime_b.followup_enabled)
         self.assertEqual(runtime_b.followup_delay_minutes, 300)
+
+    def test_runtime_snapshot_exposes_explicit_general_delivery_settings(self):
+        """Direct-message settings must remain isolated and require explicit text."""
+
+        helpers = self._helpers()
+        engine = create_engine("sqlite://")
+        Base.metadata.create_all(engine)
+        Session = sessionmaker(bind=engine)
+        try:
+            with Session.begin() as session:
+                owner = User(email="direct-runtime-owner@example.test")
+                session.add(owner)
+                session.flush()
+                direct_account = InstagramAccount(
+                    user_id=owner.id,
+                    instagram_user_id="17841438617458141",
+                    provider="instagram",
+                    connection_status="connected",
+                )
+                prompt_account = InstagramAccount(
+                    user_id=owner.id,
+                    instagram_user_id="17841438617458142",
+                    provider="instagram",
+                    connection_status="connected",
+                )
+                session.add_all([direct_account, prompt_account])
+                session.flush()
+                session.add_all([
+                    InstagramAutomationConfig(
+                        instagram_account_id=direct_account.id,
+                        enabled=True,
+                        trigger_keywords=["hello"],
+                        public_reply_enabled=False,
+                        public_reply_text="",
+                        delivery_mode="direct_message",
+                        private_message_text="Configured private reply",
+                        followup_enabled=True,
+                        followup_delay_minutes=60,
+                        followup_message_text="Configured follow-up",
+                    ),
+                    InstagramAutomationConfig(
+                        instagram_account_id=prompt_account.id,
+                        enabled=True,
+                        trigger_keywords=["prompt"],
+                        public_reply_enabled=False,
+                        public_reply_text="",
+                    ),
+                ])
+                direct_account_id, prompt_account_id = direct_account.id, prompt_account.id
+            with Session() as session:
+                direct_runtime = helpers.oauth_automation_runtime_config(
+                    session, instagram_account_id=direct_account_id
+                )
+                prompt_runtime = helpers.oauth_automation_runtime_config(
+                    session, instagram_account_id=prompt_account_id
+                )
+        finally:
+            engine.dispose()
+
+        self.assertEqual(direct_runtime.delivery_mode, "direct_message")
+        self.assertEqual(direct_runtime.private_message_text, "Configured private reply")
+        self.assertEqual(direct_runtime.followup_message_text, "Configured follow-up")
+        self.assertEqual(prompt_runtime.delivery_mode, "prompt_request")
+        self.assertEqual(prompt_runtime.private_message_text, "")
+        self.assertEqual(prompt_runtime.followup_message_text, "")
 
     def test_runtime_snapshot_keeps_prompt_and_smart_reply_settings_account_scoped(self):
         """A runtime read must not mix tenant A's smart settings into tenant B."""

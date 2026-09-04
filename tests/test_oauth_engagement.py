@@ -237,6 +237,27 @@ class OAuthEngagementModelTest(unittest.TestCase):
         self.assertNotIn("ACCESS", rendered)
         self.assertNotIn("SEND", rendered)
 
+    def test_general_private_dm_uses_comment_recipient_and_configured_text(self):
+        """General keyword delivery must use only the explicitly configured message."""
+
+        from database import oauth_graph
+
+        with patch.object(oauth_graph, "_request_with_runtime", return_value={
+            "recipient_id": "recipient-general"
+        }) as graph_request:
+            recipient = oauth_graph.send_oauth_private_comment_reply(
+                lambda: self.Session(),
+                instagram_account_id=self.account_a_id,
+                instagram_user_id="17841438617458001",
+                comment_id="general-comment",
+                message="Configured private message",
+            )
+
+        self.assertEqual(recipient, "recipient-general")
+        body = graph_request.call_args.kwargs["json_body"]
+        self.assertEqual(body["recipient"], {"comment_id": "general-comment"})
+        self.assertEqual(body["message"], {"text": "Configured private message"})
+
 
 class OAuthWebhookEngagementTest(unittest.TestCase):
     def setUp(self):

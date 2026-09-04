@@ -544,6 +544,11 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
         trigger_keywords=None,
         public_reply_enabled=True,
         public_reply_text="Configured acknowledgement",
+        delivery_mode="prompt_request",
+        private_message_text="",
+        followup_enabled=True,
+        followup_delay_minutes=360,
+        followup_message_text="",
         smart_reply_enabled=False,
         smart_reply_tone="friendly",
         smart_reply_max_per_hour=20,
@@ -556,6 +561,11 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
                 trigger_keywords=(trigger_keywords or ["launch"]),
                 public_reply_enabled=public_reply_enabled,
                 public_reply_text=public_reply_text,
+                delivery_mode=delivery_mode,
+                private_message_text=private_message_text,
+                followup_enabled=followup_enabled,
+                followup_delay_minutes=followup_delay_minutes,
+                followup_message_text=followup_message_text,
                 smart_reply_enabled=smart_reply_enabled,
                 smart_reply_tone=smart_reply_tone,
                 smart_reply_max_per_hour=smart_reply_max_per_hour,
@@ -799,6 +809,107 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
             ))
         self.assertEqual(event.state, "failed")
 
+    def test_direct_keyword_sends_configured_public_and_private_messages_without_prompt_extraction(self):
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["hello"],
+            public_reply_text="Configured public reply",
+            delivery_mode="direct_message",
+            private_message_text="Configured private reply",
+            followup_enabled=True,
+            followup_delay_minutes=60,
+            followup_message_text="Configured general follow-up",
+        )
+        with patch.object(self.module, "_oauth_prompt_post_for_comment") as prompt_page, patch.object(
+            self.module, "send_oauth_public_comment_reply", return_value=True
+        ) as public_reply, patch.object(
+            self.module, "send_oauth_private_comment_reply", return_value="recipient-general"
+        ) as private_reply:
+            self._process(self.primary_external_id, "general-keyword", "hello there")
+
+        prompt_page.assert_not_called()
+        self.assertEqual(public_reply.call_args.kwargs["message"], "Configured public reply")
+        self.assertEqual(private_reply.call_args.kwargs["message"], "Configured private reply")
+        account = self._account(self.primary_external_id)
+        with self.session_factory() as session:
+            self.assertEqual(session.query(InstagramPromptRequest).filter_by(
+                instagram_account_id=account.id, comment_id="general-keyword"
+            ).count(), 0)
+            followup = session.query(InstagramOAuthFollowupJob).filter_by(
+                instagram_account_id=account.id, source_message_id="general-keyword"
+            ).one()
+        self.assertIsNone(followup.page_url)
+        self.assertEqual(followup.message_text, "Configured general follow-up")
+
+    def test_direct_keyword_with_empty_private_and_followup_text_skips_both(self):
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["hello"],
+            public_reply_enabled=False,
+            delivery_mode="direct_message",
+            private_message_text="",
+            followup_enabled=True,
+            followup_message_text="",
+        )
+        with patch.object(self.module, "_oauth_prompt_post_for_comment") as prompt_page, patch.object(
+            self.module, "send_oauth_private_comment_reply"
+        ) as private_reply:
+            self._process(self.primary_external_id, "empty-general-keyword", "hello")
+
+        prompt_page.assert_not_called()
+        private_reply.assert_not_called()
+        account = self._account(self.primary_external_id)
+        with self.session_factory() as session:
+            self.assertEqual(session.query(InstagramOAuthFollowupJob).filter_by(
+                instagram_account_id=account.id, source_message_id="empty-general-keyword"
+            ).count(), 0)
+
+    def test_duplicate_direct_keyword_does_not_duplicate_delivery_or_followup(self):
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["hello"],
+            public_reply_enabled=False,
+            delivery_mode="direct_message",
+            private_message_text="Configured private reply",
+            followup_enabled=True,
+            followup_message_text="Configured general follow-up",
+        )
+        with patch.object(self.module, "_oauth_prompt_post_for_comment") as prompt_page, patch.object(
+            self.module, "send_oauth_private_comment_reply", return_value="recipient-general"
+        ) as private_reply:
+            self._process(self.primary_external_id, "duplicate-general-keyword", "hello")
+            self._process(self.primary_external_id, "duplicate-general-keyword", "hello")
+
+        prompt_page.assert_not_called()
+        private_reply.assert_called_once()
+        account = self._account(self.primary_external_id)
+        with self.session_factory() as session:
+            self.assertEqual(session.query(InstagramOAuthFollowupJob).filter_by(
+                instagram_account_id=account.id, source_message_id="duplicate-general-keyword"
+            ).count(), 1)
+
+    def test_disabled_direct_keyword_skips_public_private_followup_and_smart_reply(self):
+        self._set_config(
+            self.primary_external_id,
+            enabled=False,
+            trigger_keywords=["hello"],
+            delivery_mode="direct_message",
+            private_message_text="Configured private reply",
+            followup_enabled=True,
+            followup_message_text="Configured general follow-up",
+            smart_reply_enabled=True,
+        )
+        with patch.object(self.module, "generate_oauth_smart_reply") as smart_reply, patch.object(
+            self.module, "send_oauth_public_comment_reply"
+        ) as public_reply, patch.object(
+            self.module, "send_oauth_private_comment_reply"
+        ) as private_reply:
+            self._process(self.primary_external_id, "disabled-general-keyword", "hello")
+
+        smart_reply.assert_not_called()
+        public_reply.assert_not_called()
+        private_reply.assert_not_called()
+
     def test_custom_account_keyword_starts_prompt_request_delivery(self):
         self._set_config(
             self.primary_external_id,
@@ -832,6 +943,22 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
         self.assertEqual(len(requests), 1)
         self.assertEqual(len(followups), 1)
         self.assertEqual(len(pending_access), 1)
+
+    def test_prompt_extraction_failure_marks_only_the_legacy_prompt_flow_failed(self):
+        self._set_config(self.primary_external_id, trigger_keywords=["prompt"])
+        with patch.object(
+            self.module, "_oauth_prompt_post_for_comment", return_value=""
+        ), patch.object(self.module, "send_oauth_private_access_reply") as private_reply:
+            self._process(self.primary_external_id, "prompt-extraction-failure", "prompt")
+
+        private_reply.assert_not_called()
+        account = self._account(self.primary_external_id)
+        with self.session_factory() as session:
+            event = session.scalar(select(InstagramEngagementEvent).where(
+                InstagramEngagementEvent.instagram_account_id == account.id,
+                InstagramEngagementEvent.provider_event_id == "prompt-extraction-failure",
+            ))
+        self.assertEqual(event.state, "failed")
 
     def test_duplicate_trigger_comment_sends_one_direct_prompt_button_and_followup(self):
         self._set_config(self.primary_external_id, trigger_keywords=["ai"])

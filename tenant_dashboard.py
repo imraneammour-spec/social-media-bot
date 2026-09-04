@@ -52,6 +52,7 @@ from database.tenant_automation import (
     DEFAULT_FOLLOWUP_DELAY_MINUTES,
     DEFAULT_FOLLOWUP_ENABLED,
     SMART_REPLY_TONES,
+    normalize_automation_delivery_mode,
     normalize_followup_delay_minutes,
     normalize_smart_reply_max_per_hour,
     normalize_smart_reply_tone,
@@ -784,6 +785,8 @@ def _automation_config(selected):
                 "public_reply_text":
                     config.public_reply_text
                     or "",
+                "delivery_mode": getattr(config, "delivery_mode", "prompt_request") or "prompt_request",
+                "private_message_text": getattr(config, "private_message_text", "") or "",
                 "followup_enabled": (
                     config.followup_enabled
                     if config.followup_enabled is not None
@@ -794,6 +797,7 @@ def _automation_config(selected):
                     if config.followup_delay_minutes is not None
                     else DEFAULT_FOLLOWUP_DELAY_MINUTES
                 ),
+                "followup_message_text": getattr(config, "followup_message_text", "") or "",
                 "smart_reply_enabled": config.smart_reply_enabled,
                 "smart_reply_tone": config.smart_reply_tone,
                 "smart_reply_max_per_hour": config.smart_reply_max_per_hour,
@@ -842,6 +846,9 @@ def _update_automation_config(selected):
         smart_reply_max_per_hour_value = request.form.get(
             "smart_reply_max_per_hour"
         )
+        delivery_mode_value = request.form.get("delivery_mode")
+        private_message_text_value = request.form.get("private_message_text")
+        followup_message_text_value = request.form.get("followup_message_text")
         smart_reply_controls_present = (
             smart_reply_tone_value is not None
             or smart_reply_max_per_hour_value is not None
@@ -892,12 +899,21 @@ def _update_automation_config(selected):
                 )
                 or ""
             ).strip()
+            config.delivery_mode = normalize_automation_delivery_mode(
+                delivery_mode_value
+                if delivery_mode_value is not None
+                else getattr(config, "delivery_mode", "prompt_request")
+            )
+            if private_message_text_value is not None:
+                config.private_message_text = str(private_message_text_value or "").strip()
             config.followup_enabled = (
                 request.form.get("followup_enabled") == "on"
                 if "followup_enabled" in request.form
                 else (config.followup_enabled if config.followup_enabled is not None else DEFAULT_FOLLOWUP_ENABLED)
             )
             config.followup_delay_minutes = followup_delay_minutes
+            if followup_message_text_value is not None:
+                config.followup_message_text = str(followup_message_text_value or "").strip()
 
             if smart_reply_controls_present:
                 config.smart_reply_enabled = (

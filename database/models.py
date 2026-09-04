@@ -136,11 +136,20 @@ class InstagramAutomationConfig(TimestampMixin, Base):
     public_reply_text: Mapped[str] = mapped_column(
         Text, nullable=False, default="", server_default=text("''")
     )
+    delivery_mode: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="prompt_request", server_default=text("'prompt_request'")
+    )
+    private_message_text: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=text("''")
+    )
     followup_enabled: Mapped[bool] = mapped_column(
         nullable=False, default=True, server_default=text("true")
     )
     followup_delay_minutes: Mapped[int] = mapped_column(
         nullable=False, default=360, server_default=text("360")
+    )
+    followup_message_text: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=text("''")
     )
     smart_reply_enabled: Mapped[bool] = mapped_column(
         nullable=False, default=False, server_default=text("false")
@@ -305,7 +314,8 @@ class InstagramOAuthFollowupJob(TimestampMixin, Base):
     )
     source_message_id: Mapped[str] = mapped_column(String(255), nullable=False)
     recipient_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    page_url: Mapped[str] = mapped_column(Text, nullable=False)
+    page_url: Mapped[str | None] = mapped_column(Text)
+    message_text: Mapped[str | None] = mapped_column(Text)
     state: Mapped[str] = mapped_column(
         String(32), nullable=False, default="pending", server_default="pending"
     )

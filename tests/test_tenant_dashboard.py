@@ -1095,6 +1095,66 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertNotIn("Sociora", page)
         self.assertNotIn("Social Media Bot", page)
 
+    def test_automations_updates_direct_message_configuration_only_for_selected_account(self):
+        """Direct-message copy and mode must remain account-scoped form settings."""
+
+        self._login_as(self.owner_a)
+        selected = self._reference(self.owner_a, self.account_a1)
+        with self.Session.begin() as session:
+            session.add_all([
+                InstagramAutomationConfig(
+                    instagram_account_id=self.account_a1.id,
+                    enabled=True,
+                    trigger_keywords=["hello"],
+                    public_reply_enabled=False,
+                    public_reply_text="",
+                ),
+                InstagramAutomationConfig(
+                    instagram_account_id=self.account_a2.id,
+                    enabled=True,
+                    trigger_keywords=["other"],
+                    public_reply_enabled=False,
+                    public_reply_text="",
+                    delivery_mode="direct_message",
+                    private_message_text="Other account private message",
+                    followup_message_text="Other account follow-up",
+                ),
+            ])
+
+        page = self.client.get(f"/app/automations?account={selected}").get_data(as_text=True)
+        self.assertIn('id="delivery_mode"', page)
+        self.assertIn('id="private_message_text"', page)
+        self.assertIn('id="followup_message_text"', page)
+        csrf_token = re.search(r'name="csrf_token"\s+value="([^"]+)"', page).group(1)
+        response = self.client.post(
+            f"/app/automations?account={selected}",
+            data={
+                "csrf_token": csrf_token,
+                "enabled": "on",
+                "trigger_keywords": "hello",
+                "public_reply_text": "",
+                "delivery_mode": "direct_message",
+                "private_message_text": "Configured private message",
+                "followup_enabled": "on",
+                "followup_delay_minutes": "60",
+                "followup_message_text": "Configured follow-up",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        with self.Session() as session:
+            primary = session.scalar(select(InstagramAutomationConfig).where(
+                InstagramAutomationConfig.instagram_account_id == self.account_a1.id
+            ))
+            secondary = session.scalar(select(InstagramAutomationConfig).where(
+                InstagramAutomationConfig.instagram_account_id == self.account_a2.id
+            ))
+        self.assertEqual(primary.delivery_mode, "direct_message")
+        self.assertEqual(primary.private_message_text, "Configured private message")
+        self.assertEqual(primary.followup_message_text, "Configured follow-up")
+        self.assertEqual(secondary.private_message_text, "Other account private message")
+        self.assertEqual(secondary.followup_message_text, "Other account follow-up")
+
     def test_overview_automation_status_uses_selected_account_config(self):
         """A config change on one account cannot leak into another overview."""
         self._login_as(self.owner_a)

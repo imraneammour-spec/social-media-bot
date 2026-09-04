@@ -45,6 +45,7 @@ from database.oauth_graph import (
     lookup_oauth_media,
     oauth_engagement_capability_state,
     send_oauth_delayed_followup,
+    send_oauth_private_comment_reply,
     send_oauth_private_access_reply,
     send_oauth_prompt_access_button,
     send_oauth_public_comment_reply,
@@ -3947,21 +3948,25 @@ def _process_oauth_comment(value, route, entry_external_id, public_base_url, ses
         if not claim_oauth_event(db_session, route.instagram_account_id, comment_id, "comment"):
             return
     if automation_config is None:
-        is_prompt_request = False
+        is_keyword_match = False
+        delivery_mode = "prompt_request"
         prompt_request_decision = "runtime_config_unavailable"
     else:
-        is_prompt_request = automation_config.enabled and any(
+        is_keyword_match = automation_config.enabled and any(
             word in automation_config.trigger_keywords
             for word in _oauth_words(comment_text)
         )
-        prompt_request_decision = (
-            "prompt_request_matched"
-            if is_prompt_request
-            else "keyword_no_match"
-        )
+        delivery_mode = getattr(automation_config, "delivery_mode", "prompt_request")
+        prompt_request_decision = "keyword_no_match"
+        if is_keyword_match:
+            prompt_request_decision = (
+                "direct_message_matched"
+                if delivery_mode == "direct_message"
+                else "prompt_request_matched"
+            )
     print(f"OAUTH AUTOMATION: prompt_request_decision={prompt_request_decision}")
     try:
-        if not is_prompt_request:
+        if not is_keyword_match:
             if (
                 automation_config is None
                 or not automation_config.enabled
@@ -3992,6 +3997,54 @@ def _process_oauth_comment(value, route, entry_external_id, public_base_url, ses
                 raise RuntimeError("oauth comment delivery unavailable")
             with session_factory.begin() as db_session:
                 record_oauth_smart_reply(db_session, route.instagram_account_id, comment_id, commenter_id, username, reply)
+                complete_oauth_event(db_session, route.instagram_account_id, comment_id, "comment")
+            return
+
+        if delivery_mode == "direct_message":
+            if automation_config.public_reply_enabled:
+                if not send_oauth_public_comment_reply(
+                    session_factory,
+                    instagram_account_id=route.instagram_account_id,
+                    instagram_user_id=entry_external_id,
+                    comment_id=comment_id,
+                    message=automation_config.public_reply_text,
+                ):
+                    raise RuntimeError("oauth public reply unavailable")
+            private_message_text = str(
+                getattr(automation_config, "private_message_text", "") or ""
+            ).strip()
+            if not private_message_text:
+                _oauth_complete(session_factory, route.instagram_account_id, comment_id, "comment")
+                return
+            recipient_id = send_oauth_private_comment_reply(
+                session_factory,
+                instagram_account_id=route.instagram_account_id,
+                instagram_user_id=entry_external_id,
+                comment_id=comment_id,
+                message=private_message_text,
+            )
+            recipient_id = recipient_id or commenter_id
+            if not recipient_id:
+                raise RuntimeError("oauth private reply unavailable")
+            followup_enabled = getattr(automation_config, "followup_enabled", True)
+            followup_message_text = str(
+                getattr(automation_config, "followup_message_text", "") or ""
+            ).strip()
+            followup_delay_minutes = getattr(automation_config, "followup_delay_minutes", 360)
+            try:
+                followup_delay_minutes = int(followup_delay_minutes)
+            except (TypeError, ValueError):
+                followup_delay_minutes = 360
+            with session_factory.begin() as db_session:
+                if followup_enabled and followup_message_text:
+                    schedule_oauth_followup(
+                        db_session,
+                        instagram_account_id=route.instagram_account_id,
+                        source_message_id=comment_id,
+                        recipient_id=recipient_id,
+                        message_text=followup_message_text,
+                        run_at=datetime.now(timezone.utc) + timedelta(minutes=followup_delay_minutes),
+                    )
                 complete_oauth_event(db_session, route.instagram_account_id, comment_id, "comment")
             return
 
@@ -4151,6 +4204,7 @@ def process_due_oauth_followups(now=None):
                 instagram_account_id=job.instagram_account_id,
                 instagram_user_id=external_id,
                 recipient_id=job.recipient_id,
+                message_text=job.message_text,
             )
             with session_factory.begin() as db_session:
                 if outcome == "success":
