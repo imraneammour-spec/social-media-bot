@@ -316,6 +316,9 @@ class InstagramOAuthFollowupJob(TimestampMixin, Base):
     recipient_id: Mapped[str] = mapped_column(String(255), nullable=False)
     page_url: Mapped[str | None] = mapped_column(Text)
     message_text: Mapped[str | None] = mapped_column(Text)
+    provider_window_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     state: Mapped[str] = mapped_column(
         String(32), nullable=False, default="pending", server_default="pending"
     )
@@ -330,6 +333,34 @@ class InstagramOAuthFollowupJob(TimestampMixin, Base):
         Integer, nullable=False, default=0, server_default="0"
     )
     last_error_code: Mapped[str | None] = mapped_column(String(128))
+
+
+class InstagramOAuthDirectMessageInteraction(TimestampMixin, Base):
+    """One initial direct-message reply that may qualify one later user reply."""
+
+    __tablename__ = "instagram_oauth_direct_message_interactions"
+    __table_args__ = (
+        UniqueConstraint(
+            "instagram_account_id", "source_comment_id",
+            name="uq_oauth_direct_interaction_account_source_comment",
+        ),
+        Index(
+            "ix_oauth_direct_interaction_account_recipient_reply",
+            "instagram_account_id", "recipient_id", "recipient_reply_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    instagram_account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("instagram_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    source_comment_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    recipient_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    initial_private_reply_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    recipient_reply_message_id: Mapped[str | None] = mapped_column(String(255))
+    recipient_reply_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class InstagramOAuthWebhookWorkItem(TimestampMixin, Base):

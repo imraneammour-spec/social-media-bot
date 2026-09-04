@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 import requests
@@ -287,6 +288,7 @@ def send_oauth_prompt_access_button(session_factory: Callable[[], Any], *, insta
 def send_oauth_delayed_followup(
     session_factory: Callable[[], Any], *, instagram_account_id: object,
     instagram_user_id: object, recipient_id: object, message_text: object | None = None,
+    provider_window_expires_at: datetime | None = None,
 ) -> str:
     """Send one OAuth-only follow-up with a sanitized delivery outcome.
 
@@ -314,6 +316,14 @@ def send_oauth_delayed_followup(
                 instagram_account_id=account_id,
                 instagram_user_id=external_id,
             )
+            # Recheck after credential resolution, immediately before dispatch.
+            # Null deadlines retain the legacy prompt follow-up behavior.
+            if provider_window_expires_at is not None:
+                expiry = provider_window_expires_at
+                if expiry.tzinfo is None:
+                    expiry = expiry.replace(tzinfo=timezone.utc)
+                if datetime.now(timezone.utc) >= expiry:
+                    return "outside_provider_window"
             try:
                 response = requests.post(
                     f"{GRAPH_ROOT}/{API_VERSION}/{external_id}/messages",

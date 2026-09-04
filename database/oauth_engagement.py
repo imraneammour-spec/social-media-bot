@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .models import InstagramEngagementEvent, InstagramPendingAccess, InstagramPromptPost, InstagramPromptRequest, InstagramSmartReplyActivity
+from .models import InstagramEngagementEvent, InstagramOAuthDirectMessageInteraction, InstagramPendingAccess, InstagramPromptPost, InstagramPromptRequest, InstagramSmartReplyActivity
 
 
 def claim_oauth_event(session: Session, account_id: object, provider_event_id: object, event_type: str) -> bool:
@@ -140,3 +140,63 @@ def oauth_smart_reply_allowed(session: Session, account_id: object, *, cutoff: d
 
 def record_oauth_smart_reply(session: Session, account_id: object, comment_id: object, recipient_id: object, username: object, reply_text: str) -> None:
     session.add(InstagramSmartReplyActivity(instagram_account_id=uuid.UUID(str(account_id)), comment_id=str(comment_id), recipient_id=str(recipient_id or "") or None, username=str(username or "") or None, reply_text=reply_text))
+
+
+def record_oauth_direct_message_interaction(
+    session: Session, account_id: object, source_comment_id: object, recipient_id: object,
+    *, initial_private_reply_at: datetime | None = None,
+) -> InstagramOAuthDirectMessageInteraction | None:
+    """Persist a direct comment reply only after its initial private DM succeeded."""
+    try:
+        account = uuid.UUID(str(account_id))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    source = str(source_comment_id or "").strip()
+    recipient = str(recipient_id or "").strip()
+    if not source or not recipient:
+        return None
+    record = session.scalar(select(InstagramOAuthDirectMessageInteraction).where(
+        InstagramOAuthDirectMessageInteraction.instagram_account_id == account,
+        InstagramOAuthDirectMessageInteraction.source_comment_id == source,
+    ))
+    if record is not None:
+        return record
+    record = InstagramOAuthDirectMessageInteraction(
+        instagram_account_id=account,
+        source_comment_id=source,
+        recipient_id=recipient,
+        initial_private_reply_at=(initial_private_reply_at or datetime.now(timezone.utc)),
+    )
+    session.add(record)
+    session.flush()
+    return record
+
+
+def consume_oauth_direct_message_interaction(
+    session: Session, account_id: object, recipient_id: object, reply_message_id: object,
+    *, replied_at: datetime | None = None,
+) -> InstagramOAuthDirectMessageInteraction | None:
+    """Atomically bind one account-scoped waiting interaction to one inbound reply."""
+    try:
+        account = uuid.UUID(str(account_id))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    recipient = str(recipient_id or "").strip()
+    message_id = str(reply_message_id or "").strip()
+    if not recipient or not message_id:
+        return None
+    reply_time = replied_at or datetime.now(timezone.utc)
+    record = session.scalar(select(InstagramOAuthDirectMessageInteraction).where(
+        InstagramOAuthDirectMessageInteraction.instagram_account_id == account,
+        InstagramOAuthDirectMessageInteraction.recipient_id == recipient,
+        InstagramOAuthDirectMessageInteraction.recipient_reply_at.is_(None),
+        InstagramOAuthDirectMessageInteraction.initial_private_reply_at <= reply_time,
+    ).order_by(
+        InstagramOAuthDirectMessageInteraction.initial_private_reply_at.desc(),
+        InstagramOAuthDirectMessageInteraction.id.desc(),
+    ).limit(1).with_for_update())
+    if record is None:
+        return None
+    record.recipient_reply_message_id = message_id
+    record.recipient_reply_at = reply_time
+    return record

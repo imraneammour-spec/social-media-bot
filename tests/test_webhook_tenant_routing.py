@@ -6,7 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,6 +17,7 @@ from database.models import (
     Base,
     InstagramAccount,
     InstagramAutomationConfig,
+    InstagramOAuthDirectMessageInteraction,
     InstagramOAuthFollowupJob,
     InstagramOAuthWebhookWorkItem,
     InstagramPendingAccess,
@@ -590,6 +591,19 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
             self.session_factory,
         )
 
+    def _process_inbound_message(self, external_id, message_id, sender_id="recipient-general"):
+        self.module._process_oauth_message(
+            {
+                "sender": {"id": sender_id},
+                "recipient": {"id": external_id},
+                "timestamp": datetime.now(timezone.utc).timestamp() * 1000,
+                "message": {"mid": message_id, "text": "Thanks"},
+            },
+            self._route(external_id),
+            external_id,
+            self.session_factory,
+        )
+
     def test_disabled_automation_skips_new_prompt_request_delivery(self):
         self._set_config(
             self.primary_external_id,
@@ -810,7 +824,8 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
             ))
         self.assertEqual(event.state, "failed")
 
-    def test_direct_keyword_sends_configured_public_and_private_messages_without_prompt_extraction(self):
+    def test_direct_keyword_persists_interaction_but_creates_no_followup_before_reply(self):
+        """Creating a job at comment time would send a prohibited second DM."""
         self._set_config(
             self.primary_external_id,
             trigger_keywords=["hello"],
@@ -836,11 +851,329 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
             self.assertEqual(session.query(InstagramPromptRequest).filter_by(
                 instagram_account_id=account.id, comment_id="general-keyword"
             ).count(), 0)
-            followup = session.query(InstagramOAuthFollowupJob).filter_by(
+            self.assertEqual(session.query(InstagramOAuthFollowupJob).filter_by(
                 instagram_account_id=account.id, source_message_id="general-keyword"
+            ).count(), 0)
+            interaction = session.query(InstagramOAuthDirectMessageInteraction).filter_by(
+                instagram_account_id=account.id, source_comment_id="general-keyword"
             ).one()
-        self.assertIsNone(followup.page_url)
+        self.assertEqual(interaction.recipient_id, "recipient-general")
+        self.assertIsNone(interaction.recipient_reply_at)
+
+    def test_direct_message_recipient_reply_consumes_interaction_and_schedules_one_job(self):
+        """Removing interaction consumption would let arbitrary or duplicate DMs create follow-ups."""
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["hello"],
+            public_reply_enabled=False,
+            delivery_mode="direct_message",
+            private_message_text="Configured private reply",
+            followup_enabled=True,
+            followup_delay_minutes=5,
+            followup_message_text="Configured general follow-up",
+        )
+        with patch.object(
+            self.module, "send_oauth_private_comment_reply", return_value="recipient-general"
+        ):
+            self._process(self.primary_external_id, "reply-trigger-comment", "hello")
+        self._process_inbound_message(self.primary_external_id, "recipient-reply-message")
+
+        account = self._account(self.primary_external_id)
+        with self.session_factory() as session:
+            interaction = session.query(InstagramOAuthDirectMessageInteraction).filter_by(
+                instagram_account_id=account.id, source_comment_id="reply-trigger-comment"
+            ).one()
+            followup = session.query(InstagramOAuthFollowupJob).filter_by(
+                instagram_account_id=account.id, source_message_id="recipient-reply-message"
+            ).one()
+        self.assertEqual(interaction.recipient_reply_message_id, "recipient-reply-message")
+        self.assertIsNotNone(interaction.recipient_reply_at)
         self.assertEqual(followup.message_text, "Configured general follow-up")
+        self.assertEqual(
+            followup.provider_window_expires_at - followup.run_at,
+            timedelta(hours=23, minutes=55),
+        )
+
+    def test_queued_reply_uses_provider_timestamp_and_rejects_nonqualifying_events(self):
+        """Queue latency, old messages and receipts must not manufacture a new reply window."""
+        from database.oauth_webhook_ingress import _work_payload
+
+        self._set_config(
+            self.primary_external_id, delivery_mode="direct_message",
+            followup_delay_minutes=5, followup_message_text="Configured follow-up",
+        )
+        account = self._account(self.primary_external_id)
+        replied_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+        with self.session_factory.begin() as session:
+            session.add(InstagramOAuthDirectMessageInteraction(
+                instagram_account_id=account.id, source_comment_id="queued-comment",
+                recipient_id="recipient-general",
+                initial_private_reply_at=replied_at - timedelta(minutes=1),
+            ))
+        base = {
+            "sender": {"id": "recipient-general"},
+            "recipient": {"id": self.primary_external_id},
+            "timestamp": replied_at.timestamp() * 1000,
+            "message": {"mid": "queued-reply", "text": "Thanks"},
+        }
+        for timestamp in (None, "invalid", True, (replied_at - timedelta(minutes=2)).timestamp() * 1000,
+                          (replied_at + timedelta(days=2)).timestamp() * 1000,
+                          (replied_at - timedelta(hours=25)).timestamp() * 1000):
+            with self.subTest(timestamp_kind=type(timestamp).__name__):
+                event = dict(base, timestamp=timestamp, message=dict(base["message"], mid=str(timestamp)))
+                normalized = _work_payload("message", event)[2]
+                self.module._process_oauth_message(
+                    normalized, self._route(self.primary_external_id),
+                    self.primary_external_id, self.session_factory,
+                )
+                with self.session_factory() as session:
+                    self.assertEqual(session.query(InstagramOAuthFollowupJob).count(), 0)
+                    self.assertIsNone(session.query(InstagramOAuthDirectMessageInteraction).one().recipient_reply_at)
+        for extra, message in (
+            ({}, {"mid": "empty-message"}),
+            ({"delivery": {"mids": ["receipt"]}}, {"mid": "delivery-message", "text": "Thanks"}),
+            ({"read": {"watermark": 1}}, {"mid": "read-message", "text": "Thanks"}),
+            ({}, {"mid": "deleted-message", "is_deleted": True, "text": "Thanks"}),
+        ):
+            normalized = _work_payload("message", dict(base, **extra, message=message))[2]
+            self.module._process_oauth_message(
+                normalized, self._route(self.primary_external_id),
+                self.primary_external_id, self.session_factory,
+            )
+            with self.session_factory() as session:
+                self.assertEqual(session.query(InstagramOAuthFollowupJob).count(), 0)
+        normalized = _work_payload("message", base)[2]
+        self.module._process_oauth_message(
+            normalized, self._route(self.primary_external_id),
+            self.primary_external_id, self.session_factory,
+        )
+        with self.session_factory() as session:
+            job = session.query(InstagramOAuthFollowupJob).one()
+            self.assertAlmostEqual(
+                job.provider_window_expires_at.replace(tzinfo=timezone.utc).timestamp(),
+                (replied_at + timedelta(hours=24)).timestamp(), places=3,
+            )
+            self.assertAlmostEqual(job.run_at.replace(tzinfo=timezone.utc).timestamp(),
+                                   (replied_at + timedelta(minutes=5)).timestamp(), places=3)
+
+    def test_direct_message_does_not_persist_interaction_when_initial_private_delivery_fails(self):
+        """Falling back to commenter data after a failed private send would create false eligibility."""
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["hello"],
+            public_reply_enabled=False,
+            delivery_mode="direct_message",
+            private_message_text="Configured private reply",
+        )
+        with patch.object(self.module, "send_oauth_private_comment_reply", return_value=None):
+            self._process(self.primary_external_id, "failed-private-comment", "hello")
+
+        account = self._account(self.primary_external_id)
+        with self.session_factory() as session:
+            self.assertEqual(session.query(InstagramOAuthDirectMessageInteraction).filter_by(
+                instagram_account_id=account.id, source_comment_id="failed-private-comment"
+            ).count(), 0)
+
+    def test_duplicate_direct_message_reply_creates_no_duplicate_followup(self):
+        """Replaying an inbound webhook must not create a second job."""
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["hello"],
+            public_reply_enabled=False,
+            delivery_mode="direct_message",
+            private_message_text="Configured private reply",
+            followup_message_text="Configured general follow-up",
+        )
+        with patch.object(
+            self.module, "send_oauth_private_comment_reply", return_value="recipient-general"
+        ):
+            self._process(self.primary_external_id, "duplicate-reply-comment", "hello")
+        self._process_inbound_message(self.primary_external_id, "duplicate-reply-message")
+        self._process_inbound_message(self.primary_external_id, "duplicate-reply-message")
+
+        account = self._account(self.primary_external_id)
+        with self.session_factory() as session:
+            self.assertEqual(session.query(InstagramOAuthFollowupJob).filter_by(
+                instagram_account_id=account.id, source_message_id="duplicate-reply-message"
+            ).count(), 1)
+
+    def test_direct_message_reply_preserves_active_job_dedupe(self):
+        """A second eligible reply must not create concurrent jobs for one account/recipient."""
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["hello"],
+            public_reply_enabled=False,
+            delivery_mode="direct_message",
+            private_message_text="Configured private reply",
+            followup_message_text="Configured general follow-up",
+        )
+        with patch.object(
+            self.module, "send_oauth_private_comment_reply", return_value="recipient-general"
+        ):
+            self._process(self.primary_external_id, "first-active-comment", "hello")
+        self._process_inbound_message(self.primary_external_id, "first-active-reply")
+        with patch.object(
+            self.module, "send_oauth_private_comment_reply", return_value="recipient-general"
+        ):
+            self._process(self.primary_external_id, "second-active-comment", "hello")
+        self._process_inbound_message(self.primary_external_id, "second-active-reply")
+
+        account = self._account(self.primary_external_id)
+        with self.session_factory() as session:
+            jobs = session.query(InstagramOAuthFollowupJob).filter_by(
+                instagram_account_id=account.id, recipient_id="recipient-general"
+            ).all()
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].source_message_id, "first-active-reply")
+
+    def test_unrelated_direct_message_does_not_schedule_followup(self):
+        """Removing the waiting-interaction lookup would schedule follow-ups for arbitrary DMs."""
+        self._set_config(
+            self.primary_external_id,
+            delivery_mode="direct_message",
+            private_message_text="Configured private reply",
+            followup_message_text="Configured general follow-up",
+        )
+        self._process_inbound_message(self.primary_external_id, "unrelated-reply", "unrelated-recipient")
+
+        account = self._account(self.primary_external_id)
+        with self.session_factory() as session:
+            self.assertEqual(session.query(InstagramOAuthFollowupJob).filter_by(
+                instagram_account_id=account.id, source_message_id="unrelated-reply"
+            ).count(), 0)
+
+    def test_direct_message_reply_cannot_consume_another_accounts_interaction(self):
+        """Dropping the account predicate would leak follow-up eligibility across tenants."""
+        for external_id, keyword in (
+            (self.primary_external_id, "primary"),
+            (self.secondary_external_id, "secondary"),
+        ):
+            self._set_config(
+                external_id,
+                trigger_keywords=[keyword],
+                public_reply_enabled=False,
+                delivery_mode="direct_message",
+                private_message_text="Configured private reply",
+                followup_message_text="Configured general follow-up",
+            )
+        with patch.object(
+            self.module, "send_oauth_private_comment_reply", return_value="shared-recipient"
+        ):
+            self._process(self.primary_external_id, "primary-only-interaction", "primary")
+        self._process_inbound_message(
+            self.secondary_external_id, "foreign-account-reply", "shared-recipient"
+        )
+
+        with self.session_factory.begin() as session:
+            other_owner = User(email="other-direct-tenant@example.test")
+            session.add(other_owner)
+            session.flush()
+            secondary_account = session.get(InstagramAccount, self._account(self.secondary_external_id).id)
+            secondary_account.user_id = other_owner.id
+        self._process_inbound_message(
+            self.secondary_external_id, "foreign-tenant-reply", "shared-recipient"
+        )
+
+        primary = self._account(self.primary_external_id)
+        secondary = self._account(self.secondary_external_id)
+        with self.session_factory() as session:
+            interaction = session.query(InstagramOAuthDirectMessageInteraction).filter_by(
+                instagram_account_id=primary.id, source_comment_id="primary-only-interaction"
+            ).one()
+            self.assertEqual(session.query(InstagramOAuthFollowupJob).filter_by(
+                instagram_account_id=secondary.id, source_message_id="foreign-account-reply"
+            ).count(), 0)
+        self.assertIsNone(interaction.recipient_reply_at)
+
+    def test_direct_message_echo_delivery_and_read_events_do_not_schedule_followup(self):
+        """Non-user messaging events must not consume direct-message eligibility."""
+        self._set_config(
+            self.primary_external_id,
+            delivery_mode="direct_message",
+            private_message_text="Configured private reply",
+            followup_message_text="Configured general follow-up",
+        )
+        route = self._route(self.primary_external_id)
+        with self.session_factory.begin() as session:
+            session.add(InstagramOAuthDirectMessageInteraction(
+                instagram_account_id=route.instagram_account_id,
+                source_comment_id="receipt-interaction", recipient_id="recipient-general",
+                initial_private_reply_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+            ))
+        for event in (
+            {"sender": {"id": "recipient-general"}, "message": {"mid": "echo", "is_echo": True}},
+            {"sender": {"id": "recipient-general"}, "delivery": {"mids": ["receipt"]}},
+            {"sender": {"id": "recipient-general"}, "read": {"watermark": 1}},
+        ):
+            self.module._process_oauth_message(
+                dict(event, timestamp=datetime.now(timezone.utc).timestamp() * 1000,
+                     recipient={"id": self.primary_external_id}),
+                route, self.primary_external_id, self.session_factory
+            )
+
+        account = self._account(self.primary_external_id)
+        with self.session_factory() as session:
+            self.assertEqual(session.query(InstagramOAuthFollowupJob).filter_by(
+                instagram_account_id=account.id
+            ).count(), 0)
+
+    def test_direct_message_reply_with_disabled_or_empty_followup_does_not_schedule(self):
+        """Configuration gates must prevent scheduling without consuming a message into a job."""
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["hello"],
+            public_reply_enabled=False,
+            delivery_mode="direct_message",
+            private_message_text="Configured private reply",
+            followup_enabled=False,
+            followup_message_text="Configured general follow-up",
+        )
+        with patch.object(
+            self.module, "send_oauth_private_comment_reply", return_value="recipient-general"
+        ):
+            self._process(self.primary_external_id, "disabled-followup-comment", "hello")
+        self._process_inbound_message(self.primary_external_id, "disabled-followup-reply")
+
+        account = self._account(self.primary_external_id)
+        with self.session_factory.begin() as session:
+            config = session.query(InstagramAutomationConfig).filter_by(
+                instagram_account_id=account.id
+            ).one()
+            config.followup_enabled = True
+            config.followup_message_text = ""
+        self._process_inbound_message(self.primary_external_id, "empty-followup-reply")
+
+        with self.session_factory() as session:
+            self.assertEqual(session.query(InstagramOAuthFollowupJob).filter_by(
+                instagram_account_id=account.id
+            ).count(), 0)
+
+    def test_direct_message_reply_outside_provider_window_does_not_schedule(self):
+        """A delay longer than Meta's 24-hour reply window must not create work."""
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["hello"],
+            public_reply_enabled=False,
+            delivery_mode="direct_message",
+            private_message_text="Configured private reply",
+            followup_delay_minutes=1441,
+            followup_message_text="Configured general follow-up",
+        )
+        with patch.object(
+            self.module, "send_oauth_private_comment_reply", return_value="recipient-general"
+        ):
+            self._process(self.primary_external_id, "outside-window-comment", "hello")
+        with patch("builtins.print") as log:
+            self._process_inbound_message(self.primary_external_id, "outside-window-reply")
+
+        log.assert_any_call(
+            "OAUTH FOLLOW-UP: recipient reply skipped. reason=outside_provider_window"
+        )
+        account = self._account(self.primary_external_id)
+        with self.session_factory() as session:
+            self.assertEqual(session.query(InstagramOAuthFollowupJob).filter_by(
+                instagram_account_id=account.id, source_message_id="outside-window-reply"
+            ).count(), 0)
 
     def test_direct_keyword_with_empty_private_and_followup_text_skips_both(self):
         self._set_config(
@@ -865,7 +1198,7 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
                 instagram_account_id=account.id, source_message_id="empty-general-keyword"
             ).count(), 0)
 
-    def test_direct_keyword_logs_safe_followup_schedule_skip_for_recent_sent_dedupe(self):
+    def test_direct_message_reply_preserves_recent_sent_cooldown(self):
         """A deduped general follow-up must be observable without disclosing message data."""
         self._set_config(
             self.primary_external_id,
@@ -890,18 +1223,20 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
 
         with patch.object(
             self.module, "send_oauth_private_comment_reply", return_value="recipient-general"
-        ), patch("builtins.print") as log:
+        ):
             self._process(self.primary_external_id, "deduped-general-keyword", "hello")
+        with patch("builtins.print") as log:
+            self._process_inbound_message(self.primary_external_id, "deduped-recipient-reply")
 
         log.assert_any_call(
-            "OAUTH FOLLOW-UP: job scheduling skipped. reason=deduped_or_invalid"
+            "OAUTH FOLLOW-UP: recipient reply skipped. reason=cooldown"
         )
         with self.session_factory() as session:
             self.assertEqual(session.query(InstagramOAuthFollowupJob).filter_by(
-                instagram_account_id=account.id, source_message_id="deduped-general-keyword"
+                instagram_account_id=account.id, source_message_id="deduped-recipient-reply"
             ).count(), 0)
 
-    def test_duplicate_direct_keyword_does_not_duplicate_delivery_or_followup(self):
+    def test_duplicate_direct_keyword_does_not_duplicate_delivery_or_interaction(self):
         self._set_config(
             self.primary_external_id,
             trigger_keywords=["hello"],
@@ -923,6 +1258,9 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
         with self.session_factory() as session:
             self.assertEqual(session.query(InstagramOAuthFollowupJob).filter_by(
                 instagram_account_id=account.id, source_message_id="duplicate-general-keyword"
+            ).count(), 0)
+            self.assertEqual(session.query(InstagramOAuthDirectMessageInteraction).filter_by(
+                instagram_account_id=account.id, source_comment_id="duplicate-general-keyword"
             ).count(), 1)
 
     def test_disabled_direct_keyword_skips_public_private_followup_and_smart_reply(self):

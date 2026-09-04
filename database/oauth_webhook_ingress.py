@@ -104,11 +104,17 @@ def _work_payload(event_type: object, value: object) -> tuple[str, str, dict[str
             provider_event_id,
             {
                 "sender": {"id": sender_id},
+                "is_non_reply": bool(value.get("read") or value.get("delivery") or message.get("is_deleted")),
+                "timestamp": (
+                    value.get("timestamp")
+                    if type(value.get("timestamp")) in (int, float) else None
+                ),
                 "recipient": {"id": _text(recipient.get("id"), limit=255)},
                 "message": {
                     "mid": provider_event_id,
                     "text": _text(message.get("text"), limit=4096),
                     "is_echo": bool(message.get("is_echo")),
+                    "has_attachments": bool(message.get("attachments")),
                     "quick_reply": {"payload": _text(quick.get("payload"), limit=255)},
                 },
             },

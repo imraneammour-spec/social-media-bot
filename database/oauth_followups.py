@@ -15,6 +15,7 @@ from .models import InstagramAccount, InstagramOAuthFollowupJob, InstagramPrompt
 
 FOLLOWUP_DELAY = timedelta(hours=6)
 FOLLOWUP_COOLDOWN = timedelta(days=7)
+DIRECT_MESSAGE_RESPONSE_WINDOW = timedelta(hours=24)
 LEASE_DURATION = timedelta(minutes=15)
 MAX_ATTEMPTS = 3
 RETRYABLE_ERROR_CODES = {"credential_unavailable", "database_unavailable"}
@@ -22,6 +23,7 @@ TERMINAL_ERROR_CODES = {
     "ambiguous_graph_failure",
     "capability_unavailable",
     "lease_expired",
+    "outside_provider_window",
     "provider_rejected",
 }
 
@@ -34,6 +36,7 @@ class ClaimedOAuthFollowup:
     recipient_id: str
     page_url: str | None
     message_text: str | None
+    provider_window_expires_at: datetime | None
     lease_token: str
     state: str = "processing"
 
@@ -63,6 +66,7 @@ def schedule_oauth_followup(
     page_url: object | None = None,
     message_text: object | None = None,
     prompt_request_id: object | None = None,
+    provider_window_expires_at: datetime | None = None,
     run_at: datetime | None = None,
     now: datetime | None = None,
 ) -> InstagramOAuthFollowupJob | None:
@@ -77,7 +81,16 @@ def schedule_oauth_followup(
     request_id = _uuid(prompt_request_id) if prompt_request_id is not None else None
     current = _now(now)
     has_prompt_url = url.startswith("https://")
-    if account_id is None or not source_id or not recipient or (has_prompt_url == bool(message)):
+    scheduled_at = _now(run_at) if run_at is not None else current + FOLLOWUP_DELAY
+    window_expires_at = (
+        _now(provider_window_expires_at)
+        if provider_window_expires_at is not None else None
+    )
+    if (
+        account_id is None or not source_id or not recipient
+        or (has_prompt_url == bool(message))
+        or (window_expires_at is not None and scheduled_at >= window_expires_at)
+    ):
         return None
     if request_id is not None:
         request_record = session.scalar(select(InstagramPromptRequest).where(
@@ -114,7 +127,8 @@ def schedule_oauth_followup(
         recipient_id=recipient,
         page_url=url if has_prompt_url else None,
         message_text=message or None,
-        run_at=_now(run_at) if run_at is not None else current + FOLLOWUP_DELAY,
+        provider_window_expires_at=window_expires_at,
+        run_at=scheduled_at,
     )
     session.add(job)
     session.flush()
@@ -162,6 +176,10 @@ def claim_due_oauth_followups(session: Session, *, now: datetime | None = None, 
             recipient_id=job.recipient_id,
             page_url=job.page_url,
             message_text=job.message_text,
+            provider_window_expires_at=(
+                _now(job.provider_window_expires_at)
+                if job.provider_window_expires_at is not None else None
+            ),
             lease_token=lease_token,
         ))
     session.flush()

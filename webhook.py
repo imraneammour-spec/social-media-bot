@@ -30,6 +30,7 @@ from database.account_runtime import (
 from database.oauth_engagement import (
     claim_oauth_event,
     complete_oauth_event,
+    consume_oauth_direct_message_interaction,
     get_oauth_pending_access,
     get_oauth_prompt_post,
     get_oauth_prompt_post_by_public_id,
@@ -39,6 +40,7 @@ from database.oauth_engagement import (
     pop_oauth_pending_access,
     record_oauth_request,
     record_oauth_smart_reply,
+    record_oauth_direct_message_interaction,
     save_oauth_pending_access,
 )
 from database.oauth_graph import (
@@ -51,6 +53,7 @@ from database.oauth_graph import (
     send_oauth_public_comment_reply,
 )
 from database.oauth_followups import (
+    DIRECT_MESSAGE_RESPONSE_WINDOW,
     cancel_oauth_followups,
     claim_due_oauth_followups,
     finalize_oauth_followup_failure,
@@ -4032,34 +4035,17 @@ def _process_oauth_comment(value, route, entry_external_id, public_base_url, ses
                 comment_id=comment_id,
                 message=private_message_text,
             )
-            recipient_id = recipient_id or commenter_id
             if not recipient_id:
                 raise RuntimeError("oauth private reply unavailable")
-            followup_enabled = getattr(automation_config, "followup_enabled", True)
-            followup_message_text = str(
-                getattr(automation_config, "followup_message_text", "") or ""
-            ).strip()
-            followup_delay_minutes = getattr(automation_config, "followup_delay_minutes", 360)
-            try:
-                followup_delay_minutes = int(followup_delay_minutes)
-            except (TypeError, ValueError):
-                followup_delay_minutes = 360
             with session_factory.begin() as db_session:
-                if followup_enabled and followup_message_text:
-                    scheduled_followup = schedule_oauth_followup(
-                        db_session,
-                        instagram_account_id=route.instagram_account_id,
-                        source_message_id=comment_id,
-                        recipient_id=recipient_id,
-                        message_text=followup_message_text,
-                        run_at=datetime.now(timezone.utc) + timedelta(minutes=followup_delay_minutes),
-                    )
-                    if scheduled_followup is None:
-                        print(
-                            "OAUTH FOLLOW-UP: job scheduling skipped. "
-                            "reason=deduped_or_invalid"
-                        )
+                record_oauth_direct_message_interaction(
+                    db_session,
+                    route.instagram_account_id,
+                    comment_id,
+                    recipient_id,
+                )
                 complete_oauth_event(db_session, route.instagram_account_id, comment_id, "comment")
+            print("OAUTH FOLLOW-UP: waiting_for_recipient_reply")
             return
 
         if not media_id:
@@ -4146,6 +4132,85 @@ def _process_oauth_message(event, route, entry_external_id, session_factory):
             db_session,
             instagram_account_id=route.instagram_account_id,
         )
+    if (
+        automation_config is not None
+        and automation_config.delivery_mode == "direct_message"
+    ):
+        recipient = event.get("recipient")
+        if (
+            sender_id == entry_external_id
+            or not isinstance(recipient, dict)
+            or str(recipient.get("id") or "").strip() != entry_external_id
+            or event.get("is_non_reply") or event.get("read") or event.get("delivery")
+            or message.get("is_deleted")
+            or not (str(message.get("text") or "").strip() or quick_payload
+                    or message.get("attachments") or message.get("has_attachments"))
+        ):
+            print("OAUTH FOLLOW-UP: recipient reply skipped. reason=unsupported_event_shape")
+            _oauth_complete(session_factory, route.instagram_account_id, message_id, "message")
+            return
+        followup_message_text = str(automation_config.followup_message_text or "").strip()
+        if (
+            not automation_config.enabled
+            or not automation_config.followup_enabled
+            or not followup_message_text
+        ):
+            print("OAUTH FOLLOW-UP: recipient reply skipped. reason=followup_disabled")
+            _oauth_complete(session_factory, route.instagram_account_id, message_id, "message")
+            return
+        current = datetime.now(timezone.utc)
+        try:
+            timestamp = event.get("timestamp")
+            if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
+                raise ValueError
+            replied_at = datetime.fromtimestamp(timestamp / 1000, timezone.utc)
+            if replied_at > current:
+                raise ValueError
+        except (ValueError, TypeError, OverflowError, OSError):
+            print("OAUTH FOLLOW-UP: recipient reply skipped. reason=invalid_reply_timestamp")
+            _oauth_complete(session_factory, route.instagram_account_id, message_id, "message")
+            return
+        run_at = replied_at + timedelta(minutes=automation_config.followup_delay_minutes)
+        window_expires_at = replied_at + DIRECT_MESSAGE_RESPONSE_WINDOW
+        if run_at >= window_expires_at or current >= window_expires_at:
+            print("OAUTH FOLLOW-UP: recipient reply skipped. reason=outside_provider_window")
+            _oauth_complete(session_factory, route.instagram_account_id, message_id, "message")
+            return
+        with session_factory.begin() as db_session:
+            interaction = consume_oauth_direct_message_interaction(
+                db_session,
+                route.instagram_account_id,
+                sender_id,
+                message_id,
+                replied_at=replied_at,
+            )
+            if interaction is None:
+                print("OAUTH FOLLOW-UP: recipient reply skipped. reason=no_prior_direct_interaction")
+                complete_oauth_event(
+                    db_session, route.instagram_account_id, message_id, "message"
+                )
+                return
+            print("OAUTH FOLLOW-UP: recipient_reply_eligible")
+            scheduled_followup = schedule_oauth_followup(
+                db_session,
+                instagram_account_id=route.instagram_account_id,
+                source_message_id=message_id,
+                recipient_id=sender_id,
+                message_text=followup_message_text,
+                provider_window_expires_at=window_expires_at,
+                run_at=run_at,
+                now=current,
+            )
+            if scheduled_followup is None:
+                print("OAUTH FOLLOW-UP: recipient reply skipped. reason=cooldown")
+            elif scheduled_followup.source_message_id == message_id:
+                print("OAUTH FOLLOW-UP: job_scheduled_after_reply")
+            else:
+                print("OAUTH FOLLOW-UP: recipient reply skipped. reason=active_job")
+            complete_oauth_event(
+                db_session, route.instagram_account_id, message_id, "message"
+            )
+        return
     if not is_view_prompts_quick_reply and not is_legacy_access:
         # Arbitrary text reply: cancel any queued follow-up because the
         # person has already re-engaged, but do NOT unlock the prompt link.
@@ -4209,6 +4274,22 @@ def process_due_oauth_followups(now=None):
 
     for job in claimed_jobs:
         try:
+            delivery_time = current if now is not None else datetime.now(timezone.utc)
+            if (
+                job.provider_window_expires_at is not None
+                and delivery_time >= job.provider_window_expires_at
+            ):
+                with session_factory.begin() as db_session:
+                    finalize_oauth_followup_failure(
+                        db_session,
+                        job.id,
+                        job.lease_token,
+                        category="outside_provider_window",
+                        retryable=False,
+                        now=current,
+                    )
+                print("OAUTH FOLLOW-UP: delivery skipped. reason=outside_provider_window")
+                continue
             with session_factory() as db_session:
                 external_id = oauth_followup_account_external_id(
                     db_session, job.instagram_account_id
@@ -4219,6 +4300,7 @@ def process_due_oauth_followups(now=None):
                 instagram_user_id=external_id,
                 recipient_id=job.recipient_id,
                 message_text=job.message_text,
+                provider_window_expires_at=job.provider_window_expires_at,
             )
             with session_factory.begin() as db_session:
                 if outcome == "success":
@@ -4233,10 +4315,10 @@ def process_due_oauth_followups(now=None):
                         db_session, job.id, job.lease_token,
                         category="provider_rejected", retryable=False, now=current,
                     )
-                elif outcome == "capability_unavailable":
+                elif outcome in {"capability_unavailable", "outside_provider_window"}:
                     finalize_oauth_followup_failure(
                         db_session, job.id, job.lease_token,
-                        category="capability_unavailable", retryable=False, now=current,
+                        category=outcome, retryable=False, now=current,
                     )
                 else:
                     finalize_oauth_followup_failure(

@@ -227,8 +227,61 @@ class OAuthFollowupStorageTest(unittest.TestCase):
         self.assertEqual(len(claimed), 1)
         self.assertEqual(claimed[0].message_text, "Configured general follow-up")
 
+    def test_response_triggered_job_carries_window_expiry_and_rejects_late_run(self):
+        """A worker must never send a response-triggered DM outside Meta's 24-hour window."""
+        from database.oauth_followups import schedule_oauth_followup
+
+        now = datetime.now(timezone.utc)
+        with self.Session.begin() as session:
+            valid = schedule_oauth_followup(
+                session,
+                instagram_account_id=self.account_a_id,
+                source_message_id="reply-in-window",
+                recipient_id="response-window-recipient",
+                message_text="Configured follow-up",
+                run_at=now + timedelta(minutes=5),
+                provider_window_expires_at=now + timedelta(hours=24),
+            )
+            late = schedule_oauth_followup(
+                session,
+                instagram_account_id=self.account_a_id,
+                source_message_id="reply-outside-window",
+                recipient_id="late-window-recipient",
+                message_text="Configured follow-up",
+                run_at=now + timedelta(hours=24, seconds=1),
+                provider_window_expires_at=now + timedelta(hours=24),
+            )
+
+        self.assertIsNotNone(valid)
+        self.assertEqual(valid.provider_window_expires_at, now + timedelta(hours=24))
+        self.assertIsNone(late)
+
 
 class OAuthFollowupGraphTest(unittest.TestCase):
+    def test_expiry_is_rechecked_after_credential_resolution_before_graph(self):
+        """A credential lookup crossing the deadline must not dispatch a late request."""
+        from database import oauth_graph
+
+        account_id = __import__("uuid").uuid4()
+        before_lookup = datetime.now(timezone.utc)
+        expiry = before_lookup + timedelta(seconds=1)
+        clock = [before_lookup]
+        runtime = InstagramAccountRuntime(account_id, "test-account", "oauth", "test-token")
+        def resolve(*args, **kwargs):
+            clock[0] = expiry
+            return runtime
+        with patch.object(oauth_graph, "oauth_engagement_capability_state", return_value="active"), patch.object(
+            oauth_graph, "resolve_oauth_instagram_account_runtime", side_effect=resolve
+        ), patch.object(oauth_graph.requests, "post") as post, patch.object(oauth_graph, "datetime") as mock_clock:
+            mock_clock.now.side_effect = lambda zone: clock[0]
+            outcome = oauth_graph.send_oauth_delayed_followup(
+                lambda: nullcontext(object()), instagram_account_id=account_id,
+                instagram_user_id="test-account", recipient_id="test-recipient",
+                message_text="Configured follow-up", provider_window_expires_at=expiry,
+            )
+        self.assertEqual(outcome, "outside_provider_window")
+        post.assert_not_called()
+
     def test_delayed_followup_uses_explicit_general_message_text(self):
         """A general follow-up must never be replaced by legacy prompt wording."""
 

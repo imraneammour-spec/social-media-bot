@@ -205,6 +205,88 @@ class OAuthWebhookCapabilityGateTest(unittest.TestCase):
             "OAUTH FOLLOW-UP: job claim unavailable. reason=RuntimeError:sanitized"
         )
 
+    def test_expired_response_triggered_followup_fails_without_graph_delivery(self):
+        """Removing the deadline guard would dispatch an outbound DM after the reply window."""
+        from database.models import InstagramOAuthFollowupJob
+        from database.oauth_followups import schedule_oauth_followup
+
+        now = datetime.now(timezone.utc)
+        with self.Session.begin() as session:
+            job = schedule_oauth_followup(
+                session,
+                instagram_account_id=self.account_id,
+                source_message_id="expired-response-reply",
+                recipient_id="expired-response-recipient",
+                message_text="Configured follow-up",
+                run_at=now - timedelta(minutes=1),
+                provider_window_expires_at=now - timedelta(seconds=1),
+            )
+            job_id = job.id
+
+        with patch.object(self.module, "send_oauth_delayed_followup") as send_followup:
+            self.module.process_due_oauth_followups(now=now)
+
+        with self.Session() as session:
+            job = session.get(InstagramOAuthFollowupJob, job_id)
+        self.assertEqual(job.state, "failed")
+        self.assertEqual(job.last_error_code, "outside_provider_window")
+        self.assertEqual(job.attempt_count, 1)
+        send_followup.assert_not_called()
+
+    def test_dispatch_boundary_expiry_is_terminal_and_clears_lease(self):
+        """A deadline reached inside credential resolution must not become an ambiguous retry."""
+        from database.models import InstagramOAuthFollowupJob
+        from database.oauth_followups import schedule_oauth_followup
+
+        now = datetime.now(timezone.utc)
+        with self.Session.begin() as session:
+            job = schedule_oauth_followup(
+                session, instagram_account_id=self.account_id,
+                source_message_id="boundary-expiry", recipient_id="boundary-recipient",
+                message_text="Configured follow-up", run_at=now - timedelta(seconds=1),
+                provider_window_expires_at=now + timedelta(seconds=1),
+            )
+            job_id = job.id
+        with patch.object(self.module, "send_oauth_delayed_followup", return_value="outside_provider_window"):
+            self.module.process_due_oauth_followups(now=now)
+        with self.Session() as session:
+            job = session.get(InstagramOAuthFollowupJob, job_id)
+            self.assertEqual(job.state, "failed")
+            self.assertEqual(job.last_error_code, "outside_provider_window")
+            self.assertIsNone(job.lease_token)
+            self.assertIsNone(job.lease_expires_at)
+            self.assertEqual(job.attempt_count, 1)
+
+    def test_in_window_response_triggered_followup_uses_existing_delivery_lifecycle(self):
+        """A response-triggered job inside the window must still claim and finalize normally."""
+        from database.models import InstagramOAuthFollowupJob
+        from database.oauth_followups import schedule_oauth_followup
+
+        now = datetime.now(timezone.utc)
+        with self.Session.begin() as session:
+            job = schedule_oauth_followup(
+                session,
+                instagram_account_id=self.account_id,
+                source_message_id="in-window-response-reply",
+                recipient_id="in-window-response-recipient",
+                message_text="Configured follow-up",
+                run_at=now - timedelta(minutes=1),
+                provider_window_expires_at=now + timedelta(hours=23),
+            )
+            job_id = job.id
+
+        with patch.object(
+            self.module, "send_oauth_delayed_followup", return_value="success"
+        ) as send_followup:
+            self.module.process_due_oauth_followups(now=now)
+
+        with self.Session() as session:
+            job = session.get(InstagramOAuthFollowupJob, job_id)
+        self.assertEqual(job.state, "sent")
+        self.assertIsNotNone(job.sent_at)
+        self.assertEqual(job.attempt_count, 0)
+        send_followup.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
