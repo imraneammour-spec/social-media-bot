@@ -3929,6 +3929,15 @@ def _log_oauth_engagement_failure(exc, *, context):
     )
 
 
+def _log_oauth_followup_claim_failure(exc):
+    """Report a safe class-only diagnostic for scheduler claim failures."""
+
+    print(
+        "OAUTH FOLLOW-UP: job claim unavailable. "
+        f"reason={type(exc).__name__}:sanitized"
+    )
+
+
 def _process_oauth_comment(value, route, entry_external_id, public_base_url, session_factory):
     comment_id = str(value.get("id") or "").strip()
     comment_text = str(value.get("text") or "").strip()
@@ -4189,8 +4198,8 @@ def process_due_oauth_followups(now=None):
         with session_factory.begin() as db_session:
             reap_expired_oauth_followup_leases(db_session, now=current)
             claimed_jobs = claim_due_oauth_followups(db_session, now=current)
-    except Exception:
-        print("OAUTH FOLLOW-UP: job claim unavailable.")
+    except Exception as exc:
+        _log_oauth_followup_claim_failure(exc)
         return
 
     for job in claimed_jobs:

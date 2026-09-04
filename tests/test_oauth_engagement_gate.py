@@ -192,6 +192,19 @@ class OAuthWebhookCapabilityGateTest(unittest.TestCase):
         self.assertEqual(job.attempt_count, 1)
         graph_post.assert_not_called()
 
+    def test_followup_claim_failure_logs_safe_exception_type_only(self):
+        """Claim diagnostics must identify a failure class without exposing its message."""
+        with patch.object(
+            self.module,
+            "reap_expired_oauth_followup_leases",
+            side_effect=RuntimeError("token=must-not-appear"),
+        ), patch("builtins.print") as log:
+            self.module.process_due_oauth_followups()
+
+        log.assert_any_call(
+            "OAUTH FOLLOW-UP: job claim unavailable. reason=RuntimeError:sanitized"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
