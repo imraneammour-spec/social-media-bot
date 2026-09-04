@@ -4046,7 +4046,7 @@ def _process_oauth_comment(value, route, entry_external_id, public_base_url, ses
                 followup_delay_minutes = 360
             with session_factory.begin() as db_session:
                 if followup_enabled and followup_message_text:
-                    schedule_oauth_followup(
+                    scheduled_followup = schedule_oauth_followup(
                         db_session,
                         instagram_account_id=route.instagram_account_id,
                         source_message_id=comment_id,
@@ -4054,6 +4054,11 @@ def _process_oauth_comment(value, route, entry_external_id, public_base_url, ses
                         message_text=followup_message_text,
                         run_at=datetime.now(timezone.utc) + timedelta(minutes=followup_delay_minutes),
                     )
+                    if scheduled_followup is None:
+                        print(
+                            "OAUTH FOLLOW-UP: job scheduling skipped. "
+                            "reason=deduped_or_invalid"
+                        )
                 complete_oauth_event(db_session, route.instagram_account_id, comment_id, "comment")
             return
 

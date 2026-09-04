@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -862,6 +863,42 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
         with self.session_factory() as session:
             self.assertEqual(session.query(InstagramOAuthFollowupJob).filter_by(
                 instagram_account_id=account.id, source_message_id="empty-general-keyword"
+            ).count(), 0)
+
+    def test_direct_keyword_logs_safe_followup_schedule_skip_for_recent_sent_dedupe(self):
+        """A deduped general follow-up must be observable without disclosing message data."""
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["hello"],
+            public_reply_enabled=False,
+            delivery_mode="direct_message",
+            private_message_text="Configured private reply",
+            followup_enabled=True,
+            followup_message_text="Configured general follow-up",
+        )
+        account = self._account(self.primary_external_id)
+        with self.session_factory.begin() as session:
+            session.add(InstagramOAuthFollowupJob(
+                instagram_account_id=account.id,
+                source_message_id="recent-sent-job",
+                recipient_id="recipient-general",
+                message_text="Prior follow-up",
+                state="sent",
+                run_at=datetime.now(timezone.utc),
+                sent_at=datetime.now(timezone.utc),
+            ))
+
+        with patch.object(
+            self.module, "send_oauth_private_comment_reply", return_value="recipient-general"
+        ), patch("builtins.print") as log:
+            self._process(self.primary_external_id, "deduped-general-keyword", "hello")
+
+        log.assert_any_call(
+            "OAUTH FOLLOW-UP: job scheduling skipped. reason=deduped_or_invalid"
+        )
+        with self.session_factory() as session:
+            self.assertEqual(session.query(InstagramOAuthFollowupJob).filter_by(
+                instagram_account_id=account.id, source_message_id="deduped-general-keyword"
             ).count(), 0)
 
     def test_duplicate_direct_keyword_does_not_duplicate_delivery_or_followup(self):
