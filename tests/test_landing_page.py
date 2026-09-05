@@ -122,6 +122,15 @@ class LandingPageTest(unittest.TestCase):
         self.assertIn('property="og:title"', page)
         self.assertIn('rel="canonical"', page)
 
+    def test_landing_contains_google_site_verification_tag_once(self):
+        page = self.client.get("/").get_data(as_text=True)
+        verification_tag = (
+            '<meta name="google-site-verification" '
+            'content="DLtPOJlpIzjjlfxZ45fOISi0hD3JhPcp9L4D3f6LD4I" />'
+        )
+
+        self.assertEqual(page.count(verification_tag), 1)
+
     def test_landing_localizes_french_without_translating_product_name(self):
         page = self._page_for_locale("fr")
 
