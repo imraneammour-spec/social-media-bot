@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
 
@@ -130,6 +131,44 @@ class LandingPageTest(unittest.TestCase):
         )
 
         self.assertEqual(page.count(verification_tag), 1)
+
+    def test_sitemap_exposes_only_the_canonical_public_homepage(self):
+        response = self.client.get("/sitemap.xml")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/xml")
+        root = ET.fromstring(response.get_data(as_text=True))
+        locations = [
+            element.text
+            for element in root.findall("{http://www.sitemaps.org/schemas/sitemap/0.9}url/{http://www.sitemaps.org/schemas/sitemap/0.9}loc")
+        ]
+        self.assertEqual(locations, ["https://postenza.app/"])
+
+    def test_robots_allows_the_homepage_and_protects_private_routes(self):
+        response = self.client.get("/robots.txt")
+        expected = (
+            "User-agent: *\n"
+            "Allow: /\n"
+            "Disallow: /app\n"
+            "Disallow: /dashboard\n"
+            "Disallow: /login\n"
+            "Disallow: /register\n"
+            "Disallow: /logout\n"
+            "Disallow: /connect/\n"
+            "Disallow: /disconnect/\n"
+            "Disallow: /oauth/\n"
+            "Disallow: /webhook\n"
+            "Disallow: /api/\n"
+            "Disallow: /health\n"
+            "Disallow: /p/\n"
+            "\n"
+            "Sitemap: https://postenza.app/sitemap.xml\n"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "text/plain")
+        self.assertEqual(response.get_data(as_text=True), expected)
+        self.assertNotIn("Disallow: /", response.get_data(as_text=True).splitlines())
 
     def test_landing_localizes_french_without_translating_product_name(self):
         page = self._page_for_locale("fr")

@@ -296,6 +296,44 @@ def home():
     )
 
 
+@app.route("/sitemap.xml", methods=["GET"])
+def sitemap():
+    return Response(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://postenza.app/</loc>
+  </url>
+</urlset>
+""",
+        mimetype="application/xml",
+    )
+
+
+@app.route("/robots.txt", methods=["GET"])
+def robots():
+    return Response(
+        """User-agent: *
+Allow: /
+Disallow: /app
+Disallow: /dashboard
+Disallow: /login
+Disallow: /register
+Disallow: /logout
+Disallow: /connect/
+Disallow: /disconnect/
+Disallow: /oauth/
+Disallow: /webhook
+Disallow: /api/
+Disallow: /health
+Disallow: /p/
+
+Sitemap: https://postenza.app/sitemap.xml
+""",
+        mimetype="text/plain",
+    )
+
+
 @app.route("/health", methods=["GET"])
 def health():
     """Return a constant liveness response without touching application state."""
