@@ -13,6 +13,7 @@ from auth import (
     action_reference_for_account,
     configure_auth,
     csrf_token,
+    register_auth_routes,
 )
 from database.models import (
     Base,
@@ -47,6 +48,9 @@ class TestPhase5B1BAutomations(unittest.TestCase):
             production=False,
         )
 
+        # The production app registers auth routes before the tenant shell,
+        # including its real CSRF-protected POST /logout endpoint.
+        register_auth_routes(self.app)
         register_tenant_dashboard(self.app)
 
         from database.runtime import create_session_factory
@@ -137,7 +141,8 @@ class TestPhase5B1BAutomations(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Automations", response.data)
+        self.assertIn(b"<h1>Automation</h1>", response.data)
+        self.assertIn(b'action="/logout"', response.data)
         self.assertIn(b"test_account", response.data)
 
     def test_automations_update_own(self):

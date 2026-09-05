@@ -1,65 +1,66 @@
 {% extends "app_base.html" %}
-{% block title %}Analytics{% endblock %}
-{% block heading %}Analytics{% endblock %}
+{% block title %}{{ t('Analytics') }}{% endblock %}
+{% block heading %}{{ t('Analytics') }}{% endblock %}
 {% block content %}
-<p class="muted">Operational analytics for the selected account, derived from persisted data.</p>
-<form method="get" action="{{ url_for('tenant_dashboard.app_analytics') }}" class="card activity-filters" aria-label="Analytics time range">
+<p class="muted">{{ t('Operational analytics for the selected account, derived from persisted data.') }}</p>
+<form method="get" action="{{ url_for('tenant_dashboard.app_analytics') }}" class="card activity-filters" aria-label="{{ t('Analytics time range') }}">
     <input type="hidden" name="account" value="{{ selected_account.selection_ref }}">
-    <label>Time range
+    <label>{{ t('Time range') }}
         <select name="range">
-            {% for value, label in range_filters %}<option value="{{ value }}" {% if selected_range == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+            {% for value, label in range_filters %}<option value="{{ value }}" {% if selected_range == value %}selected{% endif %}>{{ t(label) }}</option>{% endfor %}
         </select>
     </label>
-    <button type="submit">Apply range</button>
+    <button type="submit">{{ t('Apply range') }}</button>
 </form>
 
-{% if analytics.metrics.total_events == 0 and analytics.metrics.prompt_requests == 0 and analytics.metrics.smart_replies_sent == 0 and analytics.metrics.followups_scheduled == 0 and analytics.metrics.followups_sent == 0 and analytics.metrics.followups_failed == 0 and analytics.metrics.prompt_enabled_content == 0 %}
-<p class="empty-state">No activity in this time range.</p>
+{% if analytics.metrics.direct_private_replies == 0 and analytics.metrics.qualifying_recipient_replies == 0 and analytics.metrics.total_events == 0 and analytics.metrics.prompt_requests == 0 and analytics.metrics.smart_replies_sent == 0 and analytics.metrics.followups_scheduled == 0 and analytics.metrics.followups_sent == 0 and analytics.metrics.followups_failed == 0 and analytics.metrics.prompt_enabled_content == 0 %}
+<p class="empty-state">{{ t('No activity in this time range.') }}</p>
 {% endif %}
 
-<section class="summary-grid" aria-label="Key metrics">
-    <dl class="summary-card card"><dt>Comments handled</dt><dd>{{ analytics.metrics.comments_handled }}</dd></dl>
-    <dl class="summary-card card"><dt>Messages handled</dt><dd>{{ analytics.metrics.messages_handled }}</dd></dl>
-    <dl class="summary-card card"><dt>Prompt requests</dt><dd>{{ analytics.metrics.prompt_requests }}</dd></dl>
-    <dl class="summary-card card"><dt>Smart replies sent</dt><dd>{{ analytics.metrics.smart_replies_sent }}</dd></dl>
-    <dl class="summary-card card"><dt>Follow-ups scheduled</dt><dd>{{ analytics.metrics.followups_scheduled }}</dd></dl>
+<section class="summary-grid" aria-label="{{ t('Key metrics') }}">
+    <dl class="summary-card card"><dt>{{ t('Comment events') }}</dt><dd>{{ analytics.metrics.comments_handled }}</dd></dl>
+    <dl class="summary-card card"><dt>{{ t('Message events') }}</dt><dd>{{ analytics.metrics.messages_handled }}</dd></dl>
+    <dl class="summary-card card"><dt>{{ t('Custom-message interactions') }}</dt><dd>{{ analytics.metrics.direct_private_replies }}</dd></dl>
+    <dl class="summary-card card"><dt>{{ t('Smart replies sent') }}</dt><dd>{{ analytics.metrics.smart_replies_sent }}</dd></dl>
+    <dl class="summary-card card"><dt>{{ t('Follow-ups queued') }}</dt><dd>{{ analytics.metrics.followups_scheduled }}</dd></dl>
 </section>
 
-<section class="summary-grid" aria-label="Delivery metrics">
-    <dl class="summary-card card"><dt>Follow-ups sent</dt><dd>{{ analytics.metrics.followups_sent }}</dd></dl>
-    <dl class="summary-card card"><dt>Follow-ups failed</dt><dd>{{ analytics.metrics.followups_failed }}</dd></dl>
-    <dl class="summary-card card"><dt>Prompt-enabled content</dt><dd>{{ analytics.metrics.prompt_enabled_content }}</dd></dl>
-    <dl class="summary-card card"><dt>Failed events</dt><dd>{{ analytics.metrics.failed_events }}</dd></dl>
-    <dl class="summary-card card"><dt>Completed events</dt><dd>{{ analytics.metrics.completed_events }}</dd></dl>
-</section>
-
-<section class="card detail-card">
-    <h2>Follow-up delivery</h2>
-    <p>Scheduled {{ analytics.followup_breakdown.scheduled }} &middot; Processing {{ analytics.followup_breakdown.processing }} &middot; Sent {{ analytics.followup_breakdown.sent }} &middot; Cancelled {{ analytics.followup_breakdown.cancelled }} &middot; Failed {{ analytics.followup_breakdown.failed }}</p>
+<section class="summary-grid" aria-label="{{ t('Delivery metrics') }}">
+    <dl class="summary-card card"><dt>{{ t('Follow-ups sent') }}</dt><dd>{{ analytics.metrics.followups_sent }}</dd></dl>
+    <dl class="summary-card card"><dt>{{ t('Follow-ups failed') }}</dt><dd>{{ analytics.metrics.followups_failed }}</dd></dl>
+    <dl class="summary-card card"><dt>{{ t('Qualifying recipient replies') }}</dt><dd>{{ analytics.metrics.qualifying_recipient_replies }}</dd></dl>
+    <dl class="summary-card card"><dt>{{ t('Failed events') }}</dt><dd>{{ analytics.metrics.failed_events }}</dd></dl>
+    <dl class="summary-card card"><dt>{{ t('Completed events') }}</dt><dd>{{ analytics.metrics.completed_events }}</dd></dl>
 </section>
 
 <section class="card detail-card">
-    <h2>Engagement reliability</h2>
-    <p>Completed {{ analytics.engagement_breakdown.done }} &middot; Processing {{ analytics.engagement_breakdown.processing }} &middot; Failed {{ analytics.engagement_breakdown.failed }}</p>
+    <h2>{{ t('Follow-up delivery') }}</h2>
+    <p>{{ t('Scheduled') }} {{ analytics.followup_breakdown.scheduled }} {{ t('· Processing') }} {{ analytics.followup_breakdown.processing }} {{ t('· Sent') }} {{ analytics.followup_breakdown.sent }} {{ t('· Cancelled') }} {{ analytics.followup_breakdown.cancelled }} {{ t('· Failed') }} {{ analytics.followup_breakdown.failed }}</p>
+</section>
+
+<section class="card detail-card">
+    <h2>{{ t('Engagement reliability') }}</h2>
+    <p>{{ t('Completed') }} {{ analytics.engagement_breakdown.done }} {{ t('· Processing') }} {{ analytics.engagement_breakdown.processing }} {{ t('· Failed') }} {{ analytics.engagement_breakdown.failed }}</p>
     {% if analytics.metrics.total_events > 0 %}
-    <p class="muted">Failure rate: {{ "%.1f" | format((analytics.metrics.failed_events / analytics.metrics.total_events) * 100) }}%</p>
+    <p class="muted">{{ t('Failure rate:') }} {{ "%.1f" | format((analytics.metrics.failed_events / analytics.metrics.total_events) * 100) }}%</p>
     {% else %}
-    <p class="muted">No engagement events in this range.</p>
+    <p class="muted">{{ t('No engagement events in this range.') }}</p>
     {% endif %}
 </section>
 
 <section class="card detail-card">
-    <h2>Lead activity</h2>
-    <p>Total {{ analytics.metrics.leads_total }} &middot; Active {{ analytics.metrics.leads_active }} &middot; Archived {{ analytics.metrics.leads_archived }}</p>
-    <p class="muted">New {{ analytics.lead_breakdown.new }} &middot; Contacted {{ analytics.lead_breakdown.contacted }} &middot; Qualified {{ analytics.lead_breakdown.qualified }} &middot; Won {{ analytics.lead_breakdown.won }} &middot; Lost {{ analytics.lead_breakdown.lost }}</p>
+    <h2>{{ t('Lead activity') }}</h2>
+    <p>{{ t('Total') }} {{ analytics.metrics.leads_total }} {{ t('· Active') }} {{ analytics.metrics.leads_active }} {{ t('· Archived') }} {{ analytics.metrics.leads_archived }}</p>
+    <p class="muted">{{ t('New') }} {{ analytics.lead_breakdown.new }} {{ t('· Contacted') }} {{ analytics.lead_breakdown.contacted }} {{ t('· Qualified') }} {{ analytics.lead_breakdown.qualified }} {{ t('· Won') }} {{ analytics.lead_breakdown.won }} {{ t('· Lost') }} {{ analytics.lead_breakdown.lost }}</p>
 </section>
 
 {% if analytics.recent_failures %}
 <section class="card detail-card">
-    <h2>Recent failures</h2>
+    <h2>{{ t('Recent failures') }}</h2>
     {% for failure in analytics.recent_failures %}
-    <p>{{ failure.type }} &middot; {{ failure.state }} &middot; {{ failure.occurred_at }}</p>
+    <p>{{ t(failure.type) }} &middot; {{ t(failure.state) }} &middot; {{ display_time(failure.occurred_at) }}</p>
     {% endfor %}
 </section>
 {% endif %}
+<section class="card detail-card"><h2>{{ t('About these metrics') }}</h2><p class="muted">{{ t('Counts come from recorded account activity, not Instagram reach or impressions. Comment events are not a count of successful public replies. Qualifying replies are those linked to an initial custom message.') }}</p><p class="muted">{{ t('Counts include saved custom-message follow-up interactions, not every private message sent.') }}</p><p class="muted">{{ t('Time ranges select records created in that period and show their current status. Recipient replies use reply time.') }}</p><details><summary>{{ t('Prompt delivery details') }}</summary><p>{{ t("Prompt requests") }}: {{ analytics.metrics.prompt_requests }} · {{ t("Prompt-enabled content") }}: {{ analytics.metrics.prompt_enabled_content }}</p></details></section>
 {% endblock %}

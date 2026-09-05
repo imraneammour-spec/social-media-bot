@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 from werkzeug.security import check_password_hash, generate_password_hash
+from dashboard.i18n import locale_context, session_locale, translate
 
 from database.credentials import CredentialConfigurationError, credential_keyring_from_environment
 from database.instagram_connection import (
@@ -349,6 +350,10 @@ def _validate_registration(display_name: str, email: str, password: str) -> str 
     return None
 
 
+def _auth_ui_text(message, **values):
+    return translate(session_locale(session), message, **values)
+
+
 def _auth_template(template_name: str, *, status: int = 200, error: str | None = None):
     return render_template(template_name, csrf_token=csrf_token(), error=error), status
 
@@ -456,7 +461,7 @@ def register_auth_routes(app) -> None:
     @login_required
     def logout():
         if not validate_csrf_token(request_csrf_token()):
-            return "Invalid form token.", 400
+            return _auth_ui_text("Invalid form token."), 400
         clear_authenticated_session()
         return redirect(url_for("login"))
 
@@ -464,18 +469,18 @@ def register_auth_routes(app) -> None:
     @login_required
     def start_instagram_connection():
         if not validate_csrf_token(request_csrf_token()):
-            return "Invalid form token.", 400
+            return _auth_ui_text("Invalid form token."), 400
         user = get_current_user()
         if user is None:
             return _unauthenticated_response()
         if current_user_has_legacy_workspace_access():
-            return "Instagram connection is not available for this account.", 403
+            return _auth_ui_text("Instagram connection is not available for this account."), 403
         try:
             configuration = oauth_configuration_from_environment(
                 production=bool(current_app.config.get("SESSION_COOKIE_SECURE")),
             )
         except OAuthConfigurationError:
-            return "Instagram connection configuration is unavailable.", 503
+            return _auth_ui_text("Instagram connection configuration is unavailable."), 503
         state = issue_instagram_oauth_state(user.id)
         return redirect(configuration.authorization_url(state))
 
@@ -488,13 +493,13 @@ def register_auth_routes(app) -> None:
         try:
             consume_instagram_oauth_state(request.args.get("state"), user.id)
         except OAuthStateError:
-            return "Instagram authorization could not be completed.", 400
+            return _auth_ui_text("Instagram authorization could not be completed."), 400
 
         if any(request.args.get(name) for name in ("error", "error_reason", "error_description")):
-            return "Instagram authorization could not be completed.", 400
+            return _auth_ui_text("Instagram authorization could not be completed."), 400
         authorization_code = request.args.get("code")
         if not isinstance(authorization_code, str) or not authorization_code:
-            return "Instagram authorization could not be completed.", 400
+            return _auth_ui_text("Instagram authorization could not be completed."), 400
         try:
             configuration = oauth_configuration_from_environment(
                 production=bool(current_app.config.get("SESSION_COOKIE_SECURE")),
@@ -514,7 +519,7 @@ def register_auth_routes(app) -> None:
                 keyring=keyring,
             )
         except (OAuthConfigurationError, CredentialConfigurationError):
-            return "Instagram connection configuration is unavailable.", 503
+            return _auth_ui_text("Instagram connection configuration is unavailable."), 503
         except OAuthExchangeError as error:
             if error.diagnostic_stage == OAUTH_CALLBACK_STAGE_LONG_EXCHANGE_FAILED:
                 diagnostics = error.safe_diagnostics
@@ -528,13 +533,13 @@ def register_auth_routes(app) -> None:
                 )
             else:
                 current_app.logger.warning(error.diagnostic_stage)
-            return "Instagram connection could not be completed.", 502
+            return _auth_ui_text("Instagram connection could not be completed."), 502
         except OAuthDiscoveryError as error:
             current_app.logger.warning(error.diagnostic_stage)
-            return "Instagram connection could not be completed.", 502
+            return _auth_ui_text("Instagram connection could not be completed."), 502
         except InstagramConnectionError:
             current_app.logger.warning(OAUTH_CALLBACK_STAGE_CONNECTION_PRECOMMIT_FAILED)
-            return "Instagram connection could not be completed.", 502
+            return _auth_ui_text("Instagram connection could not be completed."), 502
         account_ref = action_reference_for_account(
             user.id,
             account.id,
@@ -551,7 +556,7 @@ def register_auth_routes(app) -> None:
         """Erase one owned OAuth credential through an opaque, CSRF-bound action."""
 
         if not validate_csrf_token(request_csrf_token()):
-            return "Invalid form token.", 400
+            return _auth_ui_text("Invalid form token."), 400
         user = get_current_user()
         state = _auth_state()
         if user is None:
@@ -568,7 +573,7 @@ def register_auth_routes(app) -> None:
                     secret_key=current_app.secret_key,
                 )
             if account is None:
-                return "Instagram connection could not be completed.", 400
+                return _auth_ui_text("Instagram connection could not be completed."), 400
             disconnect_owned_instagram_connection(
                 state.session_factory,
                 user_id=user.id,
@@ -578,7 +583,7 @@ def register_auth_routes(app) -> None:
         except SQLAlchemyError:
             return _unavailable_response()
         except InstagramConnectionError:
-            return "Instagram connection could not be completed.", 400
+            return _auth_ui_text("Instagram connection could not be completed."), 400
         return redirect(url_for("onboarding"))
 
     @app.get("/onboarding")
@@ -595,6 +600,8 @@ def register_auth_routes(app) -> None:
             return _unavailable_response()
         return render_template(
             "onboarding.html",
+            locale=locale_context(session_locale(session)),
+            t=_auth_ui_text,
             current_user=user,
             csrf_token=csrf_token(),
             account_statuses=build_onboarding_account_statuses(
@@ -651,7 +658,7 @@ def _unauthenticated_response():
 def _unavailable_response():
     if request.path.startswith("/api/") or request.path.startswith("/draft-image/"):
         return jsonify(error="Authentication service is unavailable."), 503
-    return "Authentication service is unavailable.", 503
+    return _auth_ui_text("Authentication service is unavailable."), 503
 
 
 def login_required(function: F) -> F:

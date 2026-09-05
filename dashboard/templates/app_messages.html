@@ -1,26 +1,26 @@
 {% extends "app_base.html" %}
-{% block title %}Messages{% endblock %}
-{% block heading %}Messages{% endblock %}
+{% block title %}{{ t('Message activity') }}{% endblock %}
+{% block heading %}{{ t('Message activity') }}{% endblock %}
 {% block content %}
 {% set engagement_section = 'messages' %}{% include "_engagement_tabs.html" %}
-<section class="page-intro"><p class="eyebrow">Engagement</p><h2>Conversations</h2><p class="muted">Recent messages and interactions for the selected Instagram account.</p></section>
-<form method="get" action="{{ url_for('tenant_dashboard.app_messages') }}" class="card activity-filters" aria-label="Message filters">
+<section class="page-intro"><p class="eyebrow">{{ t('Engagement') }}</p><h2>{{ t('Message activity') }}</h2><p class="muted">{{ t('Recent messages and interactions for the selected Instagram account.') }}</p></section>
+<form method="get" action="{{ url_for('tenant_dashboard.app_messages') }}" class="card activity-filters" aria-label="{{ t('Message filters') }}">
     <input type="hidden" name="account" value="{{ selected_account.selection_ref }}">
-    <label>Show
+    <label>{{ t('Show') }}
         <select name="filter">
-            {% for value, label in message_filters %}<option value="{{ value }}" {% if selected_filter == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+            {% for value, label in message_filters %}<option value="{{ value }}" {% if selected_filter == value %}selected{% endif %}>{{ t(label) }}</option>{% endfor %}
         </select>
     </label>
-    <button class="button button-primary" type="submit">Apply filter</button>
+    <button class="button button-primary" type="submit">{{ t('Apply filter') }}</button>
 </form>
-<section class="page-stack" aria-label="Account messages">
+<section class="page-stack" aria-label="{{ t('Account messages') }}">
 {% for item in messages %}
-<article class="card activity-card activity-feed-item"><span class="activity-icon" aria-hidden="true">◆</span><div><h2>{{ item.type }}</h2><p class="muted">{% if item.username %}{{ item.username }} · {% endif %}{{ item.detail or item.status }}</p><p class="muted">{{ item.display_time }}</p></div></article>
-{% else %}<p class="empty-state">No messages or interactions yet. New Instagram interactions will appear here when engagement automation is active.</p>{% endfor %}
+<article class="card activity-card activity-feed-item"><span class="activity-icon" aria-hidden="true">◆</span><div><h2>{{ t(item.type) }}</h2><p class="muted">{% if item.username %}{{ display_username(item.username) }} · {% endif %}{{ t(item.detail or item.status) }}</p><p class="muted">{{ display_time(item.occurred_at) }}</p></div></article>
+{% else %}<p class="empty-state">{{ t('No messages or interactions yet. New Instagram interactions will appear here when engagement automation is active.') }}</p>{% endfor %}
 </section>
-<nav aria-label="Message pagination">
-    {% if message_page.has_previous %}<a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_messages', account=selected_account.selection_ref, filter=selected_filter, page=message_page.page - 1) }}">Previous</a>{% endif %}
-    <span>Page {{ message_page.page }}</span>
-    {% if message_page.has_next %}<a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_messages', account=selected_account.selection_ref, filter=selected_filter, page=message_page.page + 1) }}">Next</a>{% endif %}
+<nav aria-label="{{ t('Message pagination') }}">
+    {% if message_page.has_previous %}<a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_messages', account=selected_account.selection_ref, filter=selected_filter, page=message_page.page - 1) }}">{{ t('Previous') }}</a>{% endif %}
+    <span>{{ t('Page') }} {{ message_page.page }}</span>
+    {% if message_page.has_next %}<a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_messages', account=selected_account.selection_ref, filter=selected_filter, page=message_page.page + 1) }}">{{ t('Next') }}</a>{% endif %}
 </nav>
 {% endblock %}

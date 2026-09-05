@@ -81,7 +81,7 @@ from auth import (
     verify_meta_signature,
     webhook_signature_verification_active,
 )
-from dashboard.i18n import LOCALE_META, LOCALE_SESSION_KEY, locale_context, normalize_locale, translate
+from dashboard.i18n import LOCALE_META, LOCALE_SESSION_KEY, locale_context, normalize_locale, translate, session_locale
 from tenant_dashboard import register_tenant_dashboard
 
 from google import genai
@@ -286,7 +286,7 @@ else:
 
 @app.route("/", methods=["GET"])
 def home():
-    locale = locale_context(session.get(LOCALE_SESSION_KEY))
+    locale = locale_context(session_locale(session))
     return render_template(
         "landing.html",
         csrf_token=csrf_token(),

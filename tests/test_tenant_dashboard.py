@@ -777,9 +777,9 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertIn('/static/tenant_dashboard.css', page)
         self.assertIn('aria-label="Primary navigation"', page)
         self.assertIn('aria-current="page"><svg', page)
-        for label in ("Content", "Calendar", "Engagement", "Automation", "Instagram"):
+        for label in ("Content", "Calendar", "Engagement", "Automation", "Instagram", "Analytics"):
             self.assertIn(f">{label}</a>", page)
-        for legacy_label in ("Home", "Leads", "Messages", "Scheduler", "Analytics", "Accounts", "Activity", "Follow-ups"):
+        for legacy_label in ("Home", "Leads", "Messages", "Scheduler", "Accounts", "Activity", "Follow-ups"):
             self.assertNotIn(f">{legacy_label}</a>", page)
         self.assertIn('aria-label="Open navigation"', page)
         self.assertIn('action="/logout"', page)
@@ -1057,11 +1057,11 @@ class TenantDashboardTest(unittest.TestCase):
             ))
         page = self.client.get("/app/automations").get_data(as_text=True)
 
-        for label in ("Automation status", "Public interactions", "Private interactions", "Smart replies"):
+        for label in ("Automation status", "Reply to matching comments", "Private message and follow-up", "Smart replies"):
             self.assertIn(label, page)
         for field in ("automation_enabled", "public_reply_enabled", "followup_enabled", "smart_reply_enabled"):
             self.assertIn(f'id="{field}"', page)
-        self.assertIn("visible publicly", page)
+        self.assertIn("Public replies appear on your Instagram post.", page)
         self.assertNotIn("Required system step", page)
 
     def test_engagement_routes_share_accessible_tabs_without_sidebar_duplication(self):
@@ -1073,7 +1073,7 @@ class TenantDashboardTest(unittest.TestCase):
             page = self.client.get(f"/app/{path}?account={selected}").get_data(as_text=True)
             self.assertIn('class="engagement-tabs"', page)
             self.assertIn('aria-label="Engagement sections"', page)
-            for label in ("Leads", "Conversations", "Activity", "Follow-ups"):
+            for label in ("Leads", "Message activity", "Activity", "Follow-ups"):
                 self.assertIn(f">{label}</a>", page)
 
     def test_postenza_brand_assets_and_browser_identity_render_in_workspace(self):
@@ -1238,6 +1238,6 @@ class TenantDashboardTest(unittest.TestCase):
         self._login_as(self.owner_a)
         page = self.client.get("/app/activity").get_data(as_text=True)
 
-        self.assertIn("UTC", page)
+        self.assertIn("Times shown in Africa/Casablanca.", page)
         activity_markup = page.split('aria-label="Account activity"', 1)[1].split("</section>", 1)[0]
         self.assertIsNone(re.search(r"\d{4}-\d{2}-\d{2}T", activity_markup))

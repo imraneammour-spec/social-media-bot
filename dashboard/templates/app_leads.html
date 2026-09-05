@@ -1,79 +1,81 @@
 {% extends "app_base.html" %}
-{% block title %}Leads{% endblock %}
-{% block heading %}Leads{% endblock %}
+{% block title %}{{ t('Leads') }}{% endblock %}
+{% block heading %}{{ t('Leads') }}{% endblock %}
 {% block content %}
 {% set engagement_section = 'leads' %}{% include "_engagement_tabs.html" %}
-<section class="page-intro"><p class="eyebrow">Engagement</p><h2>People who engaged with your account</h2><p class="muted">Review interactions, keep notes, and update each lead when you are ready.</p></section>
-<form method="get" action="{{ url_for('tenant_dashboard.app_leads') }}" class="card lead-filters" aria-label="Lead filters">
+<section class="page-intro"><p class="eyebrow">{{ t('Engagement') }}</p><h2>{{ t('People who engaged with your account') }}</h2><p class="muted">{{ t('Review interactions, keep notes, and update each lead when you are ready.') }}</p></section>
+<form method="get" action="{{ url_for('tenant_dashboard.app_leads') }}" class="card lead-filters" aria-label="{{ t('Lead filters') }}">
     <input type="hidden" name="account" value="{{ selected_account.selection_ref }}">
-    <label>View
+    <label>{{ t('View') }}
         <select name="view">
-            <option value="active" {% if selected_view == 'active' %}selected{% endif %}>Active</option>
-            <option value="archived" {% if selected_view == 'archived' %}selected{% endif %}>Archived</option>
-            <option value="all" {% if selected_view == 'all' %}selected{% endif %}>All</option>
+            <option value="active" {% if selected_view == 'active' %}selected{% endif %}>{{ t('Active') }}</option>
+            <option value="archived" {% if selected_view == 'archived' %}selected{% endif %}>{{ t('Archived') }}</option>
+            <option value="all" {% if selected_view == 'all' %}selected{% endif %}>{{ t('All') }}</option>
         </select>
     </label>
-    <label>Stage
+    <label>{{ t('Stage') }}
         <select name="stage">
-            <option value="">All stages</option>
-            {% for status in lead_statuses %}<option value="{{ status }}" {% if selected_stage == status %}selected{% endif %}>{{ status|capitalize }}</option>{% endfor %}
+            <option value="">{{ t('All stages') }}</option>
+            {% for status in lead_statuses %}<option value="{{ status }}" {% if selected_stage == status %}selected{% endif %}>{{ t(status|capitalize) }}</option>{% endfor %}
         </select>
     </label>
-    <label>Search username
+    <label>{{ t('Search username') }}
         <input type="search" name="q" maxlength="80" value="{{ selected_search }}">
     </label>
-    <label>Sort
+    <label>{{ t('Sort') }}
         <select name="sort">
-            <option value="newest" {% if selected_sort == 'newest' %}selected{% endif %}>Newest</option>
-            <option value="oldest" {% if selected_sort == 'oldest' %}selected{% endif %}>Oldest</option>
+            <option value="newest" {% if selected_sort == 'newest' %}selected{% endif %}>{{ t('Newest') }}</option>
+            <option value="oldest" {% if selected_sort == 'oldest' %}selected{% endif %}>{{ t('Oldest') }}</option>
         </select>
     </label>
-    <button class="button button-primary" type="submit">Apply filters</button>
+    <button class="button button-primary" type="submit">{{ t('Apply filters') }}</button>
 </form>
+<section class="card"><h2>{{ t('Custom-message interactions') }}</h2><p class="helper-text">{{ t('Latest 25 interactions') }}</p><p class="muted">{{ t('Read-only interaction history. Notes, stages and analysis are available only for lead records that support them.') }}</p>{% for interaction in direct_interactions %}<article class="list-row"><div><strong>{{ t(interaction.source_type) }}</strong><p>{{ t(interaction.status) }}</p><time>{{ display_time(interaction.created_at) }}</time></div></article>{% else %}<p class="empty-state">{{ t('No custom-message interactions yet.') }}</p>{% endfor %}</section>
+<h2>{{ t('Managed lead records') }}</h2>
 {% for lead in leads %}
 <article class="card lead-card">
-    <h2>{{ lead.username }}</h2>
-    {% if lead.cover_url %}<img class="lead-source-preview" src="{{ lead.cover_url }}" alt="Source Instagram post preview" loading="lazy" referrerpolicy="no-referrer">{% endif %}
-    <details><summary>Interaction details</summary><p>Recorded at {{ lead.requested_at }}.</p>{% if lead.internal_note %}<p>Internal note saved.</p>{% endif %}</details>
-    <p>{{ lead.prompt_state }} · {{ lead.base_stage_label }} · {{ lead.archived_label }}</p>
-    <p class="muted">{{ lead.requested_at }}</p>
-    <section class="lead-intelligence" aria-label="Lead intelligence">
-        <h3>Lead intelligence</h3>
+    <h2>{{ display_username(lead.username) }}</h2>
+    {% if lead.cover_url %}<img class="lead-source-preview" src="{{ lead.cover_url }}" alt="{{ t('Source Instagram post preview') }}" loading="lazy" referrerpolicy="no-referrer">{% endif %}
+    <details><summary>{{ t('Interaction details') }}</summary><p>{{ t('Recorded at') }} {{ display_time(lead.requested_at) }}.</p>{% if lead.internal_note %}<p>{{ t('Internal note saved.') }}</p>{% endif %}</details>
+    <p>{{ t(lead.prompt_state) }} · {{ t(lead.base_stage_label) }} · {{ t(lead.archived_label) }}</p>
+    <p class="muted">{{ display_time(lead.requested_at) }}</p>
+    <section class="lead-intelligence" aria-label="{{ t('Lead intelligence') }}">
+        <h3>{{ t('Lead intelligence') }}</h3>
         {% if lead.ai_intent %}
-        <p>Intent: {{ lead.ai_intent|replace('_', ' ')|title }} &middot; Priority: {{ lead.ai_priority|title }}</p>
-        <p>{{ lead.ai_summary }}</p>
-        <p class="muted">Suggested follow-up: {{ lead.ai_suggested_followup }}</p>
-        {% else %}<p class="muted">Not analyzed</p>{% endif %}
+        <p>{{ t('Intent:') }} {{ t(lead.ai_intent|replace('_', ' ')|title) }} {{ t('· Priority:') }} {{ t(lead.ai_priority|title) }}</p>
+        <p>{{ t(lead.ai_summary) if lead.ai_summary == 'Limited recorded interaction is available for this lead.' else lead.ai_summary }}</p>
+        <p class="muted">{{ t('Suggested next action:') }} {{ t(lead.ai_suggested_followup) if lead.ai_suggested_followup == 'Wait for another interaction before following up.' else lead.ai_suggested_followup }}</p>
+        {% else %}<p class="muted">{{ t('Not analyzed') }}</p>{% endif %}
         <form method="post" class="lead-action" action="{{ url_for('tenant_dashboard.app_lead_analyze', account=selected_account.selection_ref) }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="lead_action" value="{{ lead.analysis_action }}">
-            <button class="button button-secondary" type="submit">{{ 'Refresh analysis' if lead.ai_intent else 'Analyze lead' }}</button>
+            <button class="button button-secondary" type="submit">{{ t('Refresh analysis') if lead.ai_intent else t('Analyze lead') }}</button>
         </form>
     </section>
-    {% if lead.post_permalink %}<p><a class="button button-secondary" href="{{ lead.post_permalink }}" target="_blank" rel="noopener noreferrer">View Instagram post</a></p>{% endif %}
+    {% if lead.post_permalink %}<p><a class="button button-secondary" href="{{ lead.post_permalink }}" target="_blank" rel="noopener noreferrer">{{ t('View Instagram post') }}</a></p>{% endif %}
     <form method="post" class="lead-action" action="{{ url_for('tenant_dashboard.app_lead_status', account=selected_account.selection_ref) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="lead_action" value="{{ lead.status_action }}">
-        <label>Stage <select name="lead_status">{% for status in lead_statuses %}<option value="{{ status }}" {% if lead.base_stage == status %}selected{% endif %}>{{ status|capitalize }}</option>{% endfor %}</select></label>
-        <button class="button button-secondary" type="submit">Save stage</button>
+        <label>{{ t('Stage') }} <select name="lead_status">{% for status in lead_statuses %}<option value="{{ status }}" {% if lead.base_stage == status %}selected{% endif %}>{{ t(status|capitalize) }}</option>{% endfor %}</select></label>
+        <button class="button button-secondary" type="submit">{{ t('Save stage') }}</button>
     </form>
     <form method="post" class="lead-action" action="{{ url_for('tenant_dashboard.app_lead_note', account=selected_account.selection_ref) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="lead_action" value="{{ lead.note_action }}">
-        <label>Internal note <textarea name="internal_note" maxlength="2000">{{ lead.internal_note or '' }}</textarea></label>
-        <button class="button button-secondary" type="submit">Save note</button>
+        <label>{{ t('Internal note') }} <textarea name="internal_note" maxlength="2000">{{ lead.internal_note or '' }}</textarea></label>
+        <button class="button button-secondary" type="submit">{{ t('Save note') }}</button>
     </form>
     <form method="post" class="lead-action" action="{{ url_for('tenant_dashboard.app_lead_archive', account=selected_account.selection_ref) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="lead_action" value="{{ lead.archive_action }}">
         <input type="hidden" name="operation" value="{{ 'unarchive' if lead.archived else 'archive' }}">
-        <button class="button button-destructive" type="submit" {% if not lead.archived %}onclick="return confirm('Archive this lead?')"{% endif %}>{{ 'Unarchive lead' if lead.archived else 'Archive lead' }}</button>
+        <button class="button button-destructive" type="submit" {% if not lead.archived %}data-confirm="{{ t('Archive this lead?') }}"{% endif %}>{{ t('Unarchive lead') if lead.archived else t('Archive lead') }}</button>
     </form>
 </article>
-{% else %}<p class="empty-state">No leads yet.</p>{% endfor %}
-<nav aria-label="Lead pagination">
-    {% if lead_page.has_previous %}<a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_leads', account=selected_account.selection_ref, view=selected_view, stage=selected_stage, q=selected_search or None, sort=selected_sort, page=lead_page.page - 1) }}">Previous</a>{% endif %}
-    <span>Page {{ lead_page.page }}</span>
-    {% if lead_page.has_next %}<a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_leads', account=selected_account.selection_ref, view=selected_view, stage=selected_stage, q=selected_search or None, sort=selected_sort, page=lead_page.page + 1) }}">Next</a>{% endif %}
+{% else %}<p class="empty-state">{{ t('No leads yet.') }}</p>{% endfor %}
+<nav aria-label="{{ t('Lead pagination') }}">
+    {% if lead_page.has_previous %}<a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_leads', account=selected_account.selection_ref, view=selected_view, stage=selected_stage, q=selected_search or None, sort=selected_sort, page=lead_page.page - 1) }}">{{ t('Previous') }}</a>{% endif %}
+    <span>{{ t('Page') }} {{ lead_page.page }}</span>
+    {% if lead_page.has_next %}<a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_leads', account=selected_account.selection_ref, view=selected_view, stage=selected_stage, q=selected_search or None, sort=selected_sort, page=lead_page.page + 1) }}">{{ t('Next') }}</a>{% endif %}
 </nav>
 {% endblock %}

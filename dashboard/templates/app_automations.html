@@ -1,13 +1,53 @@
 {% extends "app_base.html" %}
-{% block title %}Automation{% endblock %}
-{% block heading %}Automation{% endblock %}
+{% block title %}{{ t('Automation') }}{% endblock %}
+{% block heading %}{{ t('Automation') }}{% endblock %}
 {% block content %}
-<section class="page-intro"><p class="eyebrow">Automation</p><h2>Choose how your account responds to people.</h2><p class="muted">Review each setting before you turn it on. Public responses are visible on Instagram; private messages are sent directly to the person who asked.</p></section>
-<form method="post" class="settings-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <section class="settings-group card"><div class="section-heading"><div><p class="eyebrow">Automation status</p><h2>Turn automation on or off</h2></div><span class="status-pill {% if automation.enabled %}status-success{% else %}status-neutral{% endif %}">{{ 'Enabled' if automation.enabled else 'Disabled' }}</span></div><div class="checkbox-field setting-toggle"><input id="automation_enabled" type="checkbox" name="enabled" {% if automation.enabled %}checked{% endif %}><label for="automation_enabled"><strong>Enable automation</strong><span>Allow the settings below to respond when people interact with this account.</span></label></div></section>
-  <section class="settings-group card"><div><p class="eyebrow">Public interactions</p><h2>Reply to matching comments</h2><p class="muted">These replies are visible publicly on the original Instagram post.</p></div><div class="checkbox-field setting-toggle"><input id="public_reply_enabled" type="checkbox" name="public_reply_enabled" {% if automation.public_reply_enabled %}checked{% endif %}><label for="public_reply_enabled"><strong>Public reply</strong><span>Reply publicly when a comment matches your keywords.</span></label></div><label for="public_reply_text">Public reply text<input id="public_reply_text" name="public_reply_text" type="text" value="{{ automation.public_reply_text }}"></label><label for="trigger_keywords">Keywords that start the flow<input id="trigger_keywords" name="trigger_keywords" type="text" value="{{ automation.trigger_keywords | join(', ') }}"><span class="helper-text">Separate keywords with commas.</span></label></section>
-  <section class="settings-group card"><div><p class="eyebrow">Private interactions</p><h2>Send a private message and follow up</h2><p class="muted">Choose whether matching comments use the existing prompt delivery or a configured direct private message.</p></div><label for="delivery_mode">Automation delivery<select id="delivery_mode" name="delivery_mode"><option value="prompt_request" {% if automation.delivery_mode == 'prompt_request' %}selected{% endif %}>Legacy prompt delivery</option><option value="direct_message" {% if automation.delivery_mode == 'direct_message' %}selected{% endif %}>Direct private message</option></select></label><label for="private_message_text">Private message text<input id="private_message_text" name="private_message_text" type="text" value="{{ automation.private_message_text }}"><span class="helper-text">Leave empty to skip the direct private message.</span></label><div class="checkbox-field setting-toggle"><input id="followup_enabled" type="checkbox" name="followup_enabled" {% if automation.followup_enabled %}checked{% endif %}><label for="followup_enabled"><strong>Send a follow-up</strong><span>Send the configured private follow-up after the delay below.</span></label></div><label for="followup_delay_minutes">Follow-up delay (minutes)<input id="followup_delay_minutes" name="followup_delay_minutes" type="number" min="5" max="10080" value="{{ automation.followup_delay_minutes }}"></label><label for="followup_message_text">Follow-up message text<input id="followup_message_text" name="followup_message_text" type="text" value="{{ automation.followup_message_text }}"><span class="helper-text">Leave empty to skip the direct-message follow-up.</span></label></section>
-  <section class="settings-group card"><div><p class="eyebrow">Smart replies</p><h2>Respond to other comments</h2><p class="muted">Smart replies handle comments that do not match one of your keywords. Replies are visible publicly.</p></div><div class="checkbox-field setting-toggle"><input id="smart_reply_enabled" type="checkbox" name="smart_reply_enabled" {% if automation.smart_reply_enabled %}checked{% endif %}><label for="smart_reply_enabled"><strong>Enable smart replies</strong><span>Use your selected tone and hourly limit for public replies.</span></label></div><div class="settings-fields"><label for="smart_reply_tone">Tone<select id="smart_reply_tone" name="smart_reply_tone">{% for tone in smart_reply_tones %}<option value="{{ tone }}" {% if automation.smart_reply_tone == tone %}selected{% endif %}>{{ tone|capitalize }}</option>{% endfor %}</select></label><label for="smart_reply_max_per_hour">Maximum replies per hour<input id="smart_reply_max_per_hour" name="smart_reply_max_per_hour" type="number" min="1" max="100" value="{{ automation.smart_reply_max_per_hour }}"></label></div></section>
-  <div class="form-actions"><button class="button button-primary" type="submit">Save automation settings</button></div>
+{% if automation_saved %}<p class="alert" role="status">{{ t('Automation settings saved.') }}</p>{% endif %}
+<section class="page-intro"><p class="eyebrow">{{ t('Automation') }}</p><h2>{{ t('Choose how your account responds to people.') }}</h2><p class="muted">{{ t('Public replies appear on your Instagram post. Private messages go to the person who commented.') }}</p></section>
+<form method="post" class="settings-form">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<section class="settings-group card">
+  <h2>{{ t('Automation status') }}</h2>
+  <div class="checkbox-field setting-toggle"><input id="automation_enabled" type="checkbox" name="enabled" {% if automation.enabled %}checked{% endif %}><label for="automation_enabled">{{ t('Enable automation') }}</label></div>
+  <label for="delivery_mode">{{ t('Delivery mode') }}<select id="delivery_mode" name="delivery_mode"><option value="prompt_request" {% if automation.delivery_mode == 'prompt_request' %}selected{% endif %}>{{ t('Prompt delivery') }}</option><option value="direct_message" {% if automation.delivery_mode == 'direct_message' %}selected{% endif %}>{{ t('Custom private message') }}</option></select></label>
+  <p data-delivery-mode="prompt_request" class="helper-text">{{ t('Prompt delivery extracts prompts from the post and lets the recipient request access.') }}</p>
+  <div data-delivery-mode="direct_message">
+    <p class="helper-text">{{ t('A matching comment starts your custom message flow.') }}</p>
+    <ol class="automation-flow" aria-label="{{ t('Custom message flow') }}"><li>{{ t('Matching comment') }}</li><li>{{ t('Public reply (optional)') }}</li><li>{{ t('Initial private message') }}</li><li>{{ t('Recipient replies') }}</li><li>{{ t('Delayed follow-up') }}</li></ol>
+  </div>
+</section>
+<section class="settings-group card">
+  <h2>{{ t('Reply to matching comments') }}</h2>
+  <label for="trigger_keywords">{{ t('Keywords that start the flow') }}<input id="trigger_keywords" name="trigger_keywords" type="text" value="{{ automation.trigger_keywords | join(', ') }}"><span class="helper-text">{{ t('Separate keywords with commas.') }}</span></label>
+  <div class="checkbox-field setting-toggle"><input id="public_reply_enabled" type="checkbox" name="public_reply_enabled" {% if automation.public_reply_enabled %}checked{% endif %}><label for="public_reply_enabled">{{ t('Public reply') }}</label></div>
+  <label for="public_reply_text">{{ t('Public reply text') }}<input id="public_reply_text" name="public_reply_text" type="text" value="{{ automation.public_reply_text }}"></label>
+</section>
+<section class="settings-group card">
+  <h2>{{ t('Private message and follow-up') }}</h2>
+  <label data-delivery-mode="direct_message" for="private_message_text">{{ t('Private message text') }}<textarea id="private_message_text" name="private_message_text" rows="3">{{ automation.private_message_text }}</textarea><span class="helper-text">{{ t('The matching comment triggers this first message. Leave empty to skip it.') }}</span></label>
+  <div class="checkbox-field setting-toggle"><input id="followup_enabled" type="checkbox" name="followup_enabled" value="on" {% if automation.followup_enabled %}checked{% endif %}><input type="hidden" name="followup_enabled" value="off"><label for="followup_enabled">{{ t('Enable follow-up') }}</label></div>
+  <div data-delivery-mode="direct_message" class="helper-panel"><p>{{ t('The recipient must reply to your initial private message before a follow-up can be scheduled.') }}</p><p>{{ t('If the recipient never replies, no follow-up is sent.') }}</p><p>{{ t('The delay starts at the recipient reply. Delivery must remain inside the 24-hour reply window; cooldown and eligibility checks still apply.') }}</p></div>
+  <p data-delivery-mode="prompt_request" class="helper-text">{{ t('Prompt follow-ups use the existing prompt-access flow and its own timing. Custom message text below is not used in this mode.') }}</p>
+  <label for="followup_delay_minutes"><span data-delivery-mode="direct_message">{{ t('Delay after recipient reply (minutes)') }}</span><span data-delivery-mode="prompt_request">{{ t('Prompt follow-up delay (minutes)') }}</span><input id="followup_delay_minutes" name="followup_delay_minutes" type="number" min="5" max="10080" value="{{ automation.followup_delay_minutes }}"></label>
+  <label data-delivery-mode="direct_message" for="followup_message_text">{{ t('Follow-up message text') }}<textarea id="followup_message_text" name="followup_message_text" rows="3">{{ automation.followup_message_text }}</textarea><span class="helper-text">{{ t('Leave empty to skip the custom-message follow-up.') }}</span></label>
+</section>
+<section class="settings-group card">
+  <h2>{{ t('Smart replies') }}</h2><p class="muted">{{ t('Smart replies handle comments that do not match your keywords. These replies are public.') }}</p>
+  <div class="checkbox-field setting-toggle"><input id="smart_reply_enabled" type="checkbox" name="smart_reply_enabled" {% if automation.smart_reply_enabled %}checked{% endif %}><label for="smart_reply_enabled">{{ t('Enable smart replies') }}</label></div>
+  <div class="settings-fields"><label for="smart_reply_tone">{{ t('Tone') }}<select id="smart_reply_tone" name="smart_reply_tone">{% for tone in smart_reply_tones %}<option value="{{ tone }}" {% if automation.smart_reply_tone == tone %}selected{% endif %}>{{ t(tone|capitalize) }}</option>{% endfor %}</select></label><label for="smart_reply_max_per_hour">{{ t('Maximum replies per hour') }}<input id="smart_reply_max_per_hour" name="smart_reply_max_per_hour" type="number" min="1" max="100" value="{{ automation.smart_reply_max_per_hour }}"></label></div>
+</section>
+<div class="form-actions"><button class="button button-primary" type="submit">{{ t('Save automation settings') }}</button></div>
 </form>
+<script>
+(() => {
+  const mode = document.getElementById('delivery_mode');
+  const delay = document.getElementById('followup_delay_minutes');
+  const update = () => {
+    document.querySelectorAll('[data-delivery-mode]').forEach(panel => { panel.hidden = panel.dataset.deliveryMode !== mode.value; });
+    delay.max = mode.value === 'direct_message' ? '1439' : '10080';
+  };
+  mode.addEventListener('change', update);
+  update();
+})();
+</script>
 {% endblock %}

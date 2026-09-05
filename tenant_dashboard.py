@@ -34,7 +34,9 @@ from auth import (
     validate_csrf_token,
 )
 from database import tenant_dashboard as tenant_data
-from dashboard.i18n import LOCALE_META, LOCALE_SESSION_KEY, locale_context, normalize_locale, translate
+from database.tenant_insights import direct_interactions
+from dashboard.presentation import display_time, public_image_url
+from dashboard.i18n import LOCALE_META, LOCALE_SESSION_KEY, locale_context, normalize_locale, translate, session_locale
 from database.lead_intelligence import LeadIntelligence, lead_analysis_context
 from database.oauth_deployment import oauth_deployment_readiness
 from database.content import (
@@ -265,11 +267,15 @@ def _account_payload(
     return payload
 
 
+def _ui_text(message):
+    return translate(session_locale(browser_session), message)
+
+
 def _safe_account_unavailable():
     return (
         _cache_control(
             jsonify(
-                error=ACCOUNT_UNAVAILABLE_MESSAGE
+                error=_ui_text(ACCOUNT_UNAVAILABLE_MESSAGE)
             )
         ),
         404,
@@ -279,7 +285,7 @@ def _safe_account_unavailable():
 def _workspace_unavailable():
     return _cache_control(
         make_response(
-            "Workspace temporarily unavailable.",
+            _ui_text("Workspace temporarily unavailable."),
             503,
         )
     )
@@ -289,7 +295,7 @@ def _safe_lead_unavailable():
     return (
         _cache_control(
             jsonify(
-                error=LEAD_UNAVAILABLE_MESSAGE
+                error=_ui_text(LEAD_UNAVAILABLE_MESSAGE)
             )
         ),
         404,
@@ -300,7 +306,7 @@ def _safe_lead_update_error():
     return (
         _cache_control(
             jsonify(
-                error=LEAD_UPDATE_ERROR_MESSAGE
+                error=_ui_text(LEAD_UPDATE_ERROR_MESSAGE)
             )
         ),
         400,
@@ -311,7 +317,7 @@ def _safe_automation_update_error():
     return (
         _cache_control(
             jsonify(
-                error=AUTOMATION_UPDATE_ERROR_MESSAGE
+                error=_ui_text(AUTOMATION_UPDATE_ERROR_MESSAGE)
             )
         ),
         400,
@@ -322,7 +328,7 @@ def _safe_content_update_error():
     return (
         _cache_control(
             jsonify(
-                error=CONTENT_UPDATE_ERROR_MESSAGE
+                error=_ui_text(CONTENT_UPDATE_ERROR_MESSAGE)
             )
         ),
         400,
@@ -376,7 +382,7 @@ def _resolve_owned_content_draft(session, *, user_id, selected_account_id, refer
 def _safe_scheduler_action_error():
     return (
         _cache_control(
-            jsonify(error="Scheduled job is unavailable.")
+            jsonify(error=_ui_text("Scheduled job is unavailable."))
         ),
         400,
     )
@@ -408,7 +414,7 @@ def _render_page(
         "tenant_dashboard.app_messages": "engagement",
         "tenant_dashboard.app_content": "content",
         "tenant_dashboard.app_scheduler": "calendar",
-        "tenant_dashboard.app_analytics": "overview",
+        "tenant_dashboard.app_analytics": "analytics",
     }
 
     selected_account = next(
@@ -417,7 +423,7 @@ def _render_page(
         if item["is_selected"]
     )
 
-    locale = locale_context(browser_session.get(LOCALE_SESSION_KEY))
+    locale = locale_context(session_locale(browser_session))
     return _cache_control(
         render_template(
             template_name,
@@ -432,7 +438,9 @@ def _render_page(
             csrf_token=csrf_token(),
             locale=locale,
             locale_options=LOCALE_META,
-            t=lambda key: translate(locale["code"], key),
+            t=lambda key, **values: translate(locale["code"], key, **values),
+            display_time=lambda value: display_time(value, locale["code"]),
+            display_username=lambda value: translate(locale["code"], "Instagram user") if value == "Instagram user" else value,
             **context,
         )
     )
@@ -537,7 +545,7 @@ def _cancel_scheduler_job(user, selected):
     return _cache_control(
         redirect(
             url_for(
-                "tenant_dashboard.app_scheduler",
+                "tenant_dashboard.app_followups",
                 account=action_reference_for_account(
                     user.id,
                     selected.instagram_account_id,
@@ -1014,7 +1022,8 @@ def register_tenant_dashboard(app) -> None:
             page=page,
         )
 
-        if lead_page is _DATABASE_UNAVAILABLE:
+        interactions = _query(selected, direct_interactions)
+        if lead_page is _DATABASE_UNAVAILABLE or interactions is _DATABASE_UNAVAILABLE:
             return _workspace_unavailable()
 
         return _render_page(
@@ -1028,6 +1037,7 @@ def register_tenant_dashboard(app) -> None:
                 lead_page.leads,
             ),
             lead_page=lead_page,
+            direct_interactions=interactions,
             selected_view=view,
             selected_stage=stage,
             selected_search=search,
@@ -1069,12 +1079,11 @@ def register_tenant_dashboard(app) -> None:
         accounts,
         selected,
     ):
-        rows = _query(
-            selected,
-            tenant_data.followups,
-        )
+        status = tenant_data.scheduler_status_filter(request.args.get("status"))
+        page = _query(selected, tenant_data.scheduler_jobs, status_filter=status, page=request.args.get("page"))
+        waiting = _query(selected, direct_interactions, waiting_only=True)
 
-        if rows is _DATABASE_UNAVAILABLE:
+        if page is _DATABASE_UNAVAILABLE or waiting is _DATABASE_UNAVAILABLE:
             return _workspace_unavailable()
 
         return _render_page(
@@ -1082,7 +1091,11 @@ def register_tenant_dashboard(app) -> None:
             user=user,
             accounts=accounts,
             selected=selected,
-            followups=rows,
+            followups=_scheduler_jobs_with_actions(user, selected, page),
+            waiting=waiting,
+            scheduler_page=page,
+            selected_status=status,
+            status_filters=tenant_data.SCHEDULER_STATUS_FILTER_LABELS,
         )
 
     @dashboard.get("/messages")
@@ -1193,8 +1206,11 @@ def register_tenant_dashboard(app) -> None:
             return _workspace_unavailable()
 
         try:
+            media_value = public_image_url(request.form.get("media_url") or request.form.get("media_reference"))
+        except ValueError:
+            return _cache_control(jsonify(error=_ui_text("Enter a public HTTPS image link without embedded credentials."))), 400
+        try:
             with session_factory.begin() as session:
-                media_value = (request.form.get("media_url") or request.form.get("media_reference") or "").strip()
                 create_content_draft(
                     session,
                     instagram_account_id=selected.instagram_account_id,
@@ -1236,6 +1252,11 @@ def register_tenant_dashboard(app) -> None:
 
         caption_value = request.form.get("caption")
         media_url_value = request.form.get("media_url")
+        if media_url_value is not None:
+            try:
+                media_url_value = public_image_url(media_url_value)
+            except ValueError:
+                return _cache_control(jsonify(error=_ui_text("Enter a public HTTPS image link without embedded credentials."))), 400
 
         try:
             with session_factory.begin() as session:
@@ -1427,29 +1448,11 @@ def register_tenant_dashboard(app) -> None:
         accounts,
         selected,
     ):
-        selected_status = tenant_data.scheduler_status_filter(
-            request.args.get("status")
-        )
-        selected_job_type = tenant_data.scheduler_job_type_filter(
-            request.args.get("job_type")
-        )
         selected_content_status = str(
             request.args.get("content_status") or "all"
         ).strip().lower()
         if selected_content_status not in {"all", "scheduled", "published", "failed"}:
             selected_content_status = "all"
-        page = request.args.get("page")
-        scheduler_page = _query(
-            selected,
-            tenant_data.scheduler_jobs,
-            status_filter=selected_status,
-            job_type_filter=selected_job_type,
-            page=page,
-        )
-
-        if scheduler_page is _DATABASE_UNAVAILABLE:
-            return _workspace_unavailable()
-
         agenda_content = []
         session_factory = getattr(_auth_state(), "session_factory", None)
         if session_factory is not None:
@@ -1478,7 +1481,7 @@ def register_tenant_dashboard(app) -> None:
                     ]
                     for item in agenda_content:
                         item["agenda_day"] = (
-                            item["display_time"][:10]
+                            display_time(item["display_time"], "en")[:10]
                             if item.get("display_time")
                             else "Date unavailable"
                         )
@@ -1496,12 +1499,6 @@ def register_tenant_dashboard(app) -> None:
             user=user,
             accounts=accounts,
             selected=selected,
-            jobs=_scheduler_jobs_with_actions(user, selected, scheduler_page),
-            scheduler_page=scheduler_page,
-            status_filters=tenant_data.SCHEDULER_STATUS_FILTER_LABELS,
-            job_type_filters=tenant_data.SCHEDULER_JOB_TYPE_FILTER_LABELS,
-            selected_status=selected_status,
-            selected_job_type=selected_job_type,
             agenda_content=agenda_content,
             selected_content_status=selected_content_status,
         )
@@ -1590,6 +1587,7 @@ def register_tenant_dashboard(app) -> None:
             accounts=accounts,
             selected=selected,
             automation=automation,
+            automation_saved=request.method == "POST",
             smart_reply_tones=SMART_REPLY_TONES,
         )
 

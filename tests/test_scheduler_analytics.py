@@ -385,7 +385,7 @@ class SchedulerAnalyticsDashboardTest(unittest.TestCase):
             )
         response = self.client.get(f"/app/scheduler?account={empty_ref}")
         self.assertEqual(response.status_code, 200)
-        self.assertIn("No scheduled jobs yet", response.get_data(as_text=True))
+        self.assertIn("No image posts match this filter yet.", response.get_data(as_text=True))
 
     def test_scheduler_invalid_account_fails_safely(self):
         """7. Stale/invalid account fails safely."""
@@ -422,7 +422,7 @@ class SchedulerAnalyticsDashboardTest(unittest.TestCase):
         action_ref = self._scheduler_cancel_reference(
             self.owner_a, self.account_a, "followup-a-pending-secret"
         )
-        page = self.client.get(f"/app/scheduler?account={account_ref}").get_data(as_text=True)
+        page = self.client.get(f"/app/followups?account={account_ref}").get_data(as_text=True)
         self.assertIn("Cancel follow-up", page)
         self.assertNotIn("followup-a-pending-secret", page)
         csrf_match = re.search(r'name="csrf_token" value="([^"]+)"', page)
@@ -685,7 +685,7 @@ class SchedulerAnalyticsDashboardTest(unittest.TestCase):
         self._login_as(self.owner_a)
         ref = self._reference(self.owner_a, self.account_a)
         page = self.client.get(f"/app/scheduler?account={ref}").get_data(as_text=True)
-        self.assertIn('aria-current="page">Scheduler', page)
+        self.assertRegex(page, r'<a href="/app/scheduler[^"\s]*" aria-current="page"><svg[^>]*>.*?</svg>Calendar</a>')
 
     def test_analytics_active_navigation_marker(self):
         """Analytics page shows active nav marker."""
@@ -722,8 +722,8 @@ class SchedulerAnalyticsDashboardTest(unittest.TestCase):
         response = self.client.get(f"/app/scheduler?account={ref}")
         self.assertEqual(response.status_code, 200)
         page = response.get_data(as_text=True)
-        self.assertIn("Scheduled jobs", page)
-        self.assertIn("Follow-up", page)
+        self.assertIn("Publishing agenda", page)
+        self.assertIn("Manage automation follow-ups", page)
 
     def test_analytics_page_renders(self):
         """Analytics page renders correctly."""
@@ -732,7 +732,7 @@ class SchedulerAnalyticsDashboardTest(unittest.TestCase):
         response = self.client.get(f"/app/analytics?account={ref}")
         self.assertEqual(response.status_code, 200)
         page = response.get_data(as_text=True)
-        self.assertIn("Comments handled", page)
+        self.assertIn("Comment events", page)
         self.assertIn("Prompt requests", page)
         self.assertIn("Follow-up delivery", page)
 

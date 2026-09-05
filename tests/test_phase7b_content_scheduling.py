@@ -133,7 +133,7 @@ class Phase7BContentSchedulingTest(unittest.TestCase):
         scheduler_a = case.client.get(f"/app/scheduler?account={account_a_ref}").get_data(as_text=True)
         scheduler_b = case.client.get(f"/app/scheduler?account={account_b_ref}").get_data(as_text=True)
         self.assertIn("Content schedule", scheduler_a)
-        self.assertIn("Follow-up", scheduler_a)
+        self.assertIn("Manage automation follow-ups", scheduler_a)
         self.assertNotIn("UI ready", scheduler_b)
         with case.Session.begin() as session:
             self.assertEqual(session.get(InstagramContentItem, draft.id).status, "draft")

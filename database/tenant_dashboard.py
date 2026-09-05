@@ -30,6 +30,7 @@ from .models import (
 )
 from .ownership import list_owned_instagram_accounts
 from .oauth_capability import assess_oauth_engagement_records
+from .tenant_insights import direct_metrics, followup_presentation
 
 
 RECONNECT_STATUSES = {"disconnected", "error", "reconnect_required"}
@@ -487,6 +488,7 @@ def overview(session: Session, *, instagram_account_id: uuid.UUID) -> dict[str, 
 
     return {
         "lead_count": count(InstagramPromptRequest),
+        **direct_metrics(session, instagram_account_id=instagram_account_id),
         "lead_stage_counts": lead_stage_counts,
         "archived_lead_count": int(
             session.scalar(
@@ -711,27 +713,13 @@ def activity(
 def followups(session: Session, *, instagram_account_id: uuid.UUID) -> list[dict[str, str | None]]:
     """Return a safe status feed for one account's durable follow-up jobs."""
 
-    labels = {
-        "pending": "Scheduled",
-        "processing": "Sending",
-        "sent": "Sent",
-        "cancelled": "Cancelled after reply",
-        "failed": "Delivery unavailable",
-    }
     jobs = session.scalars(
         select(InstagramOAuthFollowupJob)
         .where(InstagramOAuthFollowupJob.instagram_account_id == instagram_account_id)
         .order_by(InstagramOAuthFollowupJob.created_at.desc(), InstagramOAuthFollowupJob.id.desc())
         .limit(100)
     )
-    return [
-        {
-            "status": labels.get(job.state, "Delivery unavailable"),
-            "scheduled_at": _timestamp(job.run_at),
-            "completed_at": _timestamp(job.sent_at or job.cancelled_at or job.failed_at),
-        }
-        for job in jobs
-    ]
+    return [followup_presentation(job) for job in jobs]
 
 
 # ---------------------------------------------------------------------------
@@ -1110,9 +1098,8 @@ def scheduler_jobs(
 ) -> TenantSchedulerPage:
     """Return sanitized scheduled-job records for exactly one owned account.
 
-    The backend currently persists only ``InstagramOAuthFollowupJob`` records as
-    scheduled work — there is no Instagram post, story, or content publishing
-    scheduler.  Scheduler V1 therefore honestly presents follow-up jobs only.
+    This presenter backs automation follow-up management under Engagement.
+    Content publishing has its own agenda and is deliberately not included.
     """
 
     selected_status = scheduler_status_filter(status_filter)
@@ -1148,6 +1135,7 @@ def scheduler_jobs(
                 "created_at": _timestamp(job.created_at),
                 "completed_at": _timestamp(completed_ts),
                 "source_context": "Automated follow-up",
+                **followup_presentation(job),
             })
 
     jobs.sort(key=lambda record: str(record.get("scheduled_at") or ""), reverse=True)
@@ -1527,6 +1515,7 @@ def analytics(
         })
 
     metrics = {
+        **direct_metrics(session, instagram_account_id=instagram_account_id, since=since),
         "comments_handled": comments_handled,
         "messages_handled": messages_handled,
         "prompt_requests": prompt_requests,

@@ -4,7 +4,13 @@ from __future__ import annotations
 
 SUPPORTED_LOCALES = ("en", "fr", "ar")
 DEFAULT_LOCALE = "en"
-LOCALE_SESSION_KEY = "sociora_locale"
+LOCALE_SESSION_KEY = "postenza_locale"
+LEGACY_LOCALE_SESSION_KEY = "sociora_locale"
+
+
+def session_locale(values):
+    """Retain language preferences from existing signed sessions."""
+    return values.get(LOCALE_SESSION_KEY, values.get(LEGACY_LOCALE_SESSION_KEY))
 
 LOCALE_META = {
     "en": {"label": "English", "direction": "ltr"},
@@ -91,16 +97,20 @@ def locale_context(value: object) -> dict[str, object]:
     return {"code": code, **LOCALE_META[code]}
 
 
-def translate(locale: object, key: object) -> str:
+def translate(locale: object, key: object, **values) -> str:
     normalized = normalize_locale(locale)
     message_key = str(key or "")
-    return LANDING_TRANSLATIONS.get(normalized, {}).get(
-        message_key,
-        TRANSLATIONS[normalized].get(
+    from .app_translations import APP_TRANSLATIONS
+    translated = APP_TRANSLATIONS.get(normalized, {}).get(message_key)
+    if translated is None:
+        translated = LANDING_TRANSLATIONS.get(normalized, {}).get(
             message_key,
-            LANDING_TRANSLATIONS[DEFAULT_LOCALE].get(
+            TRANSLATIONS[normalized].get(
                 message_key,
-                TRANSLATIONS[DEFAULT_LOCALE].get(message_key, message_key),
+                LANDING_TRANSLATIONS[DEFAULT_LOCALE].get(
+                    message_key,
+                    TRANSLATIONS[DEFAULT_LOCALE].get(message_key, message_key),
+                ),
             ),
-        ),
-    )
+        )
+    return translated.format(**values) if values else translated

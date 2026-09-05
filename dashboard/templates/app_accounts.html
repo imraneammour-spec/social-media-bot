@@ -1,15 +1,15 @@
 {% extends "app_base.html" %}
-{% block title %}Instagram{% endblock %}
-{% block heading %}Instagram{% endblock %}
+{% block title %}{{ t('Instagram') }}{% endblock %}
+{% block heading %}{{ t('Instagram') }}{% endblock %}
 {% block content %}
-<section class="page-intro"><p class="eyebrow">Instagram</p><h2>Your Instagram accounts</h2><p class="muted">Review each connection and choose the account you want to manage.</p></section>
-<section class="account-grid" aria-label="Your Instagram accounts">
+<section class="page-intro"><p class="eyebrow">{{ t('Instagram') }}</p><h2>{{ t('Your Instagram accounts') }}</h2><p class="muted">{{ t('Review each connection and choose the account you want to manage.') }}</p></section>
+<section class="account-grid" aria-label="{{ t('Your Instagram accounts') }}">
 {% for account in accounts %}
   <article class="account-state-card card {% if account.is_selected %}is-selected{% endif %}">
-    <div class="section-heading"><div><p class="eyebrow">{% if account.is_selected %}Selected account{% else %}Instagram account{% endif %}</p><h2>{{ account.username }}</h2></div><span class="status-pill {% if account.connection_label == 'Connected' %}status-success{% else %}status-warning{% endif %}">{{ account.connection_label }}</span></div>
-    <p class="muted">{{ account.connection_detail }}</p><p class="account-health"><strong>{{ account.activation_label }}</strong><span>{{ account.activation_detail }}</span></p>
-    <div class="account-actions"><a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_accounts', account=account.selection_ref) }}">{% if account.is_selected %}Currently selected{% else %}Manage this account{% endif %}</a>{% if account.can_reconnect %}<form method="post" action="{{ url_for('start_instagram_connection') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-primary" type="submit">Reconnect Instagram</button></form>{% endif %}</div>
-    {% if account.can_disconnect %}<details class="disconnect-confirm"><summary>Disconnect account</summary><p class="muted">Disconnecting stops this app from using this Instagram account. You can reconnect it later.</p><form method="post" action="{{ url_for('disconnect_instagram_connection') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="account_action" value="{{ account.disconnect_action }}"><button class="button button-destructive" type="submit">Confirm disconnect</button></form></details>{% endif %}
+    <div class="section-heading"><div><p class="eyebrow">{% if account.is_selected %}{{ t('Selected account') }}{% else %}{{ t('Instagram account') }}{% endif %}</p><h2>{{ display_username(account.username) }}</h2></div><span class="status-pill {% if account.connection_label == 'Connected' %}status-success{% else %}status-warning{% endif %}">{{ t(account.connection_label) }}</span></div>
+    <p class="muted">{{ t(account.connection_detail) }}</p><p class="account-health"><strong>{{ t(account.activation_label) }}</strong><span>{{ t(account.activation_detail) }}</span></p>
+    <div class="account-actions"><a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_accounts', account=account.selection_ref) }}">{% if account.is_selected %}{{ t('Currently selected') }}{% else %}{{ t('Manage this account') }}{% endif %}</a>{% if account.can_reconnect %}<form method="post" action="{{ url_for('start_instagram_connection') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-primary" type="submit">{{ t('Reconnect Instagram') }}</button></form>{% endif %}</div>
+    {% if account.can_disconnect %}<details class="disconnect-confirm"><summary>{{ t('Disconnect account') }}</summary><p class="muted">{{ t('Disconnecting stops this app from using this Instagram account. You can reconnect it later.') }}</p><form method="post" action="{{ url_for('disconnect_instagram_connection') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="account_action" value="{{ account.disconnect_action }}"><button class="button button-destructive" type="submit">{{ t('Confirm disconnect') }}</button></form></details>{% endif %}
   </article>
 {% endfor %}
 </section>
