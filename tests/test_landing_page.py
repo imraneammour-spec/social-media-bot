@@ -1,11 +1,13 @@
 """Focused public Postenza landing-page route and template tests."""
 
 import importlib.util
+import io
 import os
 import sys
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -51,8 +53,14 @@ class LandingPageTest(unittest.TestCase):
         spec = importlib.util.spec_from_file_location(self.module_name, MODULE_PATH)
         module = importlib.util.module_from_spec(spec)
         sys.modules[self.module_name] = module
-        with patch.dict(os.environ, environment, clear=False), patch("threading.Thread", _NoopThread):
+        startup_output = io.StringIO()
+        with (
+            patch.dict(os.environ, environment, clear=False),
+            patch("threading.Thread", _NoopThread),
+            redirect_stdout(startup_output),
+        ):
             spec.loader.exec_module(module)
+        self.startup_output = startup_output.getvalue()
         return module
 
     def _csrf_for_root(self):
@@ -84,6 +92,25 @@ class LandingPageTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), {"status": "ok"})
+
+    def test_startup_identifies_postenza_and_treats_legacy_token_as_optional(self):
+        self.assertIn("Postenza", self.startup_output)
+        self.assertIn("Optional legacy Instagram integration: not configured", self.startup_output)
+        self.assertNotIn("Imran Social Media Bot", self.startup_output)
+        self.assertNotIn("ERROR: INSTAGRAM_ACCESS_TOKEN missing", self.startup_output)
+
+    def test_public_legal_pages_use_postenza_branding_and_readable_shell(self):
+        for path in ("/privacy", "/terms", "/deletion"):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                page = response.get_data(as_text=True)
+                self.assertEqual(response.status_code, 200)
+                self.assertIn("Postenza", page)
+                self.assertNotIn("Imran Social Media Bot", page)
+                self.assertIn('href="/static/legal.css"', page)
+                self.assertIn('href="/static/brand/postenza-favicon-32.png"', page)
+                self.assertIn('href="/"', page)
+                response.close()
 
     def test_landing_uses_existing_session_locale_and_rtl(self):
         page = self._page_for_locale("ar")

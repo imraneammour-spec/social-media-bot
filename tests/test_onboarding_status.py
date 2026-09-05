@@ -216,10 +216,11 @@ class OnboardingStatusTest(unittest.TestCase):
         legacy_page = self._onboarding(legacy_owner_id).get_data(as_text=True)
         non_legacy_page = self._onboarding(non_legacy_owner_id).get_data(as_text=True)
 
-        self.assertIn("Legacy workspace managed by server configuration", legacy_page)
+        self.assertIn("Workspace managed by server configuration", legacy_page)
+        self.assertNotIn("Legacy workspace", legacy_page)
         self.assertNotIn("Reconnect Instagram", legacy_page)
         self.assertNotIn("Disconnect from this app", legacy_page)
-        self.assertNotIn("Legacy workspace managed by server configuration", non_legacy_page)
+        self.assertNotIn("Workspace managed by server configuration", non_legacy_page)
         self.assertIn("Connection setup incomplete", non_legacy_page)
 
     def test_owned_accounts_render_in_creation_order(self):

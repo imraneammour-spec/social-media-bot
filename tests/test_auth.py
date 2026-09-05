@@ -275,6 +275,48 @@ class AuthenticationCoreTest(unittest.TestCase):
             self.assertIn('alt="Postenza"', page)
             self.assertNotIn("Sociora", page)
 
+    def test_auth_pages_follow_session_locale_and_fit_mobile_widths(self):
+        client = self.app.test_client()
+        expected = {
+            "fr": ("ltr", "Bienvenue", "Créez votre compte"),
+            "ar": ("rtl", "مرحبًا بعودتك", "أنشئ حسابك"),
+        }
+
+        for locale, (direction, login_text, register_text) in expected.items():
+            with client.session_transaction() as browser_session:
+                browser_session["postenza_locale"] = locale
+            login_page = client.get("/login").get_data(as_text=True)
+            register_page = client.get("/register").get_data(as_text=True)
+            self.assertIn(f'<html lang="{locale}" dir="{direction}">', login_page)
+            self.assertIn(f'<html lang="{locale}" dir="{direction}">', register_page)
+            self.assertIn(login_text, login_page)
+            self.assertIn(register_text, register_page)
+
+        for path in ("/login", "/register"):
+            page = client.get(path).get_data(as_text=True)
+            self.assertIn("main { box-sizing: border-box;", page)
+            self.assertIn(":focus-visible", page)
+
+    def test_auth_validation_messages_follow_session_locale(self):
+        client = self.app.test_client()
+        with client.session_transaction() as browser_session:
+            browser_session["postenza_locale"] = "fr"
+            browser_session["_csrf_token"] = "localized-auth-csrf-token-with-32-bytes"
+
+        invalid_csrf = client.post("/login", data={"csrf_token": "wrong"})
+        invalid_registration = client.post(
+            "/register",
+            data={
+                "csrf_token": "localized-auth-csrf-token-with-32-bytes",
+                "display_name": "",
+                "email": "bad",
+                "password": "short",
+            },
+        )
+
+        self.assertIn("Jeton du formulaire invalide", invalid_csrf.get_data(as_text=True))
+        self.assertIn("Saisissez un nom affiché", invalid_registration.get_data(as_text=True))
+
     def test_private_api_requires_legacy_owner_and_csrf(self):
         owner = self._create_owner()
         client = self.app.test_client()

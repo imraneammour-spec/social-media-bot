@@ -238,13 +238,13 @@ MEDIA_LOCKS = {}
 # ==================================================
 
 print("========================================")
-print("Imran Social Media Bot")
+print("Postenza")
 print("========================================")
 
 if INSTAGRAM_ACCESS_TOKEN:
     print("Instagram access token: OK")
 else:
-    print("ERROR: INSTAGRAM_ACCESS_TOKEN missing")
+    print("INFO: Optional legacy Instagram integration: not configured")
 
 if GEMINI_API_KEY:
     print("Gemini API key: OK")
@@ -2480,7 +2480,7 @@ def prompt_page(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0b0b0d">
-<title>IMRAN PROMPTS</title>
+<title>Postenza — AI Prompt Library</title>
 
 <style>
 :root {{
@@ -2744,7 +2744,7 @@ a {{
 <main class="container">
 
     <div class="brand">
-        <div class="brand-name">IMRAN PROMPTS</div>
+        <div class="brand-name">Postenza</div>
         <div class="brand-badge">AI Prompt Library</div>
     </div>
 
@@ -2776,7 +2776,7 @@ a {{
     </section>
 
     <footer class="footer">
-        Generated automatically for @imran.prompts
+        Generated automatically by Postenza
     </footer>
 
 </main>

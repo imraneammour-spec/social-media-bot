@@ -10,7 +10,7 @@
             {% for value, label in range_filters %}<option value="{{ value }}" {% if selected_range == value %}selected{% endif %}>{{ t(label) }}</option>{% endfor %}
         </select>
     </label>
-    <button type="submit">{{ t('Apply range') }}</button>
+    <button class="button button-primary" type="submit">{{ t('Apply range') }}</button>
 </form>
 
 {% if analytics.metrics.direct_private_replies == 0 and analytics.metrics.qualifying_recipient_replies == 0 and analytics.metrics.total_events == 0 and analytics.metrics.prompt_requests == 0 and analytics.metrics.smart_replies_sent == 0 and analytics.metrics.followups_scheduled == 0 and analytics.metrics.followups_sent == 0 and analytics.metrics.followups_failed == 0 and analytics.metrics.prompt_enabled_content == 0 %}

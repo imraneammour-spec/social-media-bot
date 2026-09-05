@@ -525,8 +525,9 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
         }):
             body = self.module.app.test_client().get("/p/legacy-media").get_data(as_text=True)
 
-        self.assertIn("IMRAN PROMPTS", body)
-        self.assertIn("Generated automatically for @imran.prompts", body)
+        self.assertIn("Postenza", body)
+        self.assertNotIn("IMRAN PROMPTS", body)
+        self.assertNotIn("@imran.prompts", body)
         self.assertIn('/preview/legacy-media', body)
 
     # ==================================================

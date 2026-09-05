@@ -263,7 +263,7 @@ def build_onboarding_account_statuses(
         can_disconnect = False
         disconnect_action = None
         if is_legacy_environment_managed:
-            label = "Legacy workspace managed by server configuration"
+            label = "Workspace managed by server configuration"
             detail = "This is the existing server-managed Instagram workspace."
         elif connection_status == "connected" and has_connection_error:
             label = "Reconnect required"
@@ -355,7 +355,14 @@ def _auth_ui_text(message, **values):
 
 
 def _auth_template(template_name: str, *, status: int = 200, error: str | None = None):
-    return render_template(template_name, csrf_token=csrf_token(), error=error), status
+    locale = locale_context(session_locale(session))
+    return render_template(
+        template_name,
+        csrf_token=csrf_token(),
+        error=error,
+        locale=locale,
+        t=lambda key: translate(locale["code"], key),
+    ), status
 
 
 def user_has_connected_instagram_account(user: User | None) -> bool:

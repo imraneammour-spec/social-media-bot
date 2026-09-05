@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{ locale.code }}" dir="{{ locale.direction }}">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Sign in | Postenza</title>
+    <title>{{ t('Sign in') }} | {{ t('product_name') }}</title>
     <link rel="icon" type="image/png" sizes="16x16" href="{{ url_for('static', filename='brand/postenza-favicon-16.png') }}">
     <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='brand/postenza-favicon-32.png') }}">
     <link rel="icon" type="image/png" sizes="48x48" href="{{ url_for('static', filename='brand/postenza-favicon-48.png') }}">
@@ -12,27 +12,28 @@
     <style>
         :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; background: #0b0b0e; color: #f5f5f7; }
         body { min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 24px; box-sizing: border-box; }
-        main { width: min(100%, 420px); background: #16161b; border: 1px solid #2b2b33; border-radius: 18px; padding: 30px; }
+        main { box-sizing: border-box; width: min(100%, 420px); overflow-wrap: anywhere; background: #16161b; border: 1px solid #2b2b33; border-radius: 18px; padding: 30px; }
         h1 { margin: 0 0 8px; } p { color: #b8bbc7; line-height: 1.5; }
         label { display: grid; gap: 7px; margin-top: 16px; font-weight: 700; }
         input { border: 1px solid #3a3a44; border-radius: 9px; padding: 12px; color: inherit; background: #0f0f13; font: inherit; }
         button { margin-top: 22px; width: 100%; border: 0; border-radius: 9px; padding: 12px; background: #bc83ff; color: #170524; font-weight: 800; font: inherit; cursor: pointer; }
-        .error { margin: 16px 0 0; border-left: 3px solid #ff718c; padding-left: 10px; color: #ffbdc8; } a { color: #d5afff; }
+        .error { margin: 16px 0 0; border-inline-start: 3px solid #ff718c; padding-inline-start: 10px; color: #ffbdc8; } a { color: #d5afff; }
+        :is(a, button, input):focus-visible { outline: 3px solid #bc83ff; outline-offset: 3px; }
     </style>
 </head>
 <body>
     <main>
         <img src="{{ url_for('static', filename='brand/postenza-logo-dark.png') }}" alt="Postenza" style="width:100%;height:auto;margin-bottom:18px">
-        <h1>Welcome back</h1>
-        <p>Social media, on autopilot.</p>
-        {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+        <h1>{{ t('Welcome back') }}</h1>
+        <p>{{ t('social_tagline') }}</p>
+        {% if error %}<p class="error" role="alert">{{ t(error) }}</p>{% endif %}
         <form method="post" action="{{ url_for('login') }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <label>Email<input name="email" type="email" autocomplete="email" required></label>
-            <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
-            <button type="submit">Sign in</button>
+            <label>{{ t('Email') }}<input name="email" type="email" autocomplete="email" required></label>
+            <label>{{ t('Password') }}<input name="password" type="password" autocomplete="current-password" required></label>
+            <button type="submit">{{ t('Sign in') }}</button>
         </form>
-        <p>Need an account? <a href="{{ url_for('register') }}">Create one</a>.</p>
+        <p>{{ t('Need an account?') }} <a href="{{ url_for('register') }}">{{ t('Create one') }}</a>.</p>
     </main>
 </body>
 </html>

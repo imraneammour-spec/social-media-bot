@@ -5,6 +5,11 @@ const test = require("node:test");
 
 const template = fs.readFileSync("dashboard/templates/dashboard.html", "utf8");
 
+test("legacy dashboard shell uses current Postenza branding", () => {
+    assert.match(template, /Postenza/);
+    assert.doesNotMatch(template, /IMRAN PROMPTS/i);
+});
+
 function extractFunction(name) {
     const start = template.indexOf(`function ${name}(`);
     assert.notEqual(start, -1, `Expected ${name} to exist in the dashboard script.`);

@@ -141,7 +141,13 @@ class ProductPolishTest(unittest.TestCase):
         self.assertEqual(len(_MESSAGES), len(APP_TRANSLATIONS["en"]), "Duplicate message IDs")
         root = Path(__file__).resolve().parents[1] / "dashboard/templates"
         keys = set()
-        for path in [*root.glob("app_*.html"), root / "_engagement_tabs.html", root / "onboarding.html"]:
+        for path in [
+            *root.glob("app_*.html"),
+            root / "_engagement_tabs.html",
+            root / "onboarding.html",
+            root / "login.html",
+            root / "register.html",
+        ]:
             for call in Environment().parse(path.read_text(encoding="utf-8")).find_all(nodes.Call):
                 if isinstance(call.node, nodes.Name) and call.node.name == "t" and call.args and isinstance(call.args[0], nodes.Const):
                     keys.add(call.args[0].value)
@@ -171,6 +177,11 @@ class ProductPolishTest(unittest.TestCase):
             # Date group headings are numeric, not translatable messages.
             missing = {key for key in seen if key and not key[:1].isdigit()} - APP_TRANSLATIONS[locale].keys() - TRANSLATIONS[locale].keys()
             self.assertFalse(missing, (locale, sorted(missing)))
+
+    def test_analytics_range_action_uses_the_primary_button_component(self):
+        self.login()
+        page = self.get("/app/analytics").get_data(as_text=True)
+        self.assertIn('<button class="button button-primary" type="submit">Apply range</button>', page)
 
     def test_image_form_rejects_invalid_url_without_creating_content(self):
         from auth import action_reference_for_account
