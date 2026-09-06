@@ -17,13 +17,9 @@ from .oauth_capability import oauth_engagement_prerequisites_met
 
 
 CURRENT_DEFAULT_TRIGGER_KEYWORDS = (
-    "access",
-    "ai",
-    "prompt",
-    "prompts",
     "send",
+    "info",
 )
-CURRENT_DEFAULT_PUBLIC_REPLY_TEXT = "Your prompts are ready. Check your messages."
 DEFAULT_FOLLOWUP_DELAY_MINUTES = 360
 DEFAULT_FOLLOWUP_ENABLED = True
 DEFAULT_PROMPT_OPENING_MESSAGE = (
@@ -33,6 +29,7 @@ DEFAULT_PROMPT_OPENING_MESSAGE = (
 DEFAULT_CUSTOM_MESSAGE = "Hey 👋 Thanks for your interest! I’ve got something for you."
 DEFAULT_LINK_OPENING_MESSAGE = "Hey 👋 Thanks for your interest! Here’s the link you asked for."
 DEFAULT_MESSAGE_PUBLIC_REPLY = "Thanks for commenting 🙌 I’ve sent you a DM."
+CURRENT_DEFAULT_PUBLIC_REPLY_TEXT = DEFAULT_MESSAGE_PUBLIC_REPLY
 DEFAULT_LINK_PUBLIC_REPLY = "Thanks 🙌 I’ve sent the link to your DMs."
 DEFAULT_PROMPT_PUBLIC_REPLY = "Thanks 🙌 I’ve sent the prompt to your DMs."
 DEFAULT_MESSAGE_FOLLOWUP = "Just checking in 👋 Did you get a chance to see my message?"
@@ -589,11 +586,11 @@ def backfill_oauth_automation_configs(
         if "followup_delay_minutes" in config_columns:
             insert_values["followup_delay_minutes"] = DEFAULT_FOLLOWUP_DELAY_MINUTES
         if "delivery_mode" in config_columns:
-            insert_values["delivery_mode"] = "prompt_request"
+            insert_values["delivery_mode"] = "direct_message"
         if "private_message_text" in config_columns:
-            insert_values["private_message_text"] = ""
+            insert_values["private_message_text"] = DEFAULT_CUSTOM_MESSAGE
         if "followup_message_text" in config_columns:
-            insert_values["followup_message_text"] = ""
+            insert_values["followup_message_text"] = DEFAULT_MESSAGE_FOLLOWUP
         if "smart_reply_enabled" in config_columns:
             insert_values["smart_reply_enabled"] = False
         if "smart_reply_tone" in config_columns:

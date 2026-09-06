@@ -101,7 +101,7 @@ class TenantAutomationHelperTests(unittest.TestCase):
         )
         self.assertEqual(
             helpers.current_default_trigger_keywords(),
-            ["access", "ai", "prompt", "prompts", "send"],
+            ["send", "info"],
         )
 
     def test_keyword_normalization_rejects_malformed_or_phrase_values(self):
@@ -577,7 +577,7 @@ class TenantAutomationHelperTests(unittest.TestCase):
         helpers = self._helpers()
         self.assertEqual(
             helpers.current_default_public_reply_text(),
-            "Your prompts are ready. Check your messages.",
+            "Thanks for commenting 🙌 I’ve sent you a DM.",
         )
 
     def test_initial_enabled_state_uses_account_prerequisites_not_global_environment(self):
@@ -707,14 +707,25 @@ class TenantAutomationBackfillTests(unittest.TestCase):
                 for config in session.scalars(select(InstagramAutomationConfig)).all()
             }
         self.assertTrue(configs[ids["eligible"]].enabled)
+        self.assertEqual(configs[ids["eligible"]].delivery_mode, "direct_message")
         self.assertEqual(
             configs[ids["eligible"]].trigger_keywords,
-            ["access", "ai", "prompt", "prompts", "send"],
+            ["send", "info"],
         )
         self.assertTrue(configs[ids["eligible"]].public_reply_enabled)
         self.assertEqual(
             configs[ids["eligible"]].public_reply_text,
-            "Your prompts are ready. Check your messages.",
+            "Thanks for commenting 🙌 I’ve sent you a DM.",
+        )
+        self.assertEqual(
+            configs[ids["eligible"]].private_message_text,
+            "Hey 👋 Thanks for your interest! I’ve got something for you.",
+        )
+        self.assertTrue(configs[ids["eligible"]].followup_enabled)
+        self.assertEqual(configs[ids["eligible"]].followup_delay_minutes, 360)
+        self.assertEqual(
+            configs[ids["eligible"]].followup_message_text,
+            "Just checking in 👋 Did you get a chance to see my message?",
         )
         self.assertFalse(configs[ids["unusable"]].enabled)
         self.assertNotIn(ids["legacy"], configs)

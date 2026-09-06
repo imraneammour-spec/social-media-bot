@@ -116,12 +116,12 @@ class TenantAutomationMigrationTests(unittest.TestCase):
         self.assertTrue(bool(by_account[eligible_id]["enabled"]))
         self.assertEqual(
             json.loads(by_account[eligible_id]["trigger_keywords"]),
-            ["access", "ai", "prompt", "prompts", "send"],
+            ["send", "info"],
         )
         self.assertTrue(bool(by_account[eligible_id]["public_reply_enabled"]))
         self.assertEqual(
             by_account[eligible_id]["public_reply_text"],
-            "Your prompts are ready. Check your messages.",
+            "Thanks for commenting 🙌 I’ve sent you a DM.",
         )
         self.assertFalse(bool(by_account[unusable_id]["enabled"]))
         for account_id in (eligible_id, unusable_id):
