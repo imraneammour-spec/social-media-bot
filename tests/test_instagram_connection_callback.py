@@ -160,7 +160,7 @@ class InstagramConnectionCallbackTest(unittest.TestCase):
         onboarding = client.get("/onboarding")
         onboarding_page = onboarding.get_data(as_text=True)
         self.assertIn("Connected and ready", onboarding_page)
-        self.assertNotIn('action="/connect/instagram"', onboarding_page)
+        self.assertIn('action="/connect/instagram"', onboarding_page)
         for secret in (
             self.authorization_code,
             self.long_lived_token,

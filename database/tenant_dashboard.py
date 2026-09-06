@@ -323,7 +323,7 @@ def _connection(account: InstagramAccount) -> tuple[str, str, bool, bool]:
     status = str(account.connection_status or "").strip().lower()
     has_error = bool(str(account.last_connection_error_code or "").strip())
     if status == "connected" and not has_error:
-        return "Connected", "This account is connected.", False, True
+        return "Connected", "This account is connected.", True, True
     if status == "connected" or status in RECONNECT_STATUSES:
         return "Reconnect required", "This account needs reconnection before it can be used.", True, status != "disconnected"
     if status == "disconnected":

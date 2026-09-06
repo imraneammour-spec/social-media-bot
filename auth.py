@@ -200,6 +200,27 @@ def current_user_has_legacy_workspace_access() -> bool:
     return account is not None
 
 
+def current_user_has_legacy_environment_managed_account() -> bool:
+    """Return whether the configured legacy identity is still server-managed."""
+
+    user = get_current_user()
+    state = _auth_state()
+    if user is None or not state.session_factory or not state.legacy_instagram_user_id:
+        return False
+    try:
+        with state.session_factory() as db_session:
+            account = db_session.scalar(
+                select(InstagramAccount).where(
+                    InstagramAccount.user_id == user.id,
+                    InstagramAccount.instagram_user_id == state.legacy_instagram_user_id,
+                    InstagramAccount.connection_status == "environment_managed",
+                )
+            )
+    except SQLAlchemyError:
+        return False
+    return account is not None
+
+
 def action_reference_for_account(
     user_id: object,
     account_id: object,
@@ -291,6 +312,7 @@ def build_onboarding_account_statuses(
         elif connection_status in READY_CONNECTION_STATUSES:
             label = "Connected and ready"
             detail = "This account is ready for the next connection phase."
+            can_reconnect = True
             can_disconnect = True
         else:
             label = "Connection setup incomplete"
@@ -489,7 +511,7 @@ def register_auth_routes(app) -> None:
         user = get_current_user()
         if user is None:
             return _unauthenticated_response()
-        if current_user_has_legacy_workspace_access():
+        if current_user_has_legacy_environment_managed_account():
             return _auth_ui_text("Instagram connection is not available for this account."), 403
         try:
             redirect_uri = resolve_instagram_oauth_redirect_uri(

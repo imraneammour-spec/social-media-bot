@@ -246,6 +246,28 @@ class InstagramOAuthStartFoundationTest(unittest.TestCase):
         with client.session_transaction() as browser_session:
             self.assertNotIn(INSTAGRAM_OAUTH_STATE_SESSION_KEY, browser_session)
 
+    def test_owned_connected_legacy_identity_can_start_oauth_reconnect(self):
+        with self.Session.begin() as db_session:
+            db_session.add(
+                InstagramAccount(
+                    user_id=self.user_id,
+                    instagram_user_id="legacy-instagram-id",
+                    connection_status="connected",
+                )
+            )
+        client = self._authenticated_client()
+        with patch.dict("os.environ", self._oauth_environment(), clear=False):
+            response = client.post(
+                "/connect/instagram",
+                data={"csrf_token": "oauth-csrf-token"},
+                follow_redirects=False,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("https://www.instagram.com/oauth/authorize", response.headers["Location"])
+        with client.session_transaction() as browser_session:
+            self.assertIn(INSTAGRAM_OAUTH_STATE_SESSION_KEY, browser_session)
+
 
 if __name__ == "__main__":
     unittest.main()
