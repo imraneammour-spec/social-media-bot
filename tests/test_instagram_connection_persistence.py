@@ -744,8 +744,8 @@ class InstagramConnectionPersistenceTest(unittest.TestCase):
         self.assertEqual(self._accounts(), [])
         self.assertEqual(self._credentials(), [])
 
-    def test_successful_subscribed_connection_creates_current_behavior_config(self):
-        """Omitting initial config after subscription must fail this rollout test."""
+    def test_successful_subscribed_connection_creates_message_default_config(self):
+        """A newly connected customer account must start with polished Message defaults."""
 
         with patch("database.instagram_connection.subscribe_oauth_account_webhooks", return_value=True):
             connected = self._complete()
@@ -758,10 +758,24 @@ class InstagramConnectionPersistenceTest(unittest.TestCase):
         self.assertTrue(config.enabled)
         self.assertEqual(
             config.trigger_keywords,
-            ["access", "ai", "prompt", "prompts", "send"],
+            ["send", "info"],
         )
         self.assertTrue(config.public_reply_enabled)
-        self.assertEqual(config.public_reply_text, "Your prompts are ready. Check your messages.")
+        self.assertEqual(
+            config.public_reply_text,
+            "Thanks for commenting 🙌 I’ve sent you a DM.",
+        )
+        self.assertEqual(config.delivery_mode, "direct_message")
+        self.assertEqual(
+            config.private_message_text,
+            "Hey 👋 Thanks for your interest! I’ve got something for you.",
+        )
+        self.assertTrue(config.followup_enabled)
+        self.assertEqual(config.followup_delay_minutes, 360)
+        self.assertEqual(
+            config.followup_message_text,
+            "Just checking in 👋 Did you get a chance to see my message?",
+        )
 
     def test_failed_subscription_does_not_create_config_for_reconnect_required_account(self):
         """Creating config before subscription confirmation must fail this safety test."""

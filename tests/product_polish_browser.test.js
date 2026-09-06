@@ -66,35 +66,33 @@ test('mobile menu closes with backdrop/Escape, traps focus, and resets on deskto
   assert.match(css, /html\[dir="rtl"\]/);
 });
 
-test('mode disclosure supports Prompt, Message, and Link without submitting irrelevant fields', () => {
-  const document = {}, mode = element(document), delay = element(document);
-  const privateMessage = element(document), destination = element(document);
-  privateMessage.dataset.defaultDirectMessage = "Hey 👋 Thanks for commenting! I’ve got something for you.";
-  privateMessage.dataset.defaultLink = "Hey 👋 Thanks for your interest! Your link is ready.";
-  const panels = ['direct_message link', 'prompt_request', 'link'].map(value => ({ dataset: { deliveryMode: value } }));
-  mode.value = 'prompt_request';
+test('mode disclosure switches Message and Link panels without erasing either modes edits', () => {
+  const document = {}, mode = element(document), destination = element(document);
+  const messageOpening = element(document), linkOpening = element(document);
+  messageOpening.value = 'Saved Message opening';
+  linkOpening.value = 'Saved Link opening';
+  const panels = [
+    { dataset: { modePanel: 'direct_message' } },
+    { dataset: { modePanel: 'link' } },
+    { dataset: { modeDescription: 'direct_message' } },
+    { dataset: { modeDescription: 'link' } },
+  ];
+  mode.value = 'direct_message';
   document.getElementById = id => ({
     delivery_mode: mode,
-    followup_delay_minutes: delay,
-    private_message_text: privateMessage,
-    destination_url: destination,
+    link_destination_url: destination,
+    message_private_message_text: messageOpening,
+    link_private_message_text: linkOpening,
   })[id];
   document.querySelectorAll = () => panels;
   vm.runInNewContext(script('app_automations.html'), { document });
-  assert.deepEqual(panels.map(panel => panel.hidden), [true, false, true]);
-  assert.equal(delay.max, '10080');
-  mode.value = 'direct_message'; mode.listeners.change();
-  assert.deepEqual(panels.map(panel => panel.hidden), [false, true, true]);
-  assert.equal(delay.max, '1439');
-  assert.equal(privateMessage.value, privateMessage.dataset.defaultDirectMessage);
+  assert.deepEqual(panels.map(panel => panel.hidden), [false, true, false, true]);
   assert.equal(destination.required, false);
-  mode.value = 'prompt_request'; mode.listeners.change();
-  privateMessage.value = '';
   mode.value = 'link'; mode.listeners.change();
-  assert.deepEqual(panels.map(panel => panel.hidden), [false, true, false]);
-  assert.equal(delay.max, '1439');
-  assert.equal(privateMessage.value, privateMessage.dataset.defaultLink);
+  assert.deepEqual(panels.map(panel => panel.hidden), [true, false, true, false]);
   assert.equal(destination.required, true);
+  assert.equal(messageOpening.value, 'Saved Message opening');
+  assert.equal(linkOpening.value, 'Saved Link opening');
 });
 
 test('preview rejects unsafe syntax and reports loading/success/failure without fetching in the test', () => {

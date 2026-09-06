@@ -131,6 +131,7 @@ _MESSAGES = (
     ("Follow-ups queued", "Suivis en attente d’envoi", "المتابعات في قائمة الانتظار"),
     ("Follow-ups sent", "Suivis envoyés", "المتابعات المرسلة"),
     ("If the recipient never replies, no follow-up is sent.", "Si le destinataire ne répond pas, aucun suivi n’est envoyé.", "إذا لم يرد المستلم، فلن تُرسل أي متابعة."),
+    ("The delay starts after the recipient replies.", "Le délai commence après la réponse du destinataire.", "تبدأ مدة الانتظار بعد رد المستلم."),
     ("Image", "Image", "صورة"),
     ("Image only", "Image uniquement", "صورة فقط"),
     ("Image post needing attention", "Publication image à vérifier", "منشور صورة يحتاج إلى مراجعة"),
@@ -426,8 +427,13 @@ _MESSAGES = (
     ("Destination URL", "URL de destination", "رابط الوجهة"),
     ("Use a complete http:// or https:// URL. Postenza does not open or inspect it.", "Utilisez une URL http:// ou https:// complète. Postenza ne l’ouvre pas et ne l’inspecte pas.", "استخدم رابط http:// أو https:// كاملًا. لا تفتحه Postenza ولا تفحصه."),
     ("Leave empty to skip this follow-up.", "Laissez vide pour ignorer ce suivi.", "اتركه فارغًا لتخطي هذه المتابعة."),
-    ("Hey 👋 Thanks for commenting! I’ve got something for you.", "Bonjour 👋 Merci pour votre commentaire ! J’ai quelque chose pour vous.", "مرحبًا 👋 شكرًا لتعليقك! لدي شيء لك."),
-    ("Hey 👋 Thanks for your interest! Your link is ready.", "Bonjour 👋 Merci pour votre intérêt ! Votre lien est prêt.", "مرحبًا 👋 شكرًا لاهتمامك! رابطك جاهز."),
+    ("Thanks for commenting 🙌 I’ve sent you a DM.", "Merci pour votre commentaire 🙌 Je vous ai envoyé un message privé.", "شكرًا لتعليقك 🙌 لقد أرسلت لك رسالة خاصة."),
+    ("Hey 👋 Thanks for your interest! I’ve got something for you.", "Bonjour 👋 Merci pour votre intérêt ! J’ai quelque chose pour vous.", "مرحبًا 👋 شكرًا لاهتمامك! لدي شيء لك."),
+    ("Just checking in 👋 Did you get a chance to see my message?", "Je voulais simplement prendre de vos nouvelles 👋 Avez-vous eu l’occasion de voir mon message ?", "أردت فقط المتابعة 👋 هل أتيحت لك فرصة لرؤية رسالتي؟"),
+    ("Thanks 🙌 I’ve sent the link to your DMs.", "Merci 🙌 Je vous ai envoyé le lien par message privé.", "شكرًا 🙌 لقد أرسلت الرابط إلى رسائلك الخاصة."),
+    ("Hey 👋 Thanks for your interest! Here’s the link you asked for.", "Bonjour 👋 Merci pour votre intérêt ! Voici le lien que vous avez demandé.", "مرحبًا 👋 شكرًا لاهتمامك! إليك الرابط الذي طلبته."),
+    ("Hope you found the link useful 😊 Let me know if you have any questions.", "J’espère que ce lien vous a été utile 😊 N’hésitez pas si vous avez des questions.", "آمل أن يكون الرابط مفيدًا 😊 أخبرني إذا كانت لديك أي أسئلة."),
+    ("Thanks 🙌 I’ve sent the prompt to your DMs.", "Merci 🙌 Je vous ai envoyé le prompt par message privé.", "شكرًا 🙌 لقد أرسلت البرومبت إلى رسائلك الخاصة."),
     ("Hey 👋 Thanks for your interest! Your prompt is ready. Tap below and I’ll send it to you.", "Bonjour 👋 Merci pour votre intérêt ! Votre prompt est prêt. Appuyez ci-dessous et je vous l’enverrai.", "مرحبًا 👋 شكرًا لاهتمامك! البرومبت جاهز. اضغط أدناه وسأرسله إليك."),
 )
 

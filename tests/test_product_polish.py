@@ -40,7 +40,7 @@ class ProductPolishTest(unittest.TestCase):
         page = self.get("/app/automations").get_data(as_text=True)
         self.assertIn("Delay after recipient reply", page)
         self.assertIn("If the recipient never replies, no follow-up is sent.", page)
-        self.assertIn('value="prompt_request"', page)
+        self.assertNotIn('value="prompt_request"', page)
         self.assertIn('value="direct_message"', page)
         self.assertNotIn("Legacy prompt delivery", page)
 
@@ -256,11 +256,13 @@ class ProductPolishTest(unittest.TestCase):
         self.login()
         response = self.get("/app/automations")
         page = response.get_data(as_text=True)
-        self.assertIn('type="hidden" name="followup_enabled" value="off"', page)
+        self.assertIn('type="hidden" name="message_followup_enabled" value="off"', page)
         csrf = re.search(r'name="csrf_token" value="([^"]+)"', page).group(1)
         response = self.client.post("/app/automations", data=MultiDict([
-            ("csrf_token", csrf), ("delivery_mode", "direct_message"), ("followup_enabled", "off"),
-            ("trigger_keywords", "directtest"), ("followup_delay_minutes", "5")]))
+            ("csrf_token", csrf), ("delivery_mode", "direct_message"),
+            ("message_followup_enabled", "off"),
+            ("message_trigger_keywords", "directtest"),
+            ("message_followup_delay_minutes", "5")]))
         self.assertEqual(response.status_code, 200)
         self.assertIn("Automation settings saved.", response.get_data(as_text=True))
         with self.Session() as session:

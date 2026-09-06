@@ -160,9 +160,10 @@ class TestPhase5B1BAutomations(unittest.TestCase):
                 data={
                     "csrf_token": token,
                     "enabled": "on",
-                    "trigger_keywords": "updated, keywords",
-                    "public_reply_enabled": "on",
-                    "public_reply_text": "New reply text",
+                    "delivery_mode": "direct_message",
+                    "message_trigger_keywords": "updated, keywords",
+                    "message_public_reply_enabled": "on",
+                    "message_public_reply_text": "New reply text",
                 },
                 follow_redirects=True,
             )
@@ -179,6 +180,7 @@ class TestPhase5B1BAutomations(unittest.TestCase):
 
             self.assertIsNotNone(config)
             self.assertTrue(config.enabled)
+            self.assertEqual(config.delivery_mode, "direct_message")
 
             self.assertEqual(
                 config.trigger_keywords,

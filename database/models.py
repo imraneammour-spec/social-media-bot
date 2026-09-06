@@ -144,6 +144,7 @@ class InstagramAutomationConfig(TimestampMixin, Base):
     )
     prompt_opening_message_text: Mapped[str | None] = mapped_column(Text)
     destination_url: Mapped[str | None] = mapped_column(Text)
+    inactive_mode_settings: Mapped[dict[str, object] | None] = mapped_column(JSON)
     followup_enabled: Mapped[bool] = mapped_column(
         nullable=False, default=True, server_default=text("true")
     )

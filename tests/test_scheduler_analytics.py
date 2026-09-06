@@ -733,7 +733,7 @@ class SchedulerAnalyticsDashboardTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         page = response.get_data(as_text=True)
         self.assertIn("Comment events", page)
-        self.assertIn("Prompt requests", page)
+        self.assertNotIn("Prompt requests", page)
         self.assertIn("Follow-up delivery", page)
 
     def test_analytics_empty_range_has_a_clear_empty_state(self):

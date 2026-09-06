@@ -71,6 +71,7 @@ class TenantAutomationModelTests(unittest.TestCase):
             self.assertEqual(config.followup_message_text, "")
             self.assertIsNone(config.prompt_opening_message_text)
             self.assertIsNone(config.destination_url)
+            self.assertIsNone(config.inactive_mode_settings)
 
     def test_configuration_model_allows_only_one_row_per_account(self):
         """Removing the per-account uniqueness guard must fail this test."""
@@ -138,6 +139,155 @@ class TenantAutomationHelperTests(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(helpers.TenantAutomationConfigurationError):
                     helpers.normalize_destination_url(value)
+
+    def test_customer_mode_defaults_are_complete_and_mode_specific(self):
+        """New Message and Link configurations must receive their own polished copy."""
+
+        helpers = self._helpers()
+        self.assertEqual(
+            helpers.automation_mode_defaults("direct_message"),
+            {
+                "trigger_keywords": ["send", "info"],
+                "public_reply_enabled": True,
+                "public_reply_text": "Thanks for commenting 🙌 I’ve sent you a DM.",
+                "private_message_text": "Hey 👋 Thanks for your interest! I’ve got something for you.",
+                "destination_url": "",
+                "followup_enabled": True,
+                "followup_delay_minutes": 360,
+                "followup_message_text": "Just checking in 👋 Did you get a chance to see my message?",
+            },
+        )
+        self.assertEqual(
+            helpers.automation_mode_defaults("link"),
+            {
+                "trigger_keywords": ["link", "send"],
+                "public_reply_enabled": True,
+                "public_reply_text": "Thanks 🙌 I’ve sent the link to your DMs.",
+                "private_message_text": "Hey 👋 Thanks for your interest! Here’s the link you asked for.",
+                "destination_url": "",
+                "followup_enabled": True,
+                "followup_delay_minutes": 360,
+                "followup_message_text": "Hope you found the link useful 😊 Let me know if you have any questions.",
+            },
+        )
+        prompt_defaults = helpers.automation_mode_defaults("prompt_request")
+        self.assertEqual(
+            prompt_defaults["public_reply_text"],
+            "Thanks 🙌 I’ve sent the prompt to your DMs.",
+        )
+        self.assertEqual(
+            prompt_defaults["private_message_text"],
+            "Hey 👋 Thanks for your interest! Your prompt is ready. Tap below and I’ll send it to you.",
+        )
+
+    def test_inactive_mode_settings_are_allowlisted_versioned_and_restore_saved_values(self):
+        """Snapshots must preserve customer copy without retaining credentials or provider data."""
+
+        helpers = self._helpers()
+        stored = {
+            "version": 1,
+            "modes": {
+                "direct_message": {
+                    "trigger_keywords": ["custom"],
+                    "public_reply_enabled": False,
+                    "public_reply_text": "My public reply",
+                    "private_message_text": "My private reply",
+                    "destination_url": "",
+                    "followup_enabled": False,
+                    "followup_delay_minutes": 75,
+                    "followup_message_text": "My follow-up",
+                    "access_token": "must-not-survive",
+                    "provider_payload": {"secret": "must-not-survive"},
+                },
+                "unknown_mode": {"private_message_text": "ignored"},
+            },
+            "oauth_token": "must-not-survive",
+        }
+
+        self.assertEqual(
+            helpers.normalize_inactive_mode_settings(stored),
+            {
+                "version": 1,
+                "modes": {
+                    "direct_message": {
+                        "trigger_keywords": ["custom"],
+                        "public_reply_enabled": False,
+                        "public_reply_text": "My public reply",
+                        "private_message_text": "My private reply",
+                        "destination_url": "",
+                        "followup_enabled": False,
+                        "followup_delay_minutes": 75,
+                        "followup_message_text": "My follow-up",
+                    }
+                },
+            },
+        )
+
+    def test_mode_restore_precedence_keeps_nonempty_saved_customer_values(self):
+        """Inactive saved values must beat active values and defaults without cross-mode bleed."""
+
+        helpers = self._helpers()
+        config = InstagramAutomationConfig(
+            delivery_mode="direct_message",
+            trigger_keywords=["active"],
+            public_reply_enabled=False,
+            public_reply_text="Active public",
+            private_message_text="Active private",
+            followup_enabled=False,
+            followup_delay_minutes=90,
+            followup_message_text="Active follow-up",
+            inactive_mode_settings={
+                "version": 1,
+                "modes": {
+                    "link": {
+                        "trigger_keywords": ["saved-link"],
+                        "public_reply_enabled": False,
+                        "public_reply_text": "Saved Link public",
+                        "private_message_text": "Saved Link opening",
+                        "destination_url": "https://example.test/saved",
+                        "followup_enabled": False,
+                        "followup_delay_minutes": 45,
+                        "followup_message_text": "Saved Link follow-up",
+                    }
+                },
+            },
+        )
+
+        self.assertEqual(
+            helpers.automation_mode_values(config, "direct_message"),
+            {
+                "trigger_keywords": ["active"],
+                "public_reply_enabled": False,
+                "public_reply_text": "Active public",
+                "private_message_text": "Active private",
+                "destination_url": "",
+                "followup_enabled": False,
+                "followup_delay_minutes": 90,
+                "followup_message_text": "Active follow-up",
+            },
+        )
+        self.assertEqual(
+            helpers.automation_mode_values(config, "link")["private_message_text"],
+            "Saved Link opening",
+        )
+        self.assertEqual(
+            helpers.automation_mode_values(config, "link")["destination_url"],
+            "https://example.test/saved",
+        )
+        config.inactive_mode_settings = {
+            "version": 1,
+            "modes": {
+                "direct_message": {
+                    "trigger_keywords": ["inactivewins"],
+                    "public_reply_text": "Inactive saved public",
+                    "private_message_text": "Inactive saved private",
+                }
+            },
+        }
+        restored = helpers.automation_mode_values(config, "direct_message")
+        self.assertEqual(restored["trigger_keywords"], ["inactivewins"])
+        self.assertEqual(restored["public_reply_text"], "Inactive saved public")
+        self.assertEqual(restored["private_message_text"], "Inactive saved private")
 
     def test_smart_reply_controls_are_bounded_and_fail_closed(self):
         """Invalid tone or rate input must not become an account runtime choice."""

@@ -844,7 +844,8 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertIn('<h1>Automation</h1>', page)
         self.assertNotIn('<h1>Instagram workspace</h1>', page)
         self.assertIn('for="automation_enabled"', page)
-        self.assertIn('for="public_reply_enabled"', page)
+        self.assertIn('for="message_public_reply_enabled"', page)
+        self.assertIn('for="link_public_reply_enabled"', page)
         self.assertIn("Smart replies", page)
         self.assertIn('for="smart_reply_enabled"', page)
         self.assertIn('id="smart_reply_tone"', page)
@@ -1059,7 +1060,12 @@ class TenantDashboardTest(unittest.TestCase):
 
         for label in ("Automation status", "Reply to matching comments", "Private message and follow-up", "Smart replies"):
             self.assertIn(label, page)
-        for field in ("automation_enabled", "public_reply_enabled", "followup_enabled", "smart_reply_enabled"):
+        for field in (
+            "automation_enabled",
+            "message_public_reply_enabled",
+            "message_followup_enabled",
+            "smart_reply_enabled",
+        ):
             self.assertIn(f'id="{field}"', page)
         self.assertIn("Public replies appear on your Instagram post.", page)
         self.assertNotIn("Required system step", page)
@@ -1123,8 +1129,8 @@ class TenantDashboardTest(unittest.TestCase):
 
         page = self.client.get(f"/app/automations?account={selected}").get_data(as_text=True)
         self.assertIn('id="delivery_mode"', page)
-        self.assertIn('id="private_message_text"', page)
-        self.assertIn('id="followup_message_text"', page)
+        self.assertIn('id="message_private_message_text"', page)
+        self.assertIn('id="message_followup_message_text"', page)
         csrf_token = re.search(r'name="csrf_token"\s+value="([^"]+)"', page).group(1)
         response = self.client.post(
             f"/app/automations?account={selected}",
@@ -1155,8 +1161,8 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertEqual(secondary.private_message_text, "Other account private message")
         self.assertEqual(secondary.followup_message_text, "Other account follow-up")
 
-    def test_automations_present_three_customer_modes_and_safe_application_defaults(self):
-        """Missing Link controls or blank new-mode copy must fail this customer workflow."""
+    def test_automations_present_customer_modes_and_safe_application_defaults(self):
+        """Normal customers get complete Message/Link defaults without internal Prompt UI."""
 
         self._login_as(self.owner_a)
         selected = self._reference(self.owner_a, self.account_a1)
@@ -1172,22 +1178,245 @@ class TenantDashboardTest(unittest.TestCase):
         page = self.client.get(f"/app/automations?account={selected}").get_data(as_text=True)
 
         for value, label, description in (
-            ("prompt_request", "Prompt", "Send the prompt connected to this post."),
             ("direct_message", "Message", "Send a custom private message."),
             ("link", "Link", "Send a link of your choice."),
         ):
             self.assertIn(f'value="{value}"', page)
             self.assertIn(f">{label}</option>", page)
             self.assertIn(description, page)
-        self.assertIn('id="prompt_opening_message_text"', page)
-        self.assertIn('id="destination_url"', page)
+        self.assertNotIn('value="prompt_request"', page)
+        self.assertNotIn('id="prompt_private_message_text"', page)
+        self.assertIn('id="link_destination_url"', page)
         self.assertIn(
-            "Hey 👋 Thanks for your interest! Your prompt is ready. Tap below and I’ll send it to you.",
+            "Hey 👋 Thanks for your interest! I’ve got something for you.",
             page,
         )
-        self.assertIn("Hey 👋 Thanks for commenting! I’ve got something for you.", page)
-        self.assertIn("Hey 👋 Thanks for your interest! Your link is ready.", page)
+        self.assertIn("Thanks for commenting 🙌 I’ve sent you a DM.", page)
+        self.assertIn("Hey 👋 Thanks for your interest! Here’s the link you asked for.", page)
+        self.assertIn("Thanks 🙌 I’ve sent the link to your DMs.", page)
         self.assertNotIn('id="link_label"', page)
+
+    def test_customer_automation_hides_prompt_and_rejects_forged_prompt_save(self):
+        """A normal tenant must not discover or activate the internal Prompt mode."""
+
+        self._login_as(self.owner_a)
+        selected = self._reference(self.owner_a, self.account_a1)
+        with self.Session.begin() as session:
+            session.add(InstagramAutomationConfig(
+                instagram_account_id=self.account_a1.id,
+                enabled=True,
+                trigger_keywords=["existing"],
+                public_reply_enabled=False,
+                public_reply_text="Existing public reply",
+                delivery_mode="prompt_request",
+                prompt_opening_message_text="Existing internal opening",
+            ))
+
+        page = self.client.get(f"/app/automations?account={selected}").get_data(as_text=True)
+        self.assertIn('value="direct_message"', page)
+        self.assertIn('value="link"', page)
+        self.assertNotIn('value="prompt_request"', page)
+        self.assertNotIn("Prompt", page)
+        csrf_token = re.search(r'name="csrf_token"\s+value="([^"]+)"', page).group(1)
+
+        response = self.client.post(
+            f"/app/automations?account={selected}",
+            data={
+                "csrf_token": csrf_token,
+                "delivery_mode": "prompt_request",
+                "trigger_keywords": "forged",
+                "public_reply_text": "Forged public",
+                "prompt_opening_message_text": "Forged opening",
+                "followup_delay_minutes": "60",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        with self.Session() as session:
+            config = session.scalar(select(InstagramAutomationConfig).where(
+                InstagramAutomationConfig.instagram_account_id == self.account_a1.id
+            ))
+        self.assertEqual(config.delivery_mode, "prompt_request")
+        self.assertEqual(config.trigger_keywords, ["existing"])
+        self.assertEqual(config.public_reply_text, "Existing public reply")
+        self.assertEqual(config.prompt_opening_message_text, "Existing internal opening")
+
+    def test_customer_workspace_does_not_expose_internal_prompt_wording(self):
+        """Prompt-specific analytics, content, and automation labels stay internal."""
+
+        self._login_as(self.owner_a)
+        selected = self._reference(self.owner_a, self.account_a1)
+        with self.Session.begin() as session:
+            session.add(InstagramAutomationConfig(
+                instagram_account_id=self.account_a1.id,
+                delivery_mode="prompt_request",
+                trigger_keywords=["prompt"],
+                prompt_opening_message_text="Internal only copy",
+            ))
+
+        for path in ("automations", "analytics", "content"):
+            page = self.client.get(
+                f"/app/{path}?account={selected}"
+            ).get_data(as_text=True)
+            self.assertNotIn("Prompt", page, path)
+            self.assertNotIn("Internal only copy", page, path)
+
+    def test_internal_prompt_capability_uses_legacy_account_ownership_boundary(self):
+        """Only the established legacy-account owner may view and save Prompt settings."""
+
+        with self.Session.begin() as session:
+            legacy = session.get(InstagramAccount, self.legacy_account.id)
+            legacy.user_id = self.owner_a.id
+        self._login_as(self.owner_a)
+        selected = self._reference(self.owner_a, self.account_a1)
+        with self.Session.begin() as session:
+            session.add(InstagramAutomationConfig(
+                instagram_account_id=self.account_a1.id,
+                enabled=True,
+                trigger_keywords=["prompt"],
+                public_reply_enabled=True,
+                public_reply_text="Saved prompt public reply",
+                delivery_mode="prompt_request",
+                prompt_opening_message_text="Saved prompt opening",
+            ))
+
+        page = self.client.get(f"/app/automations?account={selected}").get_data(as_text=True)
+        self.assertIn('value="prompt_request"', page)
+        self.assertIn("Saved prompt opening", page)
+        csrf_token = re.search(r'name="csrf_token"\s+value="([^"]+)"', page).group(1)
+        response = self.client.post(
+            f"/app/automations?account={selected}",
+            data={
+                "csrf_token": csrf_token,
+                "enabled": "on",
+                "delivery_mode": "prompt_request",
+                "prompt_trigger_keywords": "prompt, access",
+                "prompt_public_reply_enabled": "on",
+                "prompt_public_reply_text": "Internal prompt public reply",
+                "prompt_private_message_text": "Internal prompt opening",
+                "prompt_followup_enabled": "on",
+                "prompt_followup_delay_minutes": "360",
+                "prompt_followup_message_text": "",
+                "smart_reply_tone": "friendly",
+                "smart_reply_max_per_hour": "20",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        with self.Session() as session:
+            config = session.scalar(select(InstagramAutomationConfig).where(
+                InstagramAutomationConfig.instagram_account_id == self.account_a1.id
+            ))
+        self.assertEqual(config.delivery_mode, "prompt_request")
+        self.assertEqual(config.trigger_keywords, ["prompt", "access"])
+        self.assertEqual(config.public_reply_text, "Internal prompt public reply")
+        self.assertEqual(config.prompt_opening_message_text, "Internal prompt opening")
+        internal_analytics = self.client.get(
+            f"/app/analytics?account={selected}"
+        ).get_data(as_text=True)
+        self.assertIn("Prompt delivery details", internal_analytics)
+
+        with self.Session.begin() as session:
+            session.add(InstagramAutomationConfig(
+                instagram_account_id=self.account_b.id,
+                delivery_mode="direct_message",
+                trigger_keywords=["send"],
+            ))
+        self._login_as(self.owner_b)
+        foreign_tenant_page = self.client.get(
+            f"/app/automations?account={self._reference(self.owner_b, self.account_b)}"
+        ).get_data(as_text=True)
+        self.assertNotIn('value="prompt_request"', foreign_tenant_page)
+        self.assertNotIn("Internal prompt public reply", foreign_tenant_page)
+
+    def test_switching_message_and_link_restores_each_modes_saved_customer_copy(self):
+        """Activating another mode must snapshot and later restore every mode-specific field."""
+
+        self._login_as(self.owner_a)
+        selected = self._reference(self.owner_a, self.account_a1)
+        with self.Session.begin() as session:
+            session.add(InstagramAutomationConfig(
+                instagram_account_id=self.account_a1.id,
+                enabled=True,
+                trigger_keywords=["messagecustom"],
+                public_reply_enabled=False,
+                public_reply_text="Message public custom",
+                delivery_mode="direct_message",
+                private_message_text="Message opening custom",
+                followup_enabled=False,
+                followup_delay_minutes=75,
+                followup_message_text="Message follow-up custom",
+            ))
+        page = self.client.get(f"/app/automations?account={selected}").get_data(as_text=True)
+        csrf_token = re.search(r'name="csrf_token"\s+value="([^"]+)"', page).group(1)
+
+        response = self.client.post(
+            f"/app/automations?account={selected}",
+            data={
+                "csrf_token": csrf_token,
+                "enabled": "on",
+                "delivery_mode": "link",
+                "message_trigger_keywords": "messagecustom",
+                "message_public_reply_text": "Message public custom",
+                "message_private_message_text": "Message opening custom",
+                "message_followup_delay_minutes": "75",
+                "message_followup_message_text": "Message follow-up custom",
+                "link_trigger_keywords": "linkcustom, send",
+                "link_public_reply_enabled": "on",
+                "link_public_reply_text": "Link public custom",
+                "link_private_message_text": "Link opening custom",
+                "link_destination_url": "https://example.test/custom",
+                "link_followup_enabled": "on",
+                "link_followup_delay_minutes": "45",
+                "link_followup_message_text": "Link follow-up custom",
+                "smart_reply_tone": "friendly",
+                "smart_reply_max_per_hour": "20",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        with self.Session() as session:
+            config = session.scalar(select(InstagramAutomationConfig).where(
+                InstagramAutomationConfig.instagram_account_id == self.account_a1.id
+            ))
+            self.assertEqual(config.delivery_mode, "link")
+            self.assertEqual(config.private_message_text, "Link opening custom")
+            self.assertEqual(config.destination_url, "https://example.test/custom")
+            self.assertEqual(
+                config.inactive_mode_settings["modes"]["direct_message"]["private_message_text"],
+                "Message opening custom",
+            )
+
+        restored_page = self.client.get(
+            f"/app/automations?account={selected}"
+        ).get_data(as_text=True)
+        self.assertIn("Message opening custom", restored_page)
+        self.assertIn("Message follow-up custom", restored_page)
+        self.assertIn("Link opening custom", restored_page)
+        restored_csrf = re.search(
+            r'name="csrf_token"\s+value="([^"]+)"', restored_page
+        ).group(1)
+        restored_response = self.client.post(
+            f"/app/automations?account={selected}",
+            data={
+                "csrf_token": restored_csrf,
+                "enabled": "on",
+                "delivery_mode": "direct_message",
+                "smart_reply_tone": "friendly",
+                "smart_reply_max_per_hour": "20",
+            },
+        )
+        self.assertEqual(restored_response.status_code, 200)
+        with self.Session() as session:
+            restored_config = session.scalar(select(InstagramAutomationConfig).where(
+                InstagramAutomationConfig.instagram_account_id == self.account_a1.id
+            ))
+        self.assertEqual(restored_config.delivery_mode, "direct_message")
+        self.assertEqual(restored_config.trigger_keywords, ["messagecustom"])
+        self.assertEqual(restored_config.public_reply_text, "Message public custom")
+        self.assertEqual(restored_config.private_message_text, "Message opening custom")
+        self.assertFalse(restored_config.followup_enabled)
+        self.assertEqual(restored_config.followup_delay_minutes, 75)
+        self.assertEqual(restored_config.followup_message_text, "Message follow-up custom")
 
     def test_link_automation_save_is_account_scoped_and_preserves_other_mode_copy(self):
         """Saving Link mode must validate/persist its URL without overwriting unrelated copy."""

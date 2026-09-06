@@ -30,8 +30,15 @@ DEFAULT_PROMPT_OPENING_MESSAGE = (
     "Hey 👋 Thanks for your interest! Your prompt is ready. "
     "Tap below and I’ll send it to you."
 )
-DEFAULT_CUSTOM_MESSAGE = "Hey 👋 Thanks for commenting! I’ve got something for you."
-DEFAULT_LINK_OPENING_MESSAGE = "Hey 👋 Thanks for your interest! Your link is ready."
+DEFAULT_CUSTOM_MESSAGE = "Hey 👋 Thanks for your interest! I’ve got something for you."
+DEFAULT_LINK_OPENING_MESSAGE = "Hey 👋 Thanks for your interest! Here’s the link you asked for."
+DEFAULT_MESSAGE_PUBLIC_REPLY = "Thanks for commenting 🙌 I’ve sent you a DM."
+DEFAULT_LINK_PUBLIC_REPLY = "Thanks 🙌 I’ve sent the link to your DMs."
+DEFAULT_PROMPT_PUBLIC_REPLY = "Thanks 🙌 I’ve sent the prompt to your DMs."
+DEFAULT_MESSAGE_FOLLOWUP = "Just checking in 👋 Did you get a chance to see my message?"
+DEFAULT_LINK_FOLLOWUP = (
+    "Hope you found the link useful 😊 Let me know if you have any questions."
+)
 DEFAULT_SMART_REPLY_TONE = "friendly"
 DEFAULT_SMART_REPLY_MAX_PER_HOUR = 20
 SMART_REPLY_TONES = ("friendly", "professional", "concise", "neutral")
@@ -40,6 +47,17 @@ SMART_REPLY_MAX_PER_HOUR = 100
 FOLLOWUP_MIN_DELAY_MINUTES = 5
 FOLLOWUP_MAX_DELAY_MINUTES = 10080
 AUTOMATION_DELIVERY_MODES = ("prompt_request", "direct_message", "link")
+INACTIVE_MODE_SETTINGS_VERSION = 1
+MODE_PRESENTATION_FIELDS = (
+    "trigger_keywords",
+    "public_reply_enabled",
+    "public_reply_text",
+    "private_message_text",
+    "destination_url",
+    "followup_enabled",
+    "followup_delay_minutes",
+    "followup_message_text",
+)
 _KEYWORD_PATTERN = re.compile(r"^\w{1,32}$")
 
 
@@ -129,6 +147,170 @@ def normalize_destination_url(value: object) -> str:
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc or not hostname:
         raise TenantAutomationConfigurationError("Invalid destination URL.")
     return destination
+
+
+def automation_mode_defaults(mode: object) -> dict[str, object]:
+    """Return fresh application defaults for one delivery mode.
+
+    These values are presentation/configuration only. Runtime delivery continues to
+    consume the active scalar columns on ``InstagramAutomationConfig``.
+    """
+
+    normalized_mode = normalize_automation_delivery_mode(mode)
+    if normalized_mode == "direct_message":
+        return {
+            "trigger_keywords": ["send", "info"],
+            "public_reply_enabled": True,
+            "public_reply_text": DEFAULT_MESSAGE_PUBLIC_REPLY,
+            "private_message_text": DEFAULT_CUSTOM_MESSAGE,
+            "destination_url": "",
+            "followup_enabled": True,
+            "followup_delay_minutes": DEFAULT_FOLLOWUP_DELAY_MINUTES,
+            "followup_message_text": DEFAULT_MESSAGE_FOLLOWUP,
+        }
+    if normalized_mode == "link":
+        return {
+            "trigger_keywords": ["link", "send"],
+            "public_reply_enabled": True,
+            "public_reply_text": DEFAULT_LINK_PUBLIC_REPLY,
+            "private_message_text": DEFAULT_LINK_OPENING_MESSAGE,
+            "destination_url": "",
+            "followup_enabled": True,
+            "followup_delay_minutes": DEFAULT_FOLLOWUP_DELAY_MINUTES,
+            "followup_message_text": DEFAULT_LINK_FOLLOWUP,
+        }
+    return {
+        "trigger_keywords": list(CURRENT_DEFAULT_TRIGGER_KEYWORDS),
+        "public_reply_enabled": True,
+        "public_reply_text": DEFAULT_PROMPT_PUBLIC_REPLY,
+        "private_message_text": DEFAULT_PROMPT_OPENING_MESSAGE,
+        "destination_url": "",
+        "followup_enabled": True,
+        "followup_delay_minutes": DEFAULT_FOLLOWUP_DELAY_MINUTES,
+        "followup_message_text": "",
+    }
+
+
+def _normalized_mode_snapshot(mode: str, value: object) -> dict[str, object]:
+    """Keep only the documented, non-secret fields from one stored snapshot."""
+
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, object] = {}
+    keywords = value.get("trigger_keywords")
+    try:
+        if keywords is not None:
+            normalized["trigger_keywords"] = normalize_trigger_keywords(keywords)
+    except TenantAutomationConfigurationError:
+        pass
+    for field in ("public_reply_enabled", "followup_enabled"):
+        if isinstance(value.get(field), bool):
+            normalized[field] = value[field]
+    for field in (
+        "public_reply_text",
+        "private_message_text",
+        "followup_message_text",
+    ):
+        if isinstance(value.get(field), str):
+            normalized[field] = value[field].strip()
+    destination = value.get("destination_url")
+    if isinstance(destination, str):
+        destination = destination.strip()
+        if not destination:
+            normalized["destination_url"] = ""
+        elif mode == "link":
+            try:
+                normalized["destination_url"] = normalize_destination_url(destination)
+            except TenantAutomationConfigurationError:
+                pass
+    try:
+        if value.get("followup_delay_minutes") is not None:
+            normalized["followup_delay_minutes"] = normalize_followup_delay_minutes(
+                value["followup_delay_minutes"]
+            )
+    except TenantAutomationConfigurationError:
+        pass
+    return normalized
+
+
+def normalize_inactive_mode_settings(value: object) -> dict[str, object]:
+    """Return the stable allowlisted inactive-mode JSON document.
+
+    Structure: ``{"version": 1, "modes": {<mode>: <presentation fields>}}``.
+    Unknown modes and keys are discarded so credentials, provider payloads, and
+    unrelated tenant data can never enter this configuration document through
+    application persistence.
+    """
+
+    source_modes = value.get("modes") if isinstance(value, dict) else None
+    normalized_modes: dict[str, dict[str, object]] = {}
+    if isinstance(source_modes, dict):
+        for mode in AUTOMATION_DELIVERY_MODES:
+            snapshot = _normalized_mode_snapshot(mode, source_modes.get(mode))
+            if snapshot:
+                normalized_modes[mode] = snapshot
+    return {"version": INACTIVE_MODE_SETTINGS_VERSION, "modes": normalized_modes}
+
+
+def _active_mode_snapshot(config: object, mode: str) -> dict[str, object]:
+    private_message_text = getattr(config, "private_message_text", "") or ""
+    if mode == "prompt_request":
+        private_message_text = (
+            getattr(config, "prompt_opening_message_text", None) or ""
+        )
+    return {
+        "trigger_keywords": list(getattr(config, "trigger_keywords", None) or []),
+        "public_reply_enabled": getattr(config, "public_reply_enabled", None),
+        "public_reply_text": getattr(config, "public_reply_text", "") or "",
+        "private_message_text": private_message_text,
+        "destination_url": (
+            (getattr(config, "destination_url", None) or "") if mode == "link" else ""
+        ),
+        "followup_enabled": getattr(config, "followup_enabled", None),
+        "followup_delay_minutes": getattr(config, "followup_delay_minutes", None),
+        "followup_message_text": getattr(config, "followup_message_text", "") or "",
+    }
+
+
+def _overlay_nonempty_settings(
+    base: dict[str, object], values: dict[str, object]
+) -> dict[str, object]:
+    result = dict(base)
+    for field in MODE_PRESENTATION_FIELDS:
+        if field not in values:
+            continue
+        value = values[field]
+        if field == "destination_url":
+            result[field] = value
+        elif isinstance(value, str) and not value.strip():
+            continue
+        elif isinstance(value, list) and not value:
+            continue
+        elif value is None:
+            continue
+        else:
+            result[field] = list(value) if isinstance(value, list) else value
+    return result
+
+
+def automation_mode_values(config: object, mode: object) -> dict[str, object]:
+    """Restore values using inactive saved > applicable active > default precedence."""
+
+    normalized_mode = normalize_automation_delivery_mode(mode)
+    values = automation_mode_defaults(normalized_mode)
+    active_mode = normalize_automation_delivery_mode(
+        getattr(config, "delivery_mode", "prompt_request") or "prompt_request"
+    )
+    if active_mode == normalized_mode:
+        values = _overlay_nonempty_settings(
+            values, _active_mode_snapshot(config, normalized_mode)
+        )
+    inactive = normalize_inactive_mode_settings(
+        getattr(config, "inactive_mode_settings", None)
+    )["modes"]
+    if normalized_mode in inactive:
+        values = _overlay_nonempty_settings(values, inactive[normalized_mode])
+    return values
 
 
 def _legacy_followup_settings(config: object) -> tuple[bool, int]:
@@ -312,14 +494,14 @@ def ensure_initial_oauth_automation_config(
     config = InstagramAutomationConfig(
         instagram_account_id=account.id,
         enabled=initial_automation_enabled(account, credential, now=now),
-        trigger_keywords=current_default_trigger_keywords(),
+        trigger_keywords=["send", "info"],
         public_reply_enabled=True,
-        public_reply_text=current_default_public_reply_text(),
-        delivery_mode="prompt_request",
-        private_message_text="",
+        public_reply_text=DEFAULT_MESSAGE_PUBLIC_REPLY,
+        delivery_mode="direct_message",
+        private_message_text=DEFAULT_CUSTOM_MESSAGE,
         followup_enabled=DEFAULT_FOLLOWUP_ENABLED,
         followup_delay_minutes=DEFAULT_FOLLOWUP_DELAY_MINUTES,
-        followup_message_text="",
+        followup_message_text=DEFAULT_MESSAGE_FOLLOWUP,
         smart_reply_enabled=False,
         smart_reply_tone=DEFAULT_SMART_REPLY_TONE,
         smart_reply_max_per_hour=DEFAULT_SMART_REPLY_MAX_PER_HOUR,

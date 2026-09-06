@@ -51,16 +51,15 @@ from database.content import (
 )
 from database.models import InstagramAutomationConfig, InstagramContentItem
 from database.tenant_automation import (
-    DEFAULT_CUSTOM_MESSAGE,
-    DEFAULT_FOLLOWUP_DELAY_MINUTES,
-    DEFAULT_FOLLOWUP_ENABLED,
-    DEFAULT_LINK_OPENING_MESSAGE,
-    DEFAULT_PROMPT_OPENING_MESSAGE,
+    AUTOMATION_DELIVERY_MODES,
     SMART_REPLY_TONES,
     TenantAutomationConfigurationError,
+    automation_mode_defaults,
+    automation_mode_values,
     normalize_automation_delivery_mode,
     normalize_destination_url,
     normalize_followup_delay_minutes,
+    normalize_inactive_mode_settings,
     normalize_smart_reply_max_per_hour,
     normalize_smart_reply_tone,
     normalize_trigger_keywords,
@@ -444,6 +443,8 @@ def _render_page(
     )
 
     locale = locale_context(session_locale(browser_session))
+    if "internal_prompt_access" not in context:
+        context["internal_prompt_access"] = current_user_has_legacy_workspace_access()
     return _cache_control(
         render_template(
             template_name,
@@ -778,7 +779,7 @@ def _analyze_lead(user, selected):
     return _lead_redirect()
 
 
-def _automation_config(selected):
+def _automation_config(selected, *, internal_prompt_access=False):
     session_factory = getattr(
         _auth_state(),
         "session_factory",
@@ -802,52 +803,35 @@ def _automation_config(selected):
             if config is None:
                 return None
 
-            delivery_mode = (
+            saved_delivery_mode = (
                 getattr(config, "delivery_mode", "prompt_request")
                 or "prompt_request"
             )
-            private_message_text = (
-                getattr(config, "private_message_text", "") or ""
-            )
-            private_message_uses_default = not private_message_text
-            if not private_message_text and delivery_mode == "direct_message":
-                private_message_text = DEFAULT_CUSTOM_MESSAGE
-            elif not private_message_text and delivery_mode == "link":
-                private_message_text = DEFAULT_LINK_OPENING_MESSAGE
-            prompt_opening_message_text = (
-                getattr(config, "prompt_opening_message_text", None) or ""
-            )
-            prompt_opening_uses_default = not prompt_opening_message_text
-            if not prompt_opening_message_text:
-                prompt_opening_message_text = DEFAULT_PROMPT_OPENING_MESSAGE
+            delivery_mode = saved_delivery_mode
+            if delivery_mode == "prompt_request" and not internal_prompt_access:
+                delivery_mode = "direct_message"
+            visible_modes = ["direct_message", "link"]
+            if internal_prompt_access:
+                visible_modes.insert(0, "prompt_request")
+            modes = {
+                mode: automation_mode_values(config, mode)
+                for mode in visible_modes
+            }
+            for mode, values in modes.items():
+                values["defaults"] = automation_mode_defaults(mode)
+            active_values = modes[delivery_mode]
             return {
                 "enabled": config.enabled,
-                "trigger_keywords": list(
-                    config.trigger_keywords
-                    or []
-                ),
-                "public_reply_enabled":
-                    config.public_reply_enabled,
-                "public_reply_text":
-                    config.public_reply_text
-                    or "",
+                "modes": modes,
+                "trigger_keywords": active_values["trigger_keywords"],
+                "public_reply_enabled": active_values["public_reply_enabled"],
+                "public_reply_text": active_values["public_reply_text"],
                 "delivery_mode": delivery_mode,
-                "private_message_text": private_message_text,
-                "private_message_uses_default": private_message_uses_default,
-                "prompt_opening_message_text": prompt_opening_message_text,
-                "prompt_opening_uses_default": prompt_opening_uses_default,
-                "destination_url": getattr(config, "destination_url", None) or "",
-                "followup_enabled": (
-                    config.followup_enabled
-                    if config.followup_enabled is not None
-                    else True
-                ),
-                "followup_delay_minutes": (
-                    config.followup_delay_minutes
-                    if config.followup_delay_minutes is not None
-                    else DEFAULT_FOLLOWUP_DELAY_MINUTES
-                ),
-                "followup_message_text": getattr(config, "followup_message_text", "") or "",
+                "private_message_text": active_values["private_message_text"],
+                "destination_url": active_values["destination_url"],
+                "followup_enabled": active_values["followup_enabled"],
+                "followup_delay_minutes": active_values["followup_delay_minutes"],
+                "followup_message_text": active_values["followup_message_text"],
                 "smart_reply_enabled": config.smart_reply_enabled,
                 "smart_reply_tone": config.smart_reply_tone,
                 "smart_reply_max_per_hour": config.smart_reply_max_per_hour,
@@ -857,7 +841,71 @@ def _automation_config(selected):
         return _DATABASE_UNAVAILABLE
 
 
-def _update_automation_config(selected):
+_MODE_FORM_PREFIXES = {
+    "prompt_request": "prompt",
+    "direct_message": "message",
+    "link": "link",
+}
+
+
+def _mode_form_value(mode, field, selected_mode):
+    prefixed_name = f"{_MODE_FORM_PREFIXES[mode]}_{field}"
+    if prefixed_name in request.form:
+        return request.form.get(prefixed_name), True
+    if mode != selected_mode:
+        return None, False
+    legacy_name = field
+    if mode == "prompt_request" and field == "private_message_text":
+        legacy_name = "prompt_opening_message_text"
+    if legacy_name in request.form:
+        return request.form.get(legacy_name), True
+    return None, False
+
+
+def _submitted_mode_values(mode, selected_mode, current_values):
+    """Validate one mode panel while retaining every omitted saved value."""
+
+    values = dict(current_values)
+    raw_keywords, present = _mode_form_value(
+        mode, "trigger_keywords", selected_mode
+    )
+    if present:
+        values["trigger_keywords"] = normalize_trigger_keywords([
+            item.strip()
+            for item in str(raw_keywords or "").split(",")
+            if item.strip()
+        ])
+    for field in ("public_reply_enabled", "followup_enabled"):
+        raw_value, present = _mode_form_value(mode, field, selected_mode)
+        if present:
+            values[field] = raw_value == "on"
+    for field in (
+        "public_reply_text",
+        "private_message_text",
+        "followup_message_text",
+    ):
+        raw_value, present = _mode_form_value(mode, field, selected_mode)
+        if present:
+            text_value = str(raw_value or "").strip()
+            if text_value:
+                values[field] = text_value
+    raw_delay, present = _mode_form_value(
+        mode, "followup_delay_minutes", selected_mode
+    )
+    if present:
+        values["followup_delay_minutes"] = normalize_followup_delay_minutes(raw_delay)
+    raw_destination, present = _mode_form_value(
+        mode, "destination_url", selected_mode
+    )
+    if mode == "link" and present:
+        destination = str(raw_destination or "").strip()
+        values["destination_url"] = (
+            normalize_destination_url(destination) if destination else ""
+        )
+    return values
+
+
+def _update_automation_config(selected, *, internal_prompt_access=False):
     session_factory = getattr(
         _auth_state(),
         "session_factory",
@@ -868,41 +916,22 @@ def _update_automation_config(selected):
         return _DATABASE_UNAVAILABLE
 
     try:
-        raw_keywords = str(
-            request.form.get(
-                "trigger_keywords",
-                "",
-            )
-            or ""
-        )
-
-        keyword_items = [
-            item.strip()
-            for item in raw_keywords.split(",")
-            if item.strip()
-        ]
-
-        keywords = normalize_trigger_keywords(
-            keyword_items
-        )
-        followup_delay_value = request.form.get("followup_delay_minutes")
-        if followup_delay_value is None or str(followup_delay_value).strip() == "":
-            followup_delay_minutes = DEFAULT_FOLLOWUP_DELAY_MINUTES
-        else:
-            followup_delay_minutes = normalize_followup_delay_minutes(
-                followup_delay_value
-            )
         smart_reply_tone_value = request.form.get("smart_reply_tone")
         smart_reply_max_per_hour_value = request.form.get(
             "smart_reply_max_per_hour"
         )
         delivery_mode_value = request.form.get("delivery_mode")
-        private_message_text_value = request.form.get("private_message_text")
-        prompt_opening_message_text_value = request.form.get(
-            "prompt_opening_message_text"
+        delivery_mode = (
+            normalize_automation_delivery_mode(delivery_mode_value)
+            if delivery_mode_value is not None
+            else None
         )
-        destination_url_value = request.form.get("destination_url")
-        followup_message_text_value = request.form.get("followup_message_text")
+        if (
+            delivery_mode_value is not None
+            and delivery_mode == "prompt_request"
+            and not internal_prompt_access
+        ):
+            return False
         smart_reply_controls_present = (
             smart_reply_tone_value is not None
             or smart_reply_max_per_hour_value is not None
@@ -933,68 +962,68 @@ def _update_automation_config(selected):
             if config is None:
                 return None
 
-            delivery_mode = normalize_automation_delivery_mode(
-                delivery_mode_value
-                if delivery_mode_value is not None
-                else getattr(config, "delivery_mode", "prompt_request")
-            )
-            if delivery_mode == "link":
+            if delivery_mode is None:
+                delivery_mode = normalize_automation_delivery_mode(
+                    getattr(config, "delivery_mode", "prompt_request")
+                    or "prompt_request"
+                )
+
+            allowed_modes = ["direct_message", "link"]
+            if internal_prompt_access:
+                allowed_modes.insert(0, "prompt_request")
+            mode_values = {
+                mode: automation_mode_values(config, mode)
+                for mode in AUTOMATION_DELIVERY_MODES
+            }
+            for mode in allowed_modes:
                 try:
-                    destination_url = normalize_destination_url(destination_url_value)
+                    mode_values[mode] = _submitted_mode_values(
+                        mode, delivery_mode, mode_values[mode]
+                    )
                 except TenantAutomationConfigurationError:
-                    return _INVALID_DESTINATION_URL
+                    if mode != delivery_mode:
+                        continue
+                    if delivery_mode == "link":
+                        return _INVALID_DESTINATION_URL
+                    return False
+            selected_values = mode_values[delivery_mode]
+            if delivery_mode == "link" and not selected_values["destination_url"]:
+                return _INVALID_DESTINATION_URL
 
             config.enabled = (
                 request.form.get("enabled")
                 == "on"
             )
 
-            config.trigger_keywords = keywords
-
-            config.public_reply_enabled = (
-                request.form.get(
-                    "public_reply_enabled"
-                )
-                == "on"
-            )
-
-            config.public_reply_text = str(
-                request.form.get(
-                    "public_reply_text"
-                )
-                or ""
-            ).strip()
+            config.trigger_keywords = list(selected_values["trigger_keywords"])
+            config.public_reply_enabled = bool(selected_values["public_reply_enabled"])
+            config.public_reply_text = str(selected_values["public_reply_text"])
             config.delivery_mode = delivery_mode
-            if (
-                delivery_mode == "prompt_request"
-                and prompt_opening_message_text_value is not None
-            ):
-                config.prompt_opening_message_text = (
-                    str(prompt_opening_message_text_value or "").strip()
-                    or DEFAULT_PROMPT_OPENING_MESSAGE
+            if delivery_mode == "prompt_request":
+                config.prompt_opening_message_text = str(
+                    selected_values["private_message_text"]
                 )
-            if (
-                delivery_mode in {"direct_message", "link"}
-                and private_message_text_value is not None
-            ):
-                private_message_text = str(private_message_text_value or "").strip()
-                if not private_message_text:
-                    private_message_text = (
-                        DEFAULT_LINK_OPENING_MESSAGE
-                        if delivery_mode == "link"
-                        else DEFAULT_CUSTOM_MESSAGE
-                    )
-                config.private_message_text = private_message_text
+            else:
+                config.private_message_text = str(
+                    selected_values["private_message_text"]
+                )
             if delivery_mode == "link":
-                config.destination_url = destination_url
-            config.followup_enabled = (
-                request.form.get("followup_enabled") == "on"
-                if "followup_enabled" in request.form
-                else (config.followup_enabled if config.followup_enabled is not None else DEFAULT_FOLLOWUP_ENABLED)
+                config.destination_url = str(selected_values["destination_url"])
+            config.followup_enabled = bool(selected_values["followup_enabled"])
+            config.followup_delay_minutes = int(
+                selected_values["followup_delay_minutes"]
             )
-            config.followup_delay_minutes = followup_delay_minutes
-            if followup_message_text_value is not None:
-                config.followup_message_text = str(followup_message_text_value or "").strip()
+            config.followup_message_text = str(selected_values["followup_message_text"])
+
+            inactive_modes = {
+                mode: values
+                for mode, values in mode_values.items()
+                if mode != delivery_mode
+            }
+            config.inactive_mode_settings = normalize_inactive_mode_settings({
+                "version": 1,
+                "modes": inactive_modes,
+            })
 
             if smart_reply_controls_present:
                 config.smart_reply_enabled = (
@@ -1627,6 +1656,7 @@ def register_tenant_dashboard(app) -> None:
         accounts,
         selected,
     ):
+        internal_prompt_access = current_user_has_legacy_workspace_access()
         if request.method == "POST":
             if not validate_csrf_token(
                 request_csrf_token()
@@ -1634,7 +1664,8 @@ def register_tenant_dashboard(app) -> None:
                 return _safe_automation_update_error()
 
             updated = _update_automation_config(
-                selected
+                selected,
+                internal_prompt_access=internal_prompt_access,
             )
 
             if updated is _DATABASE_UNAVAILABLE:
@@ -1650,7 +1681,8 @@ def register_tenant_dashboard(app) -> None:
                 return _safe_automation_update_error()
 
         automation = _automation_config(
-            selected
+            selected,
+            internal_prompt_access=internal_prompt_access,
         )
 
         if automation is _DATABASE_UNAVAILABLE:
@@ -1667,8 +1699,7 @@ def register_tenant_dashboard(app) -> None:
             automation=automation,
             automation_saved=request.method == "POST",
             smart_reply_tones=SMART_REPLY_TONES,
-            default_custom_message=DEFAULT_CUSTOM_MESSAGE,
-            default_link_opening_message=DEFAULT_LINK_OPENING_MESSAGE,
+            internal_prompt_access=internal_prompt_access,
         )
 
     @dashboard.get("/api/accounts")
