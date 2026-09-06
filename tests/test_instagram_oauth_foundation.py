@@ -126,6 +126,26 @@ class InstagramOAuthStartFoundationTest(unittest.TestCase):
         )
         self.assertEqual(
             resolve_instagram_oauth_redirect_uri(
+                "postenza.app", environ=environment, production=True
+            ),
+            "https://postenza.app/connect/instagram/callback",
+        )
+        configuration = oauth_configuration_from_environment(
+            environment,
+            production=True,
+            redirect_uri=resolve_instagram_oauth_redirect_uri(
+                "postenza.app", environ=environment, production=True
+            ),
+        )
+        authorization_parameters = parse_qs(
+            urlparse(configuration.authorization_url("state")).query
+        )
+        self.assertEqual(
+            authorization_parameters["redirect_uri"],
+            [configuration.redirect_uri],
+        )
+        self.assertEqual(
+            resolve_instagram_oauth_redirect_uri(
                 "https://social-media-bot-staging-phase5.up.railway.app",
                 environ=environment,
                 production=True,
@@ -212,6 +232,30 @@ class InstagramOAuthStartFoundationTest(unittest.TestCase):
         with self.Session() as db_session:
             self.assertEqual(len(db_session.scalars(select(InstagramAccount)).all()), 0)
             self.assertEqual(len(db_session.scalars(select(InstagramCredential)).all()), 0)
+
+    def test_forwarded_headers_cannot_choose_oauth_redirect_origin(self):
+        client = self.app.test_client()
+        with client.session_transaction(base_url="http://postenza.app") as browser_session:
+            browser_session["user_id"] = str(self.user_id)
+            browser_session["_csrf_token"] = "oauth-csrf-token"
+        environment = dict(self._oauth_environment(), PUBLIC_BASE_URL="https://postenza.app")
+        with patch.dict("os.environ", environment, clear=False):
+            response = client.post(
+                "/connect/instagram",
+                base_url="http://postenza.app",
+                headers={
+                    "X-Forwarded-Host": "evil.example",
+                    "X-Forwarded-Proto": "https",
+                },
+                data={"csrf_token": "oauth-csrf-token"},
+                follow_redirects=False,
+            )
+
+        parameters = parse_qs(urlparse(response.headers["Location"]).query)
+        self.assertEqual(
+            parameters["redirect_uri"],
+            ["https://postenza.app/connect/instagram/callback"],
+        )
 
     def test_start_configuration_failure_is_generic_and_issues_no_state(self):
         client = self._authenticated_client()

@@ -515,7 +515,7 @@ def register_auth_routes(app) -> None:
             return _auth_ui_text("Instagram connection is not available for this account."), 403
         try:
             redirect_uri = resolve_instagram_oauth_redirect_uri(
-                f"{request.scheme}://{request.host}",
+                request.host,
                 production=bool(current_app.config.get("SESSION_COOKIE_SECURE")),
             )
             configuration = oauth_configuration_from_environment(
@@ -548,7 +548,7 @@ def register_auth_routes(app) -> None:
             return _auth_ui_text("Instagram authorization could not be completed."), 400
         try:
             redirect_uri = resolve_instagram_oauth_redirect_uri(
-                f"{request.scheme}://{request.host}",
+                request.host,
                 production=bool(current_app.config.get("SESSION_COOKIE_SECURE")),
             )
             configuration = oauth_configuration_from_environment(

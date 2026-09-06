@@ -193,17 +193,35 @@ def _validated_public_origin(value: object) -> str | None:
 
 
 def resolve_instagram_oauth_redirect_uri(
-    request_origin: object,
+    request_host: object,
     *,
     environ: Mapping[str, str] | None = None,
     production: bool,
 ) -> str:
-    """Use the canonical callback only for the exact configured public origin."""
+    """Use the canonical callback only for the exact configured public host."""
 
     source = os.environ if environ is None else environ
     configured_origin = _validated_public_origin(source.get(PUBLIC_BASE_URL_ENV))
-    if configured_origin is not None and str(request_origin).rstrip("/") == configured_origin:
-        return f"{configured_origin}{INSTAGRAM_OAUTH_CALLBACK_PATH}"
+    if configured_origin is not None:
+        configured = urlsplit(configured_origin)
+        raw_host = str(request_host or "").strip()
+        try:
+            parsed_host = urlsplit(raw_host if "://" in raw_host else f"//{raw_host}")
+            request_port = parsed_host.port
+        except ValueError:
+            request_port = None
+            parsed_host = None
+        if (
+            parsed_host is not None
+            and parsed_host.hostname == configured.hostname
+            and request_port in (None, 443)
+            and not parsed_host.username
+            and not parsed_host.password
+            and not parsed_host.path
+            and not parsed_host.query
+            and not parsed_host.fragment
+        ):
+            return f"{configured_origin}{INSTAGRAM_OAUTH_CALLBACK_PATH}"
     return _validated_redirect_uri(
         _required(source, INSTAGRAM_OAUTH_REDIRECT_URI_ENV), production=production
     )
