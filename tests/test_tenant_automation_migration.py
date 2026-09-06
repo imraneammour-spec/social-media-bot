@@ -227,3 +227,95 @@ class TenantAutomationMigrationTests(unittest.TestCase):
         }.issubset(config_columns))
         self.assertIn("message_text", followup_columns)
         self.assertTrue(page_url_column["nullable"])
+
+    def test_v11_link_delivery_migration_adds_nullable_fields_preserves_rows_and_guards_downgrade(self):
+        """The V1.1 migration must preserve saved copy and refuse destructive rollback."""
+
+        baseline = self._alembic("upgrade", "20260904_02")
+        self.assertEqual(baseline.returncode, 0, baseline.stderr)
+        owner_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        account_id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        config_id = "cccccccccccccccccccccccccccccccc"
+        engine = create_engine(self.environment["DATABASE_URL"])
+        try:
+            with engine.begin() as connection:
+                connection.execute(text(
+                    "INSERT INTO users (id, email, status, created_at, updated_at) "
+                    "VALUES (:id, 'v11-migration@example.test', 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                ), {"id": owner_id})
+                connection.execute(text(
+                    "INSERT INTO instagram_accounts "
+                    "(id, user_id, instagram_user_id, provider, connection_status, created_at, updated_at) "
+                    "VALUES (:id, :user_id, '17841438617458991', 'instagram', 'connected', "
+                    "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                ), {"id": account_id, "user_id": owner_id})
+                connection.execute(text(
+                    "INSERT INTO instagram_automation_configs "
+                    "(id, instagram_account_id, enabled, trigger_keywords, public_reply_enabled, "
+                    "public_reply_text, delivery_mode, private_message_text, followup_enabled, "
+                    "followup_delay_minutes, followup_message_text, smart_reply_enabled, "
+                    "smart_reply_tone, smart_reply_max_per_hour, created_at, updated_at) "
+                    "VALUES (:id, :account_id, 1, '[\"hello\"]', 0, '', 'direct_message', "
+                    "'Keep this saved message', 1, 60, 'Keep this follow-up', 0, 'friendly', 20, "
+                    "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                ), {"id": config_id, "account_id": account_id})
+        finally:
+            engine.dispose()
+
+        upgrade = self._alembic("upgrade", "head")
+        self.assertEqual(upgrade.returncode, 0, upgrade.stderr)
+        engine = create_engine(self.environment["DATABASE_URL"])
+        try:
+            with engine.connect() as connection:
+                columns = {
+                    column["name"]: column
+                    for column in inspect(connection).get_columns("instagram_automation_configs")
+                }
+                saved = connection.execute(text(
+                    "SELECT delivery_mode, private_message_text, followup_message_text, "
+                    "prompt_opening_message_text, destination_url "
+                    "FROM instagram_automation_configs WHERE id = :id"
+                ), {"id": config_id}).mappings().one()
+        finally:
+            engine.dispose()
+
+        self.assertTrue(columns["prompt_opening_message_text"]["nullable"])
+        self.assertTrue(columns["destination_url"]["nullable"])
+        self.assertEqual(saved["delivery_mode"], "direct_message")
+        self.assertEqual(saved["private_message_text"], "Keep this saved message")
+        self.assertEqual(saved["followup_message_text"], "Keep this follow-up")
+        self.assertIsNone(saved["prompt_opening_message_text"])
+        self.assertIsNone(saved["destination_url"])
+
+        engine = create_engine(self.environment["DATABASE_URL"])
+        try:
+            with engine.begin() as connection:
+                connection.execute(text(
+                    "UPDATE instagram_automation_configs "
+                    "SET prompt_opening_message_text = 'Keep this opening', "
+                    "destination_url = 'https://example.test/guide' WHERE id = :id"
+                ), {"id": config_id})
+        finally:
+            engine.dispose()
+
+        downgrade = self._alembic("downgrade", "20260904_02")
+        self.assertNotEqual(downgrade.returncode, 0)
+        self.assertIn(
+            "Cannot downgrade while V1.1 automation data exists.",
+            downgrade.stderr,
+        )
+        engine = create_engine(self.environment["DATABASE_URL"])
+        try:
+            with engine.connect() as connection:
+                self.assertEqual(
+                    connection.scalar(text("SELECT version_num FROM alembic_version")),
+                    "20260906_01",
+                )
+                retained = connection.execute(text(
+                    "SELECT prompt_opening_message_text, destination_url "
+                    "FROM instagram_automation_configs WHERE id = :id"
+                ), {"id": config_id}).mappings().one()
+        finally:
+            engine.dispose()
+        self.assertEqual(retained["prompt_opening_message_text"], "Keep this opening")
+        self.assertEqual(retained["destination_url"], "https://example.test/guide")

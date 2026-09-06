@@ -548,6 +548,8 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
         public_reply_text="Configured acknowledgement",
         delivery_mode="prompt_request",
         private_message_text="",
+        prompt_opening_message_text=None,
+        destination_url=None,
         followup_enabled=True,
         followup_delay_minutes=360,
         followup_message_text="",
@@ -565,6 +567,8 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
                 public_reply_text=public_reply_text,
                 delivery_mode=delivery_mode,
                 private_message_text=private_message_text,
+                prompt_opening_message_text=prompt_opening_message_text,
+                destination_url=destination_url,
                 followup_enabled=followup_enabled,
                 followup_delay_minutes=followup_delay_minutes,
                 followup_message_text=followup_message_text,
@@ -859,6 +863,78 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
             ).one()
         self.assertEqual(interaction.recipient_id, "recipient-general")
         self.assertIsNone(interaction.recipient_reply_at)
+
+    def test_link_keyword_sends_plain_text_url_with_clean_separation_and_waits_for_reply(self):
+        """A Link trigger must not fetch, buttonize, prompt-process, or schedule early."""
+
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["guide"],
+            public_reply_enabled=False,
+            delivery_mode="link",
+            private_message_text="Your guide is ready.",
+            destination_url="https://example.test/guide?source=instagram",
+            followup_enabled=True,
+            followup_delay_minutes=60,
+            followup_message_text="Did the guide help?",
+        )
+        with patch.object(self.module, "_oauth_prompt_post_for_comment") as prompt_page, patch.object(
+            self.module, "send_oauth_private_comment_reply", return_value="recipient-link"
+        ) as private_reply, patch.object(
+            self.module.requests, "get"
+        ) as destination_get, patch.object(
+            self.module.requests, "request"
+        ) as destination_request:
+            self._process(self.primary_external_id, "link-keyword", "guide please")
+
+        prompt_page.assert_not_called()
+        destination_get.assert_not_called()
+        destination_request.assert_not_called()
+        self.assertEqual(
+            private_reply.call_args.kwargs["message"],
+            "Your guide is ready.\n\nhttps://example.test/guide?source=instagram",
+        )
+        account = self._account(self.primary_external_id)
+        with self.session_factory() as session:
+            self.assertEqual(session.query(InstagramOAuthFollowupJob).filter_by(
+                instagram_account_id=account.id, source_message_id="link-keyword"
+            ).count(), 0)
+            interaction = session.query(InstagramOAuthDirectMessageInteraction).filter_by(
+                instagram_account_id=account.id, source_comment_id="link-keyword"
+            ).one()
+        self.assertEqual(interaction.recipient_id, "recipient-link")
+
+    def test_link_followup_is_scheduled_only_after_a_qualifying_recipient_reply(self):
+        """Treating Link delivery differently from reply-gated Message follow-up must fail."""
+
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["guide"],
+            public_reply_enabled=False,
+            delivery_mode="link",
+            private_message_text="Your guide is ready.",
+            destination_url="http://example.test/guide",
+            followup_enabled=True,
+            followup_delay_minutes=5,
+            followup_message_text="Did the guide help?",
+        )
+        with patch.object(
+            self.module, "send_oauth_private_comment_reply", return_value="recipient-general"
+        ):
+            self._process(self.primary_external_id, "link-reply-comment", "guide")
+        self._process_inbound_message(self.primary_external_id, "link-recipient-reply")
+
+        account = self._account(self.primary_external_id)
+        with self.session_factory() as session:
+            followup = session.query(InstagramOAuthFollowupJob).filter_by(
+                instagram_account_id=account.id,
+                source_message_id="link-recipient-reply",
+            ).one()
+        self.assertEqual(followup.message_text, "Did the guide help?")
+        self.assertEqual(
+            followup.provider_window_expires_at - followup.run_at,
+            timedelta(hours=23, minutes=55),
+        )
 
     def test_direct_message_recipient_reply_consumes_interaction_and_schedules_one_job(self):
         """Removing interaction consumption would let arbitrary or duplicate DMs create follow-ups."""
@@ -1404,6 +1480,34 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
             public_reply.call_args.kwargs["message"],
             "Custom account acknowledgement",
         )
+
+    def test_prompt_request_uses_saved_opening_without_changing_prompt_delivery(self):
+        """The editable opening must feed only the first DM and retain prompt persistence."""
+
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["prompt"],
+            public_reply_enabled=False,
+            prompt_opening_message_text="A warmer saved opening",
+        )
+        with patch.object(
+            self.module, "_oauth_prompt_post_for_comment", return_value="prompt-page"
+        ), patch.object(
+            self.module, "send_oauth_private_access_reply", return_value="recipient-1"
+        ) as private_reply:
+            self._process(self.primary_external_id, "saved-opening", "prompt")
+
+        self.assertEqual(private_reply.call_args.kwargs["message"], "A warmer saved opening")
+        account = self._account(self.primary_external_id)
+        with self.session_factory() as session:
+            request_row = session.query(InstagramPromptRequest).filter_by(
+                instagram_account_id=account.id, comment_id="saved-opening"
+            ).one()
+            followup = session.query(InstagramOAuthFollowupJob).filter_by(
+                instagram_account_id=account.id, source_message_id="saved-opening"
+            ).one()
+        self.assertEqual(request_row.page_url, "https://example.test/p/o/prompt-page")
+        self.assertEqual(followup.page_url, request_row.page_url)
 
     def test_public_reply_disabled_keeps_private_prompt_delivery(self):
         self._set_config(

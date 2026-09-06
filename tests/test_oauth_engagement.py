@@ -205,9 +205,15 @@ class OAuthEngagementModelTest(unittest.TestCase):
             "status=500 code=none subcode=none message=provider_rejected"
         )
 
-    def test_initial_private_dm_uses_comment_recipient_quick_reply_and_omits_url_and_access_copy(self):
+    def test_initial_private_dm_uses_configured_opening_and_preserves_prompt_quick_reply(self):
+        """Dropping editable opening copy or changing the prompt action payload must fail."""
+
         from database import oauth_graph
 
+        opening = (
+            "Hey 👋 Thanks for your interest! Your prompt is ready. "
+            "Tap below and I’ll send it to you."
+        )
         with patch.object(oauth_graph, "_request_with_runtime", return_value={
             "recipient_id": "recipient-1"
         }) as graph_request:
@@ -216,12 +222,13 @@ class OAuthEngagementModelTest(unittest.TestCase):
                 instagram_account_id=self.account_a_id,
                 instagram_user_id="17841438617458001",
                 comment_id="comment-initial-dm",
+                message=opening,
             )
 
         self.assertEqual(recipient, "recipient-1")
         body = graph_request.call_args.kwargs["json_body"]
         self.assertEqual(body["recipient"], {"comment_id": "comment-initial-dm"})
-        self.assertEqual(body["message"]["text"], "Your requested prompts are ready.")
+        self.assertEqual(body["message"]["text"], opening)
         # Quick reply IS present with the correct payload.
         self.assertIn("quick_replies", body["message"])
         self.assertEqual(len(body["message"]["quick_replies"]), 1)
@@ -229,13 +236,12 @@ class OAuthEngagementModelTest(unittest.TestCase):
         self.assertEqual(qr["content_type"], "text")
         self.assertEqual(qr["title"], "View prompts")
         self.assertEqual(qr["payload"], "VIEW_AI_PROMPTS")
-        # No web_url button, no attachment, no ACCESS/SEND instruction.
+        # No web_url button or attachment is introduced into the initial DM.
         self.assertNotIn("attachment", body["message"])
         self.assertNotIn("messaging_type", body)
         rendered = str(body).upper()
         self.assertNotIn("HTTP", rendered)
         self.assertNotIn("ACCESS", rendered)
-        self.assertNotIn("SEND", rendered)
 
     def test_general_private_dm_uses_comment_recipient_and_configured_text(self):
         """General keyword delivery must use only the explicitly configured message."""
@@ -623,13 +629,16 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
             )
         body = graph_request.call_args.kwargs["json_body"]
         self.assertIn("text", body["message"])
-        self.assertEqual(body["message"]["text"], "Your requested prompts are ready.")
+        self.assertEqual(
+            body["message"]["text"],
+            "Hey 👋 Thanks for your interest! Your prompt is ready. Tap below and I’ll send it to you.",
+        )
         self.assertNotIn("attachment", body["message"])
         rendered = str(body).upper()
         self.assertNotIn("HTTP", rendered)
 
-    def test_initial_dm_contains_no_access_or_send_instruction(self):
-        """The initial DM text must not contain ACCESS or SEND instructions."""
+    def test_initial_dm_contains_no_legacy_access_instruction(self):
+        """The warmer opening must still rely on the explicit quick-reply action."""
         from database import oauth_graph
 
         with patch.object(oauth_graph, "_request_with_runtime", return_value={
@@ -644,7 +653,6 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
         body = graph_request.call_args.kwargs["json_body"]
         rendered = str(body).upper()
         self.assertNotIn("ACCESS", rendered)
-        self.assertNotIn("SEND", rendered)
 
     def test_initial_dm_quick_reply_payload_is_view_ai_prompts(self):
         """The initial DM quick_reply payload must be VIEW_AI_PROMPTS."""

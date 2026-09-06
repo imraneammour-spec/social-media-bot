@@ -69,6 +69,8 @@ class TenantAutomationModelTests(unittest.TestCase):
             self.assertEqual(config.delivery_mode, "prompt_request")
             self.assertEqual(config.private_message_text, "")
             self.assertEqual(config.followup_message_text, "")
+            self.assertIsNone(config.prompt_opening_message_text)
+            self.assertIsNone(config.destination_url)
 
     def test_configuration_model_allows_only_one_row_per_account(self):
         """Removing the per-account uniqueness guard must fail this test."""
@@ -108,6 +110,34 @@ class TenantAutomationHelperTests(unittest.TestCase):
         for value in (None, [], ["two words"], ["x" * 33], ["ai"] * 11):
             with self.assertRaises(helpers.TenantAutomationConfigurationError):
                 helpers.normalize_trigger_keywords(value)
+
+    def test_link_delivery_mode_and_destination_urls_are_strictly_validated(self):
+        """Accepting unsafe/malformed URLs or rejecting HTTP(S) would break Link delivery."""
+
+        helpers = self._helpers()
+        self.assertEqual(helpers.normalize_automation_delivery_mode("Link"), "link")
+        self.assertEqual(
+            helpers.normalize_destination_url(" https://example.test/download?id=1 "),
+            "https://example.test/download?id=1",
+        )
+        self.assertEqual(
+            helpers.normalize_destination_url("http://example.test/resource"),
+            "http://example.test/resource",
+        )
+        for value in (
+            None,
+            "",
+            "example.test/file",
+            "https://",
+            "https:///missing-host",
+            "https://exa mple.test/file",
+            "javascript:alert(1)",
+            "data:text/plain,hello",
+            "file:///tmp/file",
+        ):
+            with self.subTest(value=value):
+                with self.assertRaises(helpers.TenantAutomationConfigurationError):
+                    helpers.normalize_destination_url(value)
 
     def test_smart_reply_controls_are_bounded_and_fail_closed(self):
         """Invalid tone or rate input must not become an account runtime choice."""
@@ -265,6 +295,64 @@ class TenantAutomationHelperTests(unittest.TestCase):
         self.assertEqual(prompt_runtime.delivery_mode, "prompt_request")
         self.assertEqual(prompt_runtime.private_message_text, "")
         self.assertEqual(prompt_runtime.followup_message_text, "")
+
+    def test_runtime_defaults_legacy_prompt_opening_without_overwriting_saved_copy(self):
+        """A missing legacy opening must get warm copy while saved copy remains authoritative."""
+
+        helpers = self._helpers()
+        engine = create_engine("sqlite://")
+        Base.metadata.create_all(engine)
+        Session = sessionmaker(bind=engine)
+        try:
+            with Session.begin() as session:
+                owner = User(email="prompt-opening-owner@example.test")
+                session.add(owner)
+                session.flush()
+                legacy = InstagramAccount(
+                    user_id=owner.id,
+                    instagram_user_id="17841438617458151",
+                    provider="instagram",
+                    connection_status="connected",
+                )
+                custom = InstagramAccount(
+                    user_id=owner.id,
+                    instagram_user_id="17841438617458152",
+                    provider="instagram",
+                    connection_status="connected",
+                )
+                session.add_all([legacy, custom])
+                session.flush()
+                session.add_all([
+                    InstagramAutomationConfig(
+                        instagram_account_id=legacy.id,
+                        enabled=True,
+                        trigger_keywords=["prompt"],
+                        delivery_mode="prompt_request",
+                    ),
+                    InstagramAutomationConfig(
+                        instagram_account_id=custom.id,
+                        enabled=True,
+                        trigger_keywords=["prompt"],
+                        delivery_mode="prompt_request",
+                        prompt_opening_message_text="My saved opening",
+                    ),
+                ])
+                legacy_id, custom_id = legacy.id, custom.id
+            with Session() as session:
+                legacy_runtime = helpers.oauth_automation_runtime_config(
+                    session, instagram_account_id=legacy_id
+                )
+                custom_runtime = helpers.oauth_automation_runtime_config(
+                    session, instagram_account_id=custom_id
+                )
+        finally:
+            engine.dispose()
+
+        self.assertEqual(
+            legacy_runtime.prompt_opening_message_text,
+            "Hey 👋 Thanks for your interest! Your prompt is ready. Tap below and I’ll send it to you.",
+        )
+        self.assertEqual(custom_runtime.prompt_opening_message_text, "My saved opening")
 
     def test_runtime_snapshot_keeps_prompt_and_smart_reply_settings_account_scoped(self):
         """A runtime read must not mix tenant A's smart settings into tenant B."""

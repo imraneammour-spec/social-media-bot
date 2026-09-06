@@ -51,10 +51,15 @@ from database.content import (
 )
 from database.models import InstagramAutomationConfig, InstagramContentItem
 from database.tenant_automation import (
+    DEFAULT_CUSTOM_MESSAGE,
     DEFAULT_FOLLOWUP_DELAY_MINUTES,
     DEFAULT_FOLLOWUP_ENABLED,
+    DEFAULT_LINK_OPENING_MESSAGE,
+    DEFAULT_PROMPT_OPENING_MESSAGE,
     SMART_REPLY_TONES,
+    TenantAutomationConfigurationError,
     normalize_automation_delivery_mode,
+    normalize_destination_url,
     normalize_followup_delay_minutes,
     normalize_smart_reply_max_per_hour,
     normalize_smart_reply_tone,
@@ -74,11 +79,15 @@ ACCOUNT_UNAVAILABLE_MESSAGE = "Selected account is unavailable."
 LEAD_UNAVAILABLE_MESSAGE = "Lead is unavailable."
 LEAD_UPDATE_ERROR_MESSAGE = "Lead update could not be completed."
 AUTOMATION_UPDATE_ERROR_MESSAGE = "Automation update could not be completed."
+AUTOMATION_DESTINATION_URL_ERROR_MESSAGE = (
+    "Enter a valid http:// or https:// destination URL."
+)
 CONTENT_UPDATE_ERROR_MESSAGE = "Draft update could not be completed."
 
 MAX_INTERNAL_NOTE_LENGTH = 2000
 
 _DATABASE_UNAVAILABLE = object()
+_INVALID_DESTINATION_URL = object()
 
 
 def _auth_state():
@@ -318,6 +327,17 @@ def _safe_automation_update_error():
         _cache_control(
             jsonify(
                 error=_ui_text(AUTOMATION_UPDATE_ERROR_MESSAGE)
+            )
+        ),
+        400,
+    )
+
+
+def _safe_automation_destination_url_error():
+    return (
+        _cache_control(
+            jsonify(
+                error=_ui_text(AUTOMATION_DESTINATION_URL_ERROR_MESSAGE)
             )
         ),
         400,
@@ -782,6 +802,24 @@ def _automation_config(selected):
             if config is None:
                 return None
 
+            delivery_mode = (
+                getattr(config, "delivery_mode", "prompt_request")
+                or "prompt_request"
+            )
+            private_message_text = (
+                getattr(config, "private_message_text", "") or ""
+            )
+            private_message_uses_default = not private_message_text
+            if not private_message_text and delivery_mode == "direct_message":
+                private_message_text = DEFAULT_CUSTOM_MESSAGE
+            elif not private_message_text and delivery_mode == "link":
+                private_message_text = DEFAULT_LINK_OPENING_MESSAGE
+            prompt_opening_message_text = (
+                getattr(config, "prompt_opening_message_text", None) or ""
+            )
+            prompt_opening_uses_default = not prompt_opening_message_text
+            if not prompt_opening_message_text:
+                prompt_opening_message_text = DEFAULT_PROMPT_OPENING_MESSAGE
             return {
                 "enabled": config.enabled,
                 "trigger_keywords": list(
@@ -793,8 +831,12 @@ def _automation_config(selected):
                 "public_reply_text":
                     config.public_reply_text
                     or "",
-                "delivery_mode": getattr(config, "delivery_mode", "prompt_request") or "prompt_request",
-                "private_message_text": getattr(config, "private_message_text", "") or "",
+                "delivery_mode": delivery_mode,
+                "private_message_text": private_message_text,
+                "private_message_uses_default": private_message_uses_default,
+                "prompt_opening_message_text": prompt_opening_message_text,
+                "prompt_opening_uses_default": prompt_opening_uses_default,
+                "destination_url": getattr(config, "destination_url", None) or "",
                 "followup_enabled": (
                     config.followup_enabled
                     if config.followup_enabled is not None
@@ -856,6 +898,10 @@ def _update_automation_config(selected):
         )
         delivery_mode_value = request.form.get("delivery_mode")
         private_message_text_value = request.form.get("private_message_text")
+        prompt_opening_message_text_value = request.form.get(
+            "prompt_opening_message_text"
+        )
+        destination_url_value = request.form.get("destination_url")
         followup_message_text_value = request.form.get("followup_message_text")
         smart_reply_controls_present = (
             smart_reply_tone_value is not None
@@ -887,6 +933,17 @@ def _update_automation_config(selected):
             if config is None:
                 return None
 
+            delivery_mode = normalize_automation_delivery_mode(
+                delivery_mode_value
+                if delivery_mode_value is not None
+                else getattr(config, "delivery_mode", "prompt_request")
+            )
+            if delivery_mode == "link":
+                try:
+                    destination_url = normalize_destination_url(destination_url_value)
+                except TenantAutomationConfigurationError:
+                    return _INVALID_DESTINATION_URL
+
             config.enabled = (
                 request.form.get("enabled")
                 == "on"
@@ -907,13 +964,29 @@ def _update_automation_config(selected):
                 )
                 or ""
             ).strip()
-            config.delivery_mode = normalize_automation_delivery_mode(
-                delivery_mode_value
-                if delivery_mode_value is not None
-                else getattr(config, "delivery_mode", "prompt_request")
-            )
-            if private_message_text_value is not None:
-                config.private_message_text = str(private_message_text_value or "").strip()
+            config.delivery_mode = delivery_mode
+            if (
+                delivery_mode == "prompt_request"
+                and prompt_opening_message_text_value is not None
+            ):
+                config.prompt_opening_message_text = (
+                    str(prompt_opening_message_text_value or "").strip()
+                    or DEFAULT_PROMPT_OPENING_MESSAGE
+                )
+            if (
+                delivery_mode in {"direct_message", "link"}
+                and private_message_text_value is not None
+            ):
+                private_message_text = str(private_message_text_value or "").strip()
+                if not private_message_text:
+                    private_message_text = (
+                        DEFAULT_LINK_OPENING_MESSAGE
+                        if delivery_mode == "link"
+                        else DEFAULT_CUSTOM_MESSAGE
+                    )
+                config.private_message_text = private_message_text
+            if delivery_mode == "link":
+                config.destination_url = destination_url
             config.followup_enabled = (
                 request.form.get("followup_enabled") == "on"
                 if "followup_enabled" in request.form
@@ -932,6 +1005,8 @@ def _update_automation_config(selected):
 
             session.flush()
 
+    except ValueError:
+        return False
     except SQLAlchemyError:
         return _DATABASE_UNAVAILABLE
 
@@ -1568,6 +1643,9 @@ def register_tenant_dashboard(app) -> None:
             if updated is None:
                 return _safe_account_unavailable()
 
+            if updated is _INVALID_DESTINATION_URL:
+                return _safe_automation_destination_url_error()
+
             if updated is False:
                 return _safe_automation_update_error()
 
@@ -1589,6 +1667,8 @@ def register_tenant_dashboard(app) -> None:
             automation=automation,
             automation_saved=request.method == "POST",
             smart_reply_tones=SMART_REPLY_TONES,
+            default_custom_message=DEFAULT_CUSTOM_MESSAGE,
+            default_link_opening_message=DEFAULT_LINK_OPENING_MESSAGE,
         )
 
     @dashboard.get("/api/accounts")

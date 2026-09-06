@@ -17,6 +17,7 @@ import requests
 
 from .account_runtime import RuntimeCredentialUnavailableError, resolve_oauth_instagram_account_runtime
 from .oauth_capability import assess_oauth_engagement_capability
+from .tenant_automation import DEFAULT_PROMPT_OPENING_MESSAGE
 
 
 API_VERSION = "v25.0"
@@ -204,17 +205,22 @@ def send_oauth_public_comment_reply(session_factory: Callable[[], Any], *, insta
         return False
 
 
-def send_oauth_private_access_reply(session_factory: Callable[[], Any], *, instagram_account_id: object, instagram_user_id: object, comment_id: object) -> str | None:
+def send_oauth_private_access_reply(
+    session_factory: Callable[[], Any], *, instagram_account_id: object,
+    instagram_user_id: object, comment_id: object,
+    message: object = DEFAULT_PROMPT_OPENING_MESSAGE,
+) -> str | None:
     """Send the first private DM after a trigger comment.
 
     Uses the original proven comment-recipient private reply structure that
     correctly renders a visible quick-reply button in Instagram.  The message
-    contains no URL, no web_url button, and no ACCESS/SEND instruction.  The
-    user presses the visible "View prompts" quick reply to unlock the second
-    message which carries the real prompt-page link.
+    contains no URL, no web_url button, and no instruction to type a legacy
+    ACCESS/SEND keyword. The user presses the visible "View prompts" quick
+    reply to unlock the second message which carries the real prompt-page link.
     """
     comment = str(comment_id or "").strip()
-    if not comment:
+    opening_message = str(message or "").strip()
+    if not comment or not opening_message:
         return None
     try:
         payload = _request_with_runtime(
@@ -226,7 +232,7 @@ def send_oauth_private_access_reply(session_factory: Callable[[], Any], *, insta
             json_body={
                 "recipient": {"comment_id": comment},
                 "message": {
-                    "text": "Your requested prompts are ready.",
+                    "text": opening_message,
                     "quick_replies": [
                         {"content_type": "text", "title": "View prompts", "payload": "VIEW_AI_PROMPTS"}
                     ],

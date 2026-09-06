@@ -66,18 +66,35 @@ test('mobile menu closes with backdrop/Escape, traps focus, and resets on deskto
   assert.match(css, /html\[dir="rtl"\]/);
 });
 
-test('mode disclosure keeps backend enum values and prompt delay range intact', () => {
+test('mode disclosure supports Prompt, Message, and Link without submitting irrelevant fields', () => {
   const document = {}, mode = element(document), delay = element(document);
-  const panels = ['direct_message', 'prompt_request'].map(value => ({ dataset: { deliveryMode: value } }));
+  const privateMessage = element(document), destination = element(document);
+  privateMessage.dataset.defaultDirectMessage = "Hey 👋 Thanks for commenting! I’ve got something for you.";
+  privateMessage.dataset.defaultLink = "Hey 👋 Thanks for your interest! Your link is ready.";
+  const panels = ['direct_message link', 'prompt_request', 'link'].map(value => ({ dataset: { deliveryMode: value } }));
   mode.value = 'prompt_request';
-  document.getElementById = id => id === 'delivery_mode' ? mode : delay;
+  document.getElementById = id => ({
+    delivery_mode: mode,
+    followup_delay_minutes: delay,
+    private_message_text: privateMessage,
+    destination_url: destination,
+  })[id];
   document.querySelectorAll = () => panels;
   vm.runInNewContext(script('app_automations.html'), { document });
-  assert.deepEqual(panels.map(panel => panel.hidden), [true, false]);
+  assert.deepEqual(panels.map(panel => panel.hidden), [true, false, true]);
   assert.equal(delay.max, '10080');
   mode.value = 'direct_message'; mode.listeners.change();
-  assert.deepEqual(panels.map(panel => panel.hidden), [false, true]);
+  assert.deepEqual(panels.map(panel => panel.hidden), [false, true, true]);
   assert.equal(delay.max, '1439');
+  assert.equal(privateMessage.value, privateMessage.dataset.defaultDirectMessage);
+  assert.equal(destination.required, false);
+  mode.value = 'prompt_request'; mode.listeners.change();
+  privateMessage.value = '';
+  mode.value = 'link'; mode.listeners.change();
+  assert.deepEqual(panels.map(panel => panel.hidden), [false, true, false]);
+  assert.equal(delay.max, '1439');
+  assert.equal(privateMessage.value, privateMessage.dataset.defaultLink);
+  assert.equal(destination.required, true);
 });
 
 test('preview rejects unsafe syntax and reports loading/success/failure without fetching in the test', () => {

@@ -1155,6 +1155,147 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertEqual(secondary.private_message_text, "Other account private message")
         self.assertEqual(secondary.followup_message_text, "Other account follow-up")
 
+    def test_automations_present_three_customer_modes_and_safe_application_defaults(self):
+        """Missing Link controls or blank new-mode copy must fail this customer workflow."""
+
+        self._login_as(self.owner_a)
+        selected = self._reference(self.owner_a, self.account_a1)
+        with self.Session.begin() as session:
+            session.add(InstagramAutomationConfig(
+                instagram_account_id=self.account_a1.id,
+                enabled=True,
+                trigger_keywords=["prompt"],
+                public_reply_enabled=False,
+                public_reply_text="",
+            ))
+
+        page = self.client.get(f"/app/automations?account={selected}").get_data(as_text=True)
+
+        for value, label, description in (
+            ("prompt_request", "Prompt", "Send the prompt connected to this post."),
+            ("direct_message", "Message", "Send a custom private message."),
+            ("link", "Link", "Send a link of your choice."),
+        ):
+            self.assertIn(f'value="{value}"', page)
+            self.assertIn(f">{label}</option>", page)
+            self.assertIn(description, page)
+        self.assertIn('id="prompt_opening_message_text"', page)
+        self.assertIn('id="destination_url"', page)
+        self.assertIn(
+            "Hey 👋 Thanks for your interest! Your prompt is ready. Tap below and I’ll send it to you.",
+            page,
+        )
+        self.assertIn("Hey 👋 Thanks for commenting! I’ve got something for you.", page)
+        self.assertIn("Hey 👋 Thanks for your interest! Your link is ready.", page)
+        self.assertNotIn('id="link_label"', page)
+
+    def test_link_automation_save_is_account_scoped_and_preserves_other_mode_copy(self):
+        """Saving Link mode must validate/persist its URL without overwriting unrelated copy."""
+
+        self._login_as(self.owner_a)
+        selected = self._reference(self.owner_a, self.account_a1)
+        with self.Session.begin() as session:
+            session.add_all([
+                InstagramAutomationConfig(
+                    instagram_account_id=self.account_a1.id,
+                    enabled=True,
+                    trigger_keywords=["guide"],
+                    public_reply_enabled=False,
+                    public_reply_text="",
+                    prompt_opening_message_text="Keep prompt opening",
+                ),
+                InstagramAutomationConfig(
+                    instagram_account_id=self.account_a2.id,
+                    enabled=True,
+                    trigger_keywords=["other"],
+                    public_reply_enabled=False,
+                    public_reply_text="",
+                    delivery_mode="link",
+                    private_message_text="Other link opening",
+                    destination_url="https://other.example.test/resource",
+                ),
+            ])
+        page = self.client.get(f"/app/automations?account={selected}").get_data(as_text=True)
+        csrf_token = re.search(r'name="csrf_token"\s+value="([^"]+)"', page).group(1)
+
+        response = self.client.post(
+            f"/app/automations?account={selected}",
+            data={
+                "csrf_token": csrf_token,
+                "enabled": "on",
+                "trigger_keywords": "guide",
+                "public_reply_text": "",
+                "delivery_mode": "link",
+                "private_message_text": "Your download is ready.",
+                "destination_url": " https://example.test/download?q=1 ",
+                "followup_enabled": "on",
+                "followup_delay_minutes": "60",
+                "followup_message_text": "Did it help?",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        with self.Session() as session:
+            primary = session.scalar(select(InstagramAutomationConfig).where(
+                InstagramAutomationConfig.instagram_account_id == self.account_a1.id
+            ))
+            secondary = session.scalar(select(InstagramAutomationConfig).where(
+                InstagramAutomationConfig.instagram_account_id == self.account_a2.id
+            ))
+        self.assertEqual(primary.delivery_mode, "link")
+        self.assertEqual(primary.private_message_text, "Your download is ready.")
+        self.assertEqual(primary.destination_url, "https://example.test/download?q=1")
+        self.assertEqual(primary.prompt_opening_message_text, "Keep prompt opening")
+        self.assertEqual(secondary.private_message_text, "Other link opening")
+        self.assertEqual(secondary.destination_url, "https://other.example.test/resource")
+
+    def test_link_automation_rejects_unsafe_url_without_mutating_saved_configuration(self):
+        """A rejected scheme must leave the account's prior automation state untouched."""
+
+        self._login_as(self.owner_a)
+        selected = self._reference(self.owner_a, self.account_a1)
+        with self.Session.begin() as session:
+            session.add(InstagramAutomationConfig(
+                instagram_account_id=self.account_a1.id,
+                enabled=True,
+                trigger_keywords=["guide"],
+                public_reply_enabled=False,
+                public_reply_text="",
+                delivery_mode="direct_message",
+                private_message_text="Existing message",
+            ))
+        page = self.client.get(f"/app/automations?account={selected}").get_data(as_text=True)
+        csrf_token = re.search(r'name="csrf_token"\s+value="([^"]+)"', page).group(1)
+
+        response = self.client.post(
+            f"/app/automations?account={selected}",
+            data={
+                "csrf_token": csrf_token,
+                "enabled": "on",
+                "trigger_keywords": "guide",
+                "public_reply_text": "",
+                "delivery_mode": "link",
+                "private_message_text": "Unsafe link",
+                "destination_url": "javascript:alert(1)",
+                "followup_enabled": "off",
+                "followup_delay_minutes": "60",
+                "followup_message_text": "",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json(),
+            {"error": "Enter a valid http:// or https:// destination URL."},
+        )
+        with self.Session() as session:
+            config = session.scalar(select(InstagramAutomationConfig).where(
+                InstagramAutomationConfig.instagram_account_id == self.account_a1.id
+            ))
+        self.assertEqual(config.delivery_mode, "direct_message")
+        self.assertEqual(config.private_message_text, "Existing message")
+        self.assertIsNone(config.destination_url)
+
     def test_overview_automation_status_uses_selected_account_config(self):
         """A config change on one account cannot leak into another overview."""
         self._login_as(self.owner_a)

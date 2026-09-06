@@ -6,6 +6,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from sqlalchemy import Boolean, Integer, JSON, Text, Uuid, column, inspect, select, table
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -25,6 +26,12 @@ CURRENT_DEFAULT_TRIGGER_KEYWORDS = (
 CURRENT_DEFAULT_PUBLIC_REPLY_TEXT = "Your prompts are ready. Check your messages."
 DEFAULT_FOLLOWUP_DELAY_MINUTES = 360
 DEFAULT_FOLLOWUP_ENABLED = True
+DEFAULT_PROMPT_OPENING_MESSAGE = (
+    "Hey 👋 Thanks for your interest! Your prompt is ready. "
+    "Tap below and I’ll send it to you."
+)
+DEFAULT_CUSTOM_MESSAGE = "Hey 👋 Thanks for commenting! I’ve got something for you."
+DEFAULT_LINK_OPENING_MESSAGE = "Hey 👋 Thanks for your interest! Your link is ready."
 DEFAULT_SMART_REPLY_TONE = "friendly"
 DEFAULT_SMART_REPLY_MAX_PER_HOUR = 20
 SMART_REPLY_TONES = ("friendly", "professional", "concise", "neutral")
@@ -32,7 +39,7 @@ SMART_REPLY_MIN_PER_HOUR = 1
 SMART_REPLY_MAX_PER_HOUR = 100
 FOLLOWUP_MIN_DELAY_MINUTES = 5
 FOLLOWUP_MAX_DELAY_MINUTES = 10080
-AUTOMATION_DELIVERY_MODES = ("prompt_request", "direct_message")
+AUTOMATION_DELIVERY_MODES = ("prompt_request", "direct_message", "link")
 _KEYWORD_PATTERN = re.compile(r"^\w{1,32}$")
 
 
@@ -50,6 +57,8 @@ class OAuthAutomationRuntimeConfig:
     public_reply_text: str
     delivery_mode: str
     private_message_text: str
+    prompt_opening_message_text: str
+    destination_url: str
     followup_enabled: bool
     followup_delay_minutes: int
     followup_message_text: str
@@ -98,6 +107,28 @@ def normalize_automation_delivery_mode(value: object) -> str:
     if mode not in AUTOMATION_DELIVERY_MODES:
         raise TenantAutomationConfigurationError("Invalid automation delivery mode.")
     return mode
+
+
+def normalize_destination_url(value: object) -> str:
+    """Return a local-only HTTP(S) destination URL or reject it."""
+
+    destination = str(value or "").strip()
+    if (
+        not destination
+        or len(destination) > 2048
+        or "\\" in destination
+        or any(character.isspace() or ord(character) < 32 for character in destination)
+    ):
+        raise TenantAutomationConfigurationError("Invalid destination URL.")
+    try:
+        parsed = urlsplit(destination)
+        hostname = parsed.hostname
+        parsed.port
+    except (TypeError, ValueError):
+        raise TenantAutomationConfigurationError("Invalid destination URL.") from None
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc or not hostname:
+        raise TenantAutomationConfigurationError("Invalid destination URL.")
+    return destination
 
 
 def _legacy_followup_settings(config: object) -> tuple[bool, int]:
@@ -168,6 +199,10 @@ def oauth_automation_runtime_config(
             getattr(config, "delivery_mode", "prompt_request")
         )
         private_message_text = getattr(config, "private_message_text", "")
+        prompt_opening_message_text = getattr(
+            config, "prompt_opening_message_text", None
+        )
+        destination_url = getattr(config, "destination_url", None)
         followup_enabled, followup_delay_minutes = _legacy_followup_settings(config)
         followup_message_text = getattr(config, "followup_message_text", "")
         smart_reply_enabled = config.smart_reply_enabled
@@ -180,6 +215,11 @@ def oauth_automation_runtime_config(
             or not isinstance(public_reply_enabled, bool)
             or not isinstance(public_reply_text, str)
             or not isinstance(private_message_text, str)
+            or (
+                prompt_opening_message_text is not None
+                and not isinstance(prompt_opening_message_text, str)
+            )
+            or (destination_url is not None and not isinstance(destination_url, str))
             or not isinstance(followup_enabled, bool)
             or not isinstance(followup_message_text, str)
             or not isinstance(smart_reply_enabled, bool)
@@ -188,13 +228,24 @@ def oauth_automation_runtime_config(
         public_reply_text = public_reply_text.strip()
         if public_reply_enabled and not public_reply_text:
             return None
+        prompt_opening_message_text = str(prompt_opening_message_text or "").strip()
+        if not prompt_opening_message_text:
+            prompt_opening_message_text = DEFAULT_PROMPT_OPENING_MESSAGE
+        destination_url = str(destination_url or "").strip()
+        if delivery_mode == "link":
+            destination_url = normalize_destination_url(destination_url)
+        private_message_text = private_message_text.strip()
+        if delivery_mode == "link" and not private_message_text:
+            private_message_text = DEFAULT_LINK_OPENING_MESSAGE
         return OAuthAutomationRuntimeConfig(
             enabled=enabled,
             trigger_keywords=keywords,
             public_reply_enabled=public_reply_enabled,
             public_reply_text=public_reply_text,
             delivery_mode=delivery_mode,
-            private_message_text=private_message_text.strip(),
+            private_message_text=private_message_text,
+            prompt_opening_message_text=prompt_opening_message_text,
+            destination_url=destination_url,
             followup_enabled=followup_enabled,
             followup_delay_minutes=followup_delay_minutes,
             followup_message_text=followup_message_text.strip(),

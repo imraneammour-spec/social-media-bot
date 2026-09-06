@@ -4009,11 +4009,10 @@ def _process_oauth_comment(value, route, entry_external_id, public_base_url, ses
         delivery_mode = getattr(automation_config, "delivery_mode", "prompt_request")
         prompt_request_decision = "keyword_no_match"
         if is_keyword_match:
-            prompt_request_decision = (
-                "direct_message_matched"
-                if delivery_mode == "direct_message"
-                else "prompt_request_matched"
-            )
+            prompt_request_decision = {
+                "direct_message": "direct_message_matched",
+                "link": "link_matched",
+            }.get(delivery_mode, "prompt_request_matched")
     print(f"OAUTH AUTOMATION: prompt_request_decision={prompt_request_decision}")
     try:
         if not is_keyword_match:
@@ -4050,7 +4049,7 @@ def _process_oauth_comment(value, route, entry_external_id, public_base_url, ses
                 complete_oauth_event(db_session, route.instagram_account_id, comment_id, "comment")
             return
 
-        if delivery_mode == "direct_message":
+        if delivery_mode in {"direct_message", "link"}:
             if automation_config.public_reply_enabled:
                 if not send_oauth_public_comment_reply(
                     session_factory,
@@ -4063,6 +4062,11 @@ def _process_oauth_comment(value, route, entry_external_id, public_base_url, ses
             private_message_text = str(
                 getattr(automation_config, "private_message_text", "") or ""
             ).strip()
+            if delivery_mode == "link":
+                destination_url = str(
+                    getattr(automation_config, "destination_url", "") or ""
+                ).strip()
+                private_message_text = f"{private_message_text}\n\n{destination_url}"
             if not private_message_text:
                 _oauth_complete(session_factory, route.instagram_account_id, comment_id, "comment")
                 return
@@ -4103,7 +4107,8 @@ def _process_oauth_comment(value, route, entry_external_id, public_base_url, ses
                 raise RuntimeError("oauth public reply unavailable")
         # Two-step DM flow:
         # 1. Send the first private DM with a visible "View prompts" quick
-        #    reply (no URL, no web_url button, no ACCESS/SEND instruction).
+        #    reply (no URL, no web_url button, no instruction to type a
+        #    legacy ACCESS/SEND keyword).
         # 2. Save pending access with the prompt page URL so that when the
         #    user presses the quick reply, the second DM with the real
         #    prompt-page link is unlocked.
@@ -4112,6 +4117,7 @@ def _process_oauth_comment(value, route, entry_external_id, public_base_url, ses
             instagram_account_id=route.instagram_account_id,
             instagram_user_id=entry_external_id,
             comment_id=comment_id,
+            message=automation_config.prompt_opening_message_text,
         )
         # The comment webhook also contains the commenter's Instagram-scoped ID,
         # so use it as a fallback if Meta did not return recipient_id.
@@ -4172,7 +4178,7 @@ def _process_oauth_message(event, route, entry_external_id, session_factory):
         )
     if (
         automation_config is not None
-        and automation_config.delivery_mode == "direct_message"
+        and automation_config.delivery_mode in {"direct_message", "link"}
     ):
         recipient = event.get("recipient")
         if (

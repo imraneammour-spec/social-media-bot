@@ -58,14 +58,14 @@ class ResponseTriggeredFollowupMigrationTest(unittest.TestCase):
             return {name: conn.execute(select(table)).all() for name, table in self.legacy.items()
                     if name != "alembic_version"}
 
-    def assert_head_and_legacy_intact(self):
+    def assert_revision_and_legacy_intact(self, revision):
         self.assertEqual(self.snapshot(), self.before)
         with self.engine.connect() as conn:
-            self.assertEqual(conn.scalar(text("SELECT version_num FROM alembic_version")), "20260904_02")
+            self.assertEqual(conn.scalar(text("SELECT version_num FROM alembic_version")), revision)
 
     def test_populated_upgrade_and_empty_response_state_downgrade_preserve_legacy(self):
         command.upgrade(self.config, "head")
-        self.assert_head_and_legacy_intact()
+        self.assert_revision_and_legacy_intact("20260906_01")
         inspector = inspect(self.engine)
         table = "instagram_oauth_direct_message_interactions"
         self.assertIn(table, inspector.get_table_names())
@@ -83,7 +83,7 @@ class ResponseTriggeredFollowupMigrationTest(unittest.TestCase):
         self.assertEqual(self.snapshot(), self.before)
         self.assertNotIn(table, inspect(self.engine).get_table_names())
         command.upgrade(self.config, "head")
-        self.assert_head_and_legacy_intact()
+        self.assert_revision_and_legacy_intact("20260906_01")
 
     def test_downgrade_refuses_existing_interaction_without_removing_data(self):
         command.upgrade(self.config, "head")
@@ -95,7 +95,7 @@ class ResponseTriggeredFollowupMigrationTest(unittest.TestCase):
             ), {"id": uuid.uuid4().hex, "account": self.account_id})
         with self.assertRaisesRegex(RuntimeError, "Cannot downgrade while response-triggered follow-up data exists"):
             command.downgrade(self.config, "20260904_01")
-        self.assert_head_and_legacy_intact()
+        self.assert_revision_and_legacy_intact("20260904_02")
         with self.engine.connect() as conn:
             self.assertEqual(conn.scalar(text("SELECT count(*) FROM instagram_oauth_direct_message_interactions")), 1)
 
@@ -105,6 +105,6 @@ class ResponseTriggeredFollowupMigrationTest(unittest.TestCase):
             conn.execute(text("UPDATE instagram_oauth_followup_jobs SET provider_window_expires_at = '2026-09-06 12:00:00'"))
         with self.assertRaisesRegex(RuntimeError, "Cannot downgrade while response-triggered follow-up data exists"):
             command.downgrade(self.config, "20260904_01")
-        self.assert_head_and_legacy_intact()
+        self.assert_revision_and_legacy_intact("20260904_02")
         with self.engine.connect() as conn:
             self.assertIsNotNone(conn.scalar(text("SELECT provider_window_expires_at FROM instagram_oauth_followup_jobs")))

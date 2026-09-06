@@ -9,12 +9,13 @@
 <section class="settings-group card">
   <h2>{{ t('Automation status') }}</h2>
   <div class="checkbox-field setting-toggle"><input id="automation_enabled" type="checkbox" name="enabled" {% if automation.enabled %}checked{% endif %}><label for="automation_enabled">{{ t('Enable automation') }}</label></div>
-  <label for="delivery_mode">{{ t('Delivery mode') }}<select id="delivery_mode" name="delivery_mode"><option value="prompt_request" {% if automation.delivery_mode == 'prompt_request' %}selected{% endif %}>{{ t('Prompt delivery') }}</option><option value="direct_message" {% if automation.delivery_mode == 'direct_message' %}selected{% endif %}>{{ t('Custom private message') }}</option></select></label>
-  <p data-delivery-mode="prompt_request" class="helper-text">{{ t('Prompt delivery extracts prompts from the post and lets the recipient request access.') }}</p>
+  <label for="delivery_mode">{{ t('Delivery mode') }}<select id="delivery_mode" name="delivery_mode"><option value="prompt_request" {% if automation.delivery_mode == 'prompt_request' %}selected{% endif %}>{{ t('Prompt') }}</option><option value="direct_message" {% if automation.delivery_mode == 'direct_message' %}selected{% endif %}>{{ t('Message') }}</option><option value="link" {% if automation.delivery_mode == 'link' %}selected{% endif %}>{{ t('Link') }}</option></select></label>
+  <p data-delivery-mode="prompt_request" class="helper-text">{{ t('Send the prompt connected to this post.') }}</p>
   <div data-delivery-mode="direct_message">
-    <p class="helper-text">{{ t('A matching comment starts your custom message flow.') }}</p>
+    <p class="helper-text">{{ t('Send a custom private message.') }}</p>
     <ol class="automation-flow" aria-label="{{ t('Custom message flow') }}"><li>{{ t('Matching comment') }}</li><li>{{ t('Public reply (optional)') }}</li><li>{{ t('Initial private message') }}</li><li>{{ t('Recipient replies') }}</li><li>{{ t('Delayed follow-up') }}</li></ol>
   </div>
+  <div data-delivery-mode="link"><p class="helper-text">{{ t('Send a link of your choice.') }}</p></div>
 </section>
 <section class="settings-group card">
   <h2>{{ t('Reply to matching comments') }}</h2>
@@ -24,12 +25,14 @@
 </section>
 <section class="settings-group card">
   <h2>{{ t('Private message and follow-up') }}</h2>
-  <label data-delivery-mode="direct_message" for="private_message_text">{{ t('Private message text') }}<textarea id="private_message_text" name="private_message_text" rows="3">{{ automation.private_message_text }}</textarea><span class="helper-text">{{ t('The matching comment triggers this first message. Leave empty to skip it.') }}</span></label>
+  <label data-delivery-mode="prompt_request" for="prompt_opening_message_text">{{ t('Opening message') }}<textarea id="prompt_opening_message_text" name="prompt_opening_message_text" rows="3">{{ t(automation.prompt_opening_message_text) if automation.prompt_opening_uses_default else automation.prompt_opening_message_text }}</textarea><span class="helper-text">{{ t('This message appears before the recipient requests the prompt.') }}</span></label>
+  <label data-delivery-mode="direct_message link" for="private_message_text"><span data-delivery-mode="direct_message">{{ t('Private message') }}</span><span data-delivery-mode="link">{{ t('Opening message') }}</span><textarea id="private_message_text" name="private_message_text" rows="3" data-default-direct-message="{{ t(default_custom_message) }}" data-default-link="{{ t(default_link_opening_message) }}">{{ t(automation.private_message_text) if automation.private_message_uses_default else automation.private_message_text }}</textarea><span data-delivery-mode="direct_message" class="helper-text">{{ t('The matching comment triggers this first message.') }}</span><span data-delivery-mode="link" class="helper-text">{{ t('The destination URL is sent below this message.') }}</span></label>
+  <label data-delivery-mode="link" for="destination_url">{{ t('Destination URL') }}<input id="destination_url" name="destination_url" type="url" inputmode="url" value="{{ automation.destination_url }}"><span class="helper-text">{{ t('Use a complete http:// or https:// URL. Postenza does not open or inspect it.') }}</span></label>
   <div class="checkbox-field setting-toggle"><input id="followup_enabled" type="checkbox" name="followup_enabled" value="on" {% if automation.followup_enabled %}checked{% endif %}><input type="hidden" name="followup_enabled" value="off"><label for="followup_enabled">{{ t('Enable follow-up') }}</label></div>
-  <div data-delivery-mode="direct_message" class="helper-panel"><p>{{ t('The recipient must reply to your initial private message before a follow-up can be scheduled.') }}</p><p>{{ t('If the recipient never replies, no follow-up is sent.') }}</p><p>{{ t('The delay starts at the recipient reply. Delivery must remain inside the 24-hour reply window; cooldown and eligibility checks still apply.') }}</p></div>
-  <p data-delivery-mode="prompt_request" class="helper-text">{{ t('Prompt follow-ups use the existing prompt-access flow and its own timing. Custom message text below is not used in this mode.') }}</p>
-  <label for="followup_delay_minutes"><span data-delivery-mode="direct_message">{{ t('Delay after recipient reply (minutes)') }}</span><span data-delivery-mode="prompt_request">{{ t('Prompt follow-up delay (minutes)') }}</span><input id="followup_delay_minutes" name="followup_delay_minutes" type="number" min="5" max="10080" value="{{ automation.followup_delay_minutes }}"></label>
-  <label data-delivery-mode="direct_message" for="followup_message_text">{{ t('Follow-up message text') }}<textarea id="followup_message_text" name="followup_message_text" rows="3">{{ automation.followup_message_text }}</textarea><span class="helper-text">{{ t('Leave empty to skip the custom-message follow-up.') }}</span></label>
+  <div data-delivery-mode="direct_message link" class="helper-panel"><p>{{ t('The recipient must reply to your initial private message before a follow-up can be scheduled.') }}</p><p>{{ t('If the recipient never replies, no follow-up is sent.') }}</p><p>{{ t('The delay starts at the recipient reply. Delivery must remain inside the 24-hour reply window; cooldown and eligibility checks still apply.') }}</p></div>
+  <p data-delivery-mode="prompt_request" class="helper-text">{{ t('Prompt follow-ups use the existing prompt-access flow and its own timing.') }}</p>
+  <label for="followup_delay_minutes"><span data-delivery-mode="direct_message link">{{ t('Delay after recipient reply (minutes)') }}</span><span data-delivery-mode="prompt_request">{{ t('Prompt follow-up delay (minutes)') }}</span><input id="followup_delay_minutes" name="followup_delay_minutes" type="number" min="5" max="10080" value="{{ automation.followup_delay_minutes }}"></label>
+  <label data-delivery-mode="direct_message link" for="followup_message_text">{{ t('Follow-up message text') }}<textarea id="followup_message_text" name="followup_message_text" rows="3">{{ automation.followup_message_text }}</textarea><span class="helper-text">{{ t('Leave empty to skip this follow-up.') }}</span></label>
 </section>
 <section class="settings-group card">
   <h2>{{ t('Smart replies') }}</h2><p class="muted">{{ t('Smart replies handle comments that do not match your keywords. These replies are public.') }}</p>
@@ -42,9 +45,19 @@
 (() => {
   const mode = document.getElementById('delivery_mode');
   const delay = document.getElementById('followup_delay_minutes');
+  const privateMessage = document.getElementById('private_message_text');
+  const destination = document.getElementById('destination_url');
   const update = () => {
-    document.querySelectorAll('[data-delivery-mode]').forEach(panel => { panel.hidden = panel.dataset.deliveryMode !== mode.value; });
-    delay.max = mode.value === 'direct_message' ? '1439' : '10080';
+    document.querySelectorAll('[data-delivery-mode]').forEach(panel => {
+      panel.hidden = !panel.dataset.deliveryMode.split(/\s+/).includes(mode.value);
+    });
+    delay.max = mode.value === 'prompt_request' ? '10080' : '1439';
+    destination.required = mode.value === 'link';
+    if (!privateMessage.value.trim() && mode.value === 'direct_message') {
+      privateMessage.value = privateMessage.dataset.defaultDirectMessage;
+    } else if (!privateMessage.value.trim() && mode.value === 'link') {
+      privateMessage.value = privateMessage.dataset.defaultLink;
+    }
   };
   mode.addEventListener('change', update);
   update();
