@@ -312,7 +312,6 @@ def build_onboarding_account_statuses(
         elif connection_status in READY_CONNECTION_STATUSES:
             label = "Connected and ready"
             detail = "This account is ready for the next connection phase."
-            can_reconnect = True
             can_disconnect = True
         else:
             label = "Connection setup incomplete"

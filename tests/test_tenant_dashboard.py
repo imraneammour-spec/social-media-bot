@@ -467,7 +467,7 @@ class TenantDashboardTest(unittest.TestCase):
             all("disconnect_action" not in account for account in payload["accounts"])
         )
 
-    def test_accounts_show_reconnect_for_owned_connected_and_reconnectable_accounts(self):
+    def test_accounts_show_reconnect_only_when_reconnect_is_needed(self):
         with self.Session.begin() as session:
             account = session.get(InstagramAccount, self.account_a1.id)
             account.connection_status = "reconnect_required"
@@ -475,8 +475,18 @@ class TenantDashboardTest(unittest.TestCase):
         self._login_as(self.owner_a)
         page = self.client.get("/app/accounts").get_data(as_text=True)
 
-        self.assertEqual(page.count(">Reconnect Instagram</button>"), 2)
+        self.assertEqual(page.count(">Reconnect Instagram</button>"), 1)
         self.assertIn('action="/connect/instagram"', page)
+
+    def test_connected_account_with_error_shows_reconnect(self):
+        with self.Session.begin() as session:
+            account = session.get(InstagramAccount, self.account_a1.id)
+            account.last_connection_error_code = "connection_failed"
+
+        self._login_as(self.owner_a)
+        page = self.client.get("/app/accounts").get_data(as_text=True)
+
+        self.assertEqual(page.count(">Reconnect Instagram</button>"), 1)
 
     def test_accounts_show_disconnect_only_for_disconnectable_accounts(self):
         with self.Session.begin() as session:
@@ -504,7 +514,7 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertIsNotNone(disconnect_reference)
         self.assertEqual(
             len(re.findall(r'name="csrf_token" value="[^"]+"', page)),
-            6,
+            5,
         )
         self.assertEqual(self.client.post("/connect/instagram").status_code, 400)
         self.assertEqual(
