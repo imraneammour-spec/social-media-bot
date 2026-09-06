@@ -258,6 +258,107 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["account"]["username"], "alpha_second")
 
+    def test_connected_configured_legacy_account_is_visible_and_selectable_to_its_owner(self):
+        """A connected OAuth account must not disappear just because its ID enables Prompt."""
+
+        with self.Session.begin() as session:
+            legacy = session.get(InstagramAccount, self.legacy_account.id)
+            legacy.user_id = self.owner_a.id
+            legacy.connection_status = "connected"
+            session.add(InstagramAutomationConfig(
+                instagram_account_id=legacy.id,
+                delivery_mode="direct_message",
+            ))
+
+        self._login_as(self.owner_a)
+        payload = self.client.get("/app/api/accounts").get_json()
+
+        self.assertEqual(
+            [item["username"] for item in payload["accounts"]],
+            ["alpha_first", "alpha_second", "legacy_private"],
+        )
+
+        selected = self._reference(self.owner_a, self.legacy_account)
+        response = self.client.get(f"/app/accounts?account={selected}")
+        page = response.get_data(as_text=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Manage posts and automation for legacy_private.", page)
+        self.assertIn("alpha_first", page)
+        self.assertIn("alpha_second", page)
+        self.assertIn("legacy_private", page)
+
+        automation_response = self.client.get(
+            f"/app/automations?account={selected}"
+        )
+        self.assertEqual(automation_response.status_code, 200)
+        automation_page = automation_response.get_data(as_text=True)
+        self.assertIn('value="prompt_request"', automation_page)
+
+    def test_connected_configured_legacy_account_remains_tenant_isolated(self):
+        """Another customer must neither list nor select an internal owner's accounts."""
+
+        with self.Session.begin() as session:
+            legacy = session.get(InstagramAccount, self.legacy_account.id)
+            legacy.user_id = self.owner_a.id
+            legacy.connection_status = "connected"
+            session.add(InstagramAutomationConfig(
+                instagram_account_id=self.account_b.id,
+                delivery_mode="direct_message",
+            ))
+
+        self._login_as(self.owner_b)
+        page = self.client.get("/app/accounts").get_data(as_text=True)
+
+        self.assertIn("bravo_private", page)
+        self.assertNotIn("alpha_first", page)
+        self.assertNotIn("alpha_second", page)
+        self.assertNotIn("legacy_private", page)
+
+        foreign_reference = self._reference(self.owner_a, self.legacy_account)
+        response = self.client.get(f"/app/accounts?account={foreign_reference}")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            response.get_json()["error"],
+            "Selected account is unavailable.",
+        )
+
+        automation_response = self.client.get("/app/automations")
+        self.assertEqual(automation_response.status_code, 200)
+        automation_page = automation_response.get_data(as_text=True)
+        self.assertNotIn('value="prompt_request"', automation_page)
+
+    def test_environment_managed_legacy_account_remains_outside_tenant_listing(self):
+        """The true environment-managed workspace stays separate from OAuth accounts."""
+
+        with self.Session.begin() as session:
+            legacy = session.get(InstagramAccount, self.legacy_account.id)
+            legacy.user_id = self.owner_a.id
+            session.add(InstagramAutomationConfig(
+                instagram_account_id=self.account_a1.id,
+                delivery_mode="direct_message",
+            ))
+
+        self._login_as(self.owner_a)
+        payload = self.client.get("/app/api/accounts").get_json()
+
+        self.assertEqual(
+            [item["username"] for item in payload["accounts"]],
+            ["alpha_first", "alpha_second"],
+        )
+        self.assertNotIn(
+            "legacy_private",
+            self.client.get("/app/accounts").get_data(as_text=True),
+        )
+
+        selected = self._reference(self.owner_a, self.account_a1)
+        automation_response = self.client.get(
+            f"/app/automations?account={selected}"
+        )
+        self.assertEqual(automation_response.status_code, 200)
+        automation_page = automation_response.get_data(as_text=True)
+        self.assertIn('value="prompt_request"', automation_page)
+
     def test_dashboard_activation_labels_are_sanitized_for_active_and_reconnect_required_states(self):
         self._login_as(self.owner_a)
 

@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .account_runtime import LEGACY_CONNECTION_STATUS
 from .lead_intelligence import lead_intelligence_from_values
 from .models import (
     InstagramAccount,
@@ -365,13 +366,17 @@ def list_tenant_accounts(
     user_id: object,
     legacy_instagram_user_id: object,
 ) -> list[TenantAccount]:
-    """List a user's non-legacy accounts in existing deterministic order."""
+    """List a user's tenant-managed accounts in existing deterministic order."""
 
     legacy_id = str(legacy_instagram_user_id or "").strip()
     accounts = [
         account
         for account in list_owned_instagram_accounts(session, user_id=user_id)
-        if not legacy_id or not hmac.compare_digest(str(account.instagram_user_id), legacy_id)
+        if not (
+            legacy_id
+            and account.connection_status == LEGACY_CONNECTION_STATUS
+            and hmac.compare_digest(str(account.instagram_user_id), legacy_id)
+        )
     ]
     if not accounts:
         return []
