@@ -102,6 +102,14 @@ def _provider_rejected(response: object) -> OAuthGraphOperationError:
     )
 
 
+def _log_delivery_failure(label: str, error: OAuthGraphOperationError) -> None:
+    print(
+        f"OAUTH {label}: delivery_failed "
+        f"status={error.http_status} code={error.provider_code} "
+        f"subcode={error.provider_subcode} message={error.provider_message}"
+    )
+
+
 def _account_id(value: object) -> uuid.UUID:
     try:
         return uuid.UUID(str(value))
@@ -201,7 +209,8 @@ def send_oauth_public_comment_reply(session_factory: Callable[[], Any], *, insta
     try:
         _request_with_runtime(session_factory, instagram_account_id=instagram_account_id, instagram_user_id=instagram_user_id, method="POST", path=f"/{comment}/replies", json_body={"message": text})
         return True
-    except OAuthGraphOperationError:
+    except OAuthGraphOperationError as error:
+        _log_delivery_failure("PUBLIC REPLY", error)
         return False
 
 
@@ -248,6 +257,7 @@ def send_oauth_private_access_reply(
 def send_oauth_private_comment_reply(
     session_factory: Callable[[], Any], *, instagram_account_id: object,
     instagram_user_id: object, comment_id: object, message: object,
+    recipient_id_fallback: object = None,
 ) -> str | None:
     """Send one configured direct private reply to a trigger comment."""
 
@@ -268,8 +278,12 @@ def send_oauth_private_comment_reply(
             },
         )
         recipient = payload.get("recipient_id")
-        return str(recipient).strip() if recipient is not None and str(recipient).strip() else None
-    except OAuthGraphOperationError:
+        if recipient is not None and str(recipient).strip():
+            return str(recipient).strip()
+        fallback = str(recipient_id_fallback or "").strip()
+        return fallback or None
+    except OAuthGraphOperationError as error:
+        _log_delivery_failure("PRIVATE REPLY", error)
         return None
 
 

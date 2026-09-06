@@ -264,6 +264,113 @@ class OAuthEngagementModelTest(unittest.TestCase):
         self.assertEqual(body["recipient"], {"comment_id": "general-comment"})
         self.assertEqual(body["message"], {"text": "Configured private message"})
 
+    def test_general_private_dm_uses_verified_commenter_after_provider_success_without_recipient(self):
+        """A successful Graph send must survive an omitted response recipient_id."""
+
+        from database import oauth_graph
+
+        with patch.object(oauth_graph, "_request_with_runtime", return_value={
+            "message_id": "provider-message"
+        }) as graph_request:
+            recipient = oauth_graph.send_oauth_private_comment_reply(
+                lambda: self.Session(),
+                instagram_account_id=self.account_a_id,
+                instagram_user_id="17841438617458001",
+                comment_id="general-comment",
+                message="Configured private message",
+                recipient_id_fallback="verified-commenter",
+            )
+
+        self.assertEqual(recipient, "verified-commenter")
+        self.assertEqual(graph_request.call_count, 1)
+
+    def test_general_private_dm_provider_failure_never_uses_fallback_and_logs_safely(self):
+        """A commenter fallback must not turn a rejected provider request into success."""
+
+        from database import oauth_graph
+
+        secret_token = "oauth-token-that-must-not-leak"
+        secret_recipient = "recipient-id-must-not-leak"
+        response = Mock(ok=False, status_code=400)
+        response.json.return_value = {
+            "error": {
+                "code": 100,
+                "error_subcode": 2534014,
+                "message": f"Recipient {secret_recipient} rejected with {secret_token}",
+            }
+        }
+        runtime = InstagramAccountRuntime(
+            self.account_a_id, "17841438617458001", "oauth", secret_token
+        )
+        with patch.object(oauth_graph, "oauth_engagement_capability_state", return_value="active"), patch.object(
+            oauth_graph, "resolve_oauth_instagram_account_runtime", return_value=runtime
+        ), patch.object(oauth_graph.requests, "request", return_value=response), patch(
+            "builtins.print"
+        ) as log:
+            recipient = oauth_graph.send_oauth_private_comment_reply(
+                lambda: self.Session(),
+                instagram_account_id=self.account_a_id,
+                instagram_user_id="17841438617458001",
+                comment_id="general-comment",
+                message="Configured private message",
+                recipient_id_fallback=secret_recipient,
+            )
+
+        self.assertIsNone(recipient)
+        log.assert_called_once_with(
+            "OAUTH PRIVATE REPLY: delivery_failed "
+            "status=400 code=100 subcode=2534014 message=recipient_rejected"
+        )
+        rendered = " ".join(
+            str(argument) for call in log.call_args_list for argument in call.args
+        )
+        self.assertNotIn(secret_token, rendered)
+        self.assertNotIn(secret_recipient, rendered)
+        self.assertNotIn(str(self.account_a_id), rendered)
+
+    def test_public_reply_provider_failure_logs_sanitized_diagnostics(self):
+        """Public delivery failure logs only finite provider diagnostics."""
+
+        from database import oauth_graph
+
+        secret_token = "public-oauth-token-that-must-not-leak"
+        secret_comment = "comment-id-must-not-leak"
+        response = Mock(ok=False, status_code=403)
+        response.json.return_value = {
+            "error": {
+                "code": 10,
+                "error_subcode": 2018336,
+                "message": f"Permission rejected for {secret_comment} with {secret_token}",
+            }
+        }
+        runtime = InstagramAccountRuntime(
+            self.account_a_id, "17841438617458001", "oauth", secret_token
+        )
+        with patch.object(oauth_graph, "oauth_engagement_capability_state", return_value="active"), patch.object(
+            oauth_graph, "resolve_oauth_instagram_account_runtime", return_value=runtime
+        ), patch.object(oauth_graph.requests, "request", return_value=response), patch(
+            "builtins.print"
+        ) as log:
+            sent = oauth_graph.send_oauth_public_comment_reply(
+                lambda: self.Session(),
+                instagram_account_id=self.account_a_id,
+                instagram_user_id="17841438617458001",
+                comment_id=secret_comment,
+                message="Configured public reply",
+            )
+
+        self.assertFalse(sent)
+        log.assert_called_once_with(
+            "OAUTH PUBLIC REPLY: delivery_failed "
+            "status=403 code=10 subcode=2018336 message=permission_rejected"
+        )
+        rendered = " ".join(
+            str(argument) for call in log.call_args_list for argument in call.args
+        )
+        self.assertNotIn(secret_token, rendered)
+        self.assertNotIn(secret_comment, rendered)
+        self.assertNotIn(str(self.account_a_id), rendered)
+
 
 class OAuthWebhookEngagementTest(unittest.TestCase):
     def setUp(self):

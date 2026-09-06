@@ -4076,6 +4076,7 @@ def _process_oauth_comment(value, route, entry_external_id, public_base_url, ses
                 instagram_user_id=entry_external_id,
                 comment_id=comment_id,
                 message=private_message_text,
+                recipient_id_fallback=commenter_id,
             )
             if not recipient_id:
                 raise RuntimeError("oauth private reply unavailable")

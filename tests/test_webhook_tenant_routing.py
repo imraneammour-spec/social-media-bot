@@ -850,6 +850,7 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
         prompt_page.assert_not_called()
         self.assertEqual(public_reply.call_args.kwargs["message"], "Configured public reply")
         self.assertEqual(private_reply.call_args.kwargs["message"], "Configured private reply")
+        self.assertEqual(private_reply.call_args.kwargs["recipient_id_fallback"], "customer-1")
         account = self._account(self.primary_external_id)
         with self.session_factory() as session:
             self.assertEqual(session.query(InstagramPromptRequest).filter_by(
@@ -879,6 +880,8 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
             followup_message_text="Did the guide help?",
         )
         with patch.object(self.module, "_oauth_prompt_post_for_comment") as prompt_page, patch.object(
+            self.module, "send_oauth_public_comment_reply"
+        ) as public_reply, patch.object(
             self.module, "send_oauth_private_comment_reply", return_value="recipient-link"
         ) as private_reply, patch.object(
             self.module.requests, "get"
@@ -888,12 +891,14 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
             self._process(self.primary_external_id, "link-keyword", "guide please")
 
         prompt_page.assert_not_called()
+        public_reply.assert_not_called()
         destination_get.assert_not_called()
         destination_request.assert_not_called()
         self.assertEqual(
             private_reply.call_args.kwargs["message"],
             "Your guide is ready.\n\nhttps://example.test/guide?source=instagram",
         )
+        self.assertEqual(private_reply.call_args.kwargs["recipient_id_fallback"], "customer-1")
         account = self._account(self.primary_external_id)
         with self.session_factory() as session:
             self.assertEqual(session.query(InstagramOAuthFollowupJob).filter_by(
@@ -903,6 +908,122 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
                 instagram_account_id=account.id, source_comment_id="link-keyword"
             ).one()
         self.assertEqual(interaction.recipient_id, "recipient-link")
+
+    def test_message_provider_success_without_recipient_uses_verified_account_scoped_commenter(self):
+        """Message delivery must persist after a successful response omits recipient_id."""
+
+        from database import oauth_graph
+
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["hello"],
+            public_reply_enabled=False,
+            delivery_mode="direct_message",
+            private_message_text="Configured private reply",
+        )
+        account = self._account(self.primary_external_id)
+        with patch.object(
+            oauth_graph, "_request_with_runtime", return_value={"message_id": "provider-message"}
+        ) as graph_request:
+            self._process(self.primary_external_id, "message-missing-recipient", "hello")
+
+        self.assertEqual(graph_request.call_count, 1)
+        self.assertEqual(graph_request.call_args.kwargs["instagram_account_id"], account.id)
+        self.assertEqual(graph_request.call_args.kwargs["instagram_user_id"], self.primary_external_id)
+        self.assertEqual(graph_request.call_args.kwargs["method"], "POST")
+        self.assertEqual(
+            graph_request.call_args.kwargs["path"],
+            f"/{self.primary_external_id}/messages",
+        )
+        self.assertEqual(graph_request.call_args.kwargs["json_body"], {
+            "recipient": {"comment_id": "message-missing-recipient"},
+            "message": {"text": "Configured private reply"},
+        })
+        with self.session_factory() as session:
+            interaction = session.query(InstagramOAuthDirectMessageInteraction).filter_by(
+                instagram_account_id=account.id,
+                source_comment_id="message-missing-recipient",
+            ).one()
+            self.assertEqual(session.query(InstagramOAuthDirectMessageInteraction).filter_by(
+                instagram_account_id=self._account(self.secondary_external_id).id,
+                source_comment_id="message-missing-recipient",
+            ).count(), 0)
+        self.assertEqual(interaction.recipient_id, "customer-1")
+
+    def test_link_provider_success_without_recipient_uses_verified_commenter_and_exact_payload(self):
+        """Link delivery uses the proven comment-recipient Graph path and exact plain text."""
+
+        from database import oauth_graph
+
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["guide"],
+            public_reply_enabled=False,
+            delivery_mode="link",
+            private_message_text="Your guide is ready.",
+            destination_url="https://example.test/guide?source=instagram",
+        )
+        account = self._account(self.primary_external_id)
+        with patch.object(
+            oauth_graph, "_request_with_runtime", return_value={"message_id": "provider-link"}
+        ) as graph_request, patch.object(
+            self.module, "_oauth_prompt_post_for_comment"
+        ) as prompt_page:
+            self._process(self.primary_external_id, "link-missing-recipient", "guide")
+
+        prompt_page.assert_not_called()
+        self.assertEqual(graph_request.call_count, 1)
+        self.assertEqual(graph_request.call_args.kwargs["instagram_account_id"], account.id)
+        self.assertEqual(graph_request.call_args.kwargs["method"], "POST")
+        self.assertEqual(
+            graph_request.call_args.kwargs["path"],
+            f"/{self.primary_external_id}/messages",
+        )
+        self.assertEqual(graph_request.call_args.kwargs["json_body"], {
+            "recipient": {"comment_id": "link-missing-recipient"},
+            "message": {
+                "text": "Your guide is ready.\n\nhttps://example.test/guide?source=instagram"
+            },
+        })
+        with self.session_factory() as session:
+            interaction = session.query(InstagramOAuthDirectMessageInteraction).filter_by(
+                instagram_account_id=account.id,
+                source_comment_id="link-missing-recipient",
+            ).one()
+        self.assertEqual(interaction.recipient_id, "customer-1")
+
+    def test_link_public_reply_failure_remains_fail_closed_before_private_delivery(self):
+        """The pre-existing optional-public-reply failure policy must remain fail-closed."""
+
+        self._set_config(
+            self.primary_external_id,
+            trigger_keywords=["guide"],
+            public_reply_enabled=True,
+            delivery_mode="link",
+            private_message_text="Your guide is ready.",
+            destination_url="https://example.test/guide",
+        )
+        with patch.object(
+            self.module, "send_oauth_public_comment_reply", return_value=False
+        ) as public_reply, patch.object(
+            self.module, "send_oauth_private_comment_reply"
+        ) as private_reply:
+            self._process(self.primary_external_id, "link-public-failure", "guide")
+
+        public_reply.assert_called_once()
+        private_reply.assert_not_called()
+        account = self._account(self.primary_external_id)
+        with self.session_factory() as session:
+            event = session.scalar(select(InstagramEngagementEvent).where(
+                InstagramEngagementEvent.instagram_account_id == account.id,
+                InstagramEngagementEvent.provider_event_id == "link-public-failure",
+            ))
+            interactions = session.query(InstagramOAuthDirectMessageInteraction).filter_by(
+                instagram_account_id=account.id,
+                source_comment_id="link-public-failure",
+            ).count()
+        self.assertEqual(event.state, "failed")
+        self.assertEqual(interactions, 0)
 
     def test_link_followup_is_scheduled_only_after_a_qualifying_recipient_reply(self):
         """Treating Link delivery differently from reply-gated Message follow-up must fail."""
