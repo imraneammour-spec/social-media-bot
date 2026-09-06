@@ -39,6 +39,14 @@ from instagram_oauth import (
     OAuthDiscoveryError,
     OAuthExchangeError,
     OAuthStateError,
+    OAUTH_CALLBACK_STAGE_AUTHORIZATION_CODE_MISSING,
+    OAUTH_CALLBACK_STAGE_CREDENTIAL_PERSISTENCE_FAILED,
+    OAUTH_CALLBACK_STAGE_PROVIDER_DENIED,
+    OAUTH_CALLBACK_STAGE_PERMISSIONS_FAILED,
+    OAUTH_CALLBACK_STAGE_PERMISSIONS_INVALID,
+    OAUTH_CALLBACK_STAGE_FINAL_TRANSACTION_FAILED,
+    OAUTH_CALLBACK_STAGE_TOKEN_EXCHANGE_FAILED,
+    PUBLIC_BASE_URL,
     OAUTH_CALLBACK_STAGE_CONNECTION_PRECOMMIT_FAILED,
     OAUTH_CALLBACK_STAGE_LONG_EXCHANGE_FAILED,
     complete_instagram_token_exchange,
@@ -46,6 +54,7 @@ from instagram_oauth import (
     discover_instagram_account,
     issue_instagram_oauth_state,
     oauth_configuration_from_environment,
+    resolve_instagram_oauth_redirect_uri,
 )
 
 
@@ -483,8 +492,13 @@ def register_auth_routes(app) -> None:
         if current_user_has_legacy_workspace_access():
             return _auth_ui_text("Instagram connection is not available for this account."), 403
         try:
+            redirect_uri = resolve_instagram_oauth_redirect_uri(
+                f"{request.scheme}://{request.host}",
+                production=bool(current_app.config.get("SESSION_COOKIE_SECURE")),
+            )
             configuration = oauth_configuration_from_environment(
                 production=bool(current_app.config.get("SESSION_COOKIE_SECURE")),
+                redirect_uri=redirect_uri,
             )
         except OAuthConfigurationError:
             return _auth_ui_text("Instagram connection configuration is unavailable."), 503
@@ -499,17 +513,25 @@ def register_auth_routes(app) -> None:
             return _unauthenticated_response()
         try:
             consume_instagram_oauth_state(request.args.get("state"), user.id)
-        except OAuthStateError:
+        except OAuthStateError as error:
+            current_app.logger.warning(error.diagnostic_stage)
             return _auth_ui_text("Instagram authorization could not be completed."), 400
 
         if any(request.args.get(name) for name in ("error", "error_reason", "error_description")):
+            current_app.logger.warning(OAUTH_CALLBACK_STAGE_PROVIDER_DENIED)
             return _auth_ui_text("Instagram authorization could not be completed."), 400
         authorization_code = request.args.get("code")
         if not isinstance(authorization_code, str) or not authorization_code:
+            current_app.logger.warning(OAUTH_CALLBACK_STAGE_AUTHORIZATION_CODE_MISSING)
             return _auth_ui_text("Instagram authorization could not be completed."), 400
         try:
+            redirect_uri = resolve_instagram_oauth_redirect_uri(
+                f"{request.scheme}://{request.host}",
+                production=bool(current_app.config.get("SESSION_COOKIE_SECURE")),
+            )
             configuration = oauth_configuration_from_environment(
                 production=bool(current_app.config.get("SESSION_COOKIE_SECURE")),
+                redirect_uri=redirect_uri,
             )
             token_result = complete_instagram_token_exchange(authorization_code, configuration)
             discovery = discover_instagram_account(token_result)
@@ -528,6 +550,9 @@ def register_auth_routes(app) -> None:
         except (OAuthConfigurationError, CredentialConfigurationError):
             return _auth_ui_text("Instagram connection configuration is unavailable."), 503
         except OAuthExchangeError as error:
+            current_app.logger.warning(OAUTH_CALLBACK_STAGE_TOKEN_EXCHANGE_FAILED)
+            if error.diagnostic_stage == OAUTH_CALLBACK_STAGE_PERMISSIONS_INVALID:
+                current_app.logger.warning(OAUTH_CALLBACK_STAGE_PERMISSIONS_FAILED)
             if error.diagnostic_stage == OAUTH_CALLBACK_STAGE_LONG_EXCHANGE_FAILED:
                 diagnostics = error.safe_diagnostics
                 current_app.logger.warning(
@@ -545,7 +570,11 @@ def register_auth_routes(app) -> None:
             current_app.logger.warning(error.diagnostic_stage)
             return _auth_ui_text("Instagram connection could not be completed."), 502
         except InstagramConnectionError:
+            current_app.logger.warning(OAUTH_CALLBACK_STAGE_CREDENTIAL_PERSISTENCE_FAILED)
             current_app.logger.warning(OAUTH_CALLBACK_STAGE_CONNECTION_PRECOMMIT_FAILED)
+            return _auth_ui_text("Instagram connection could not be completed."), 502
+        except SQLAlchemyError:
+            current_app.logger.warning(OAUTH_CALLBACK_STAGE_FINAL_TRANSACTION_FAILED)
             return _auth_ui_text("Instagram connection could not be completed."), 502
         account_ref = action_reference_for_account(
             user.id,
@@ -554,8 +583,12 @@ def register_auth_routes(app) -> None:
             secret_key=current_app.secret_key,
         )
         if "tenant_dashboard.app_overview" in current_app.view_functions:
-            return redirect(url_for("tenant_dashboard.app_overview", account=account_ref))
-        return redirect(f"/app?account={account_ref}")
+            target = url_for("tenant_dashboard.app_overview", account=account_ref)
+        else:
+            target = f"/app?account={account_ref}"
+        if redirect_uri == f"{PUBLIC_BASE_URL}/connect/instagram/callback":
+            target = f"{PUBLIC_BASE_URL}{target}"
+        return redirect(target)
 
     @app.post("/connect/instagram/disconnect")
     @login_required

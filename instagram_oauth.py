@@ -19,6 +19,9 @@ from flask import session
 INSTAGRAM_OAUTH_APP_ID_ENV = "INSTAGRAM_OAUTH_APP_ID"
 META_APP_SECRET_ENV = "META_APP_SECRET"
 INSTAGRAM_OAUTH_REDIRECT_URI_ENV = "INSTAGRAM_OAUTH_REDIRECT_URI"
+PUBLIC_BASE_URL_ENV = "PUBLIC_BASE_URL"
+PUBLIC_BASE_URL = "https://postenza.app"
+INSTAGRAM_OAUTH_CALLBACK_PATH = "/connect/instagram/callback"
 INSTAGRAM_OAUTH_AUTHORIZE_URL = "https://www.instagram.com/oauth/authorize"
 INSTAGRAM_OAUTH_CODE_EXCHANGE_URL = "https://api.instagram.com/oauth/access_token"
 INSTAGRAM_OAUTH_LONG_LIVED_TOKEN_URL = "https://graph.instagram.com/access_token"
@@ -41,6 +44,14 @@ OAUTH_CALLBACK_STAGE_LONG_EXCHANGE_FAILED = "oauth_long_exchange_failed"
 OAUTH_CALLBACK_STAGE_LONG_RESPONSE_INVALID = "oauth_long_response_invalid"
 OAUTH_CALLBACK_STAGE_DISCOVERY_FAILED = "oauth_discovery_failed"
 OAUTH_CALLBACK_STAGE_CONNECTION_PRECOMMIT_FAILED = "oauth_connection_precommit_failed"
+OAUTH_CALLBACK_STAGE_STATE_MISSING = "state_missing"
+OAUTH_CALLBACK_STAGE_STATE_MISMATCH_OR_SESSION_MISSING = "state_mismatch_or_session_missing"
+OAUTH_CALLBACK_STAGE_PROVIDER_DENIED = "provider_denied"
+OAUTH_CALLBACK_STAGE_AUTHORIZATION_CODE_MISSING = "authorization_code_missing"
+OAUTH_CALLBACK_STAGE_TOKEN_EXCHANGE_FAILED = "token_exchange_failed"
+OAUTH_CALLBACK_STAGE_PERMISSIONS_FAILED = "permissions_failed"
+OAUTH_CALLBACK_STAGE_CREDENTIAL_PERSISTENCE_FAILED = "credential_persistence_failed"
+OAUTH_CALLBACK_STAGE_FINAL_TRANSACTION_FAILED = "final_transaction_failed"
 _OAUTH_CALLBACK_DIAGNOSTIC_STAGES = frozenset((
     OAUTH_CALLBACK_STAGE_SHORT_RESPONSE_INVALID,
     OAUTH_CALLBACK_STAGE_PERMISSIONS_INVALID,
@@ -62,6 +73,10 @@ class OAuthConfigurationError(ValueError):
 
 class OAuthStateError(ValueError):
     """Raised without state details when authorization cannot be verified."""
+
+    def __init__(self, diagnostic_stage: str = OAUTH_CALLBACK_STAGE_STATE_MISMATCH_OR_SESSION_MISSING):
+        self.diagnostic_stage = diagnostic_stage
+        super().__init__("OAuth authorization could not be verified.")
 
 
 class OAuthExchangeError(ValueError):
@@ -155,10 +170,50 @@ def _validated_redirect_uri(value: str, *, production: bool) -> str:
     return value
 
 
+def _validated_public_origin(value: object) -> str | None:
+    """Accept only the exact canonical public origin, without forwarded-host trust."""
+
+    try:
+        parsed = urlsplit(str(value or "").strip())
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "postenza.app"
+        or port not in (None, 443)
+        or parsed.username
+        or parsed.password
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    return PUBLIC_BASE_URL
+
+
+def resolve_instagram_oauth_redirect_uri(
+    request_origin: object,
+    *,
+    environ: Mapping[str, str] | None = None,
+    production: bool,
+) -> str:
+    """Use the canonical callback only for the exact configured public origin."""
+
+    source = os.environ if environ is None else environ
+    configured_origin = _validated_public_origin(source.get(PUBLIC_BASE_URL_ENV))
+    if configured_origin is not None and str(request_origin).rstrip("/") == configured_origin:
+        return f"{configured_origin}{INSTAGRAM_OAUTH_CALLBACK_PATH}"
+    return _validated_redirect_uri(
+        _required(source, INSTAGRAM_OAUTH_REDIRECT_URI_ENV), production=production
+    )
+
+
 def oauth_configuration_from_environment(
     environ: Mapping[str, str] | None = None,
     *,
     production: bool,
+    redirect_uri: str | None = None,
 ) -> InstagramOAuthConfiguration:
     """Load complete OAuth configuration without exposing sensitive values."""
 
@@ -168,7 +223,8 @@ def oauth_configuration_from_environment(
     # Validate it now, but do not retain it in the authorization URL configuration.
     _required(source, META_APP_SECRET_ENV)
     redirect_uri = _validated_redirect_uri(
-        _required(source, INSTAGRAM_OAUTH_REDIRECT_URI_ENV), production=production
+        redirect_uri or _required(source, INSTAGRAM_OAUTH_REDIRECT_URI_ENV),
+        production=production,
     )
     return InstagramOAuthConfiguration(
         app_id=app_id,
@@ -486,7 +542,7 @@ def _normalized_user_id(user_id: object) -> str:
     try:
         return str(uuid.UUID(str(user_id)))
     except (TypeError, ValueError, AttributeError):
-        raise OAuthStateError("OAuth authorization could not be verified.") from None
+        raise OAuthStateError(OAUTH_CALLBACK_STAGE_STATE_MISMATCH_OR_SESSION_MISSING) from None
 
 
 def issue_instagram_oauth_state(user_id: object, *, now: float | None = None) -> str:
@@ -514,7 +570,7 @@ def consume_instagram_oauth_state(
     record = session.get(INSTAGRAM_OAUTH_STATE_SESSION_KEY)
     current_time = int(time.time() if now is None else now)
     if not isinstance(record, dict):
-        raise OAuthStateError("OAuth authorization could not be verified.")
+        raise OAuthStateError(OAUTH_CALLBACK_STAGE_STATE_MISMATCH_OR_SESSION_MISSING)
 
     expected_state = record.get("state")
     expected_user_id = record.get("user_id")
@@ -529,6 +585,11 @@ def consume_instagram_oauth_state(
         or not hmac.compare_digest(expected_state, supplied_state)
         or not hmac.compare_digest(expected_user_id, normalized_user_id)
     ):
-        raise OAuthStateError("OAuth authorization could not be verified.")
+        stage = (
+            OAUTH_CALLBACK_STAGE_STATE_MISSING
+            if not isinstance(supplied_state, str) or not supplied_state
+            else OAUTH_CALLBACK_STAGE_STATE_MISMATCH_OR_SESSION_MISSING
+        )
+        raise OAuthStateError(stage)
 
     session.pop(INSTAGRAM_OAUTH_STATE_SESSION_KEY, None)

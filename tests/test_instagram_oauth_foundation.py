@@ -19,6 +19,7 @@ from instagram_oauth import (
     consume_instagram_oauth_state,
     issue_instagram_oauth_state,
     oauth_configuration_from_environment,
+    resolve_instagram_oauth_redirect_uri,
 )
 
 
@@ -113,6 +114,40 @@ class InstagramOAuthStartFoundationTest(unittest.TestCase):
         self.assertEqual(parameters["state"], ["test-state"])
         self.assertNotIn("test-meta-app-secret", authorization_url)
         self.assertFalse(hasattr(configuration, "app_secret"))
+
+    def test_public_origin_resolves_canonical_callback_and_other_origins_use_fallback(self):
+        environment = self._oauth_environment()
+        environment["PUBLIC_BASE_URL"] = "https://postenza.app"
+        self.assertEqual(
+            resolve_instagram_oauth_redirect_uri(
+                "https://postenza.app", environ=environment, production=True
+            ),
+            "https://postenza.app/connect/instagram/callback",
+        )
+        self.assertEqual(
+            resolve_instagram_oauth_redirect_uri(
+                "https://social-media-bot-staging-phase5.up.railway.app",
+                environ=environment,
+                production=True,
+            ),
+            environment["INSTAGRAM_OAUTH_REDIRECT_URI"],
+        )
+        self.assertEqual(
+            resolve_instagram_oauth_redirect_uri(
+                "https://evil.example", environ=environment, production=True
+            ),
+            environment["INSTAGRAM_OAUTH_REDIRECT_URI"],
+        )
+
+    def test_public_origin_configuration_rejects_noncanonical_configured_base(self):
+        environment = self._oauth_environment()
+        environment["PUBLIC_BASE_URL"] = "https://postenza.app.evil.example"
+        self.assertEqual(
+            resolve_instagram_oauth_redirect_uri(
+                "https://postenza.app", environ=environment, production=True
+            ),
+            environment["INSTAGRAM_OAUTH_REDIRECT_URI"],
+        )
 
     def test_state_is_random_and_contains_no_meta_credentials(self):
         with self.app.test_request_context("/"):

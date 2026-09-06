@@ -4,6 +4,7 @@ import time
 import unittest
 import uuid
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from unittest.mock import patch
 
 import requests
@@ -87,8 +88,11 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
             browser_session["_csrf_token"] = "callback-csrf-token"
         return client
 
-    def _issue_state(self, client, *, user_id=None, now=None):
-        with client.session_transaction() as browser_session:
+    def _issue_state(self, client, *, user_id=None, now=None, base_url=None):
+        transaction = client.session_transaction(
+            **({"base_url": base_url} if base_url else {})
+        )
+        with transaction as browser_session:
             browser_session[INSTAGRAM_OAUTH_STATE_SESSION_KEY] = {
                 "state": "state-for-callback-test",
                 "user_id": str(user_id or self.user_id),
@@ -136,6 +140,44 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
             self.assertNotIn(short_token, str(dict(browser_session)))
             self.assertNotIn(long_token, str(dict(browser_session)))
         self._assert_no_database_writes()
+
+    def test_public_start_and_callback_use_identical_canonical_redirect_uri(self):
+        client = self.app.test_client()
+        with client.session_transaction(base_url="https://postenza.app") as browser_session:
+            browser_session["user_id"] = str(self.user_id)
+            browser_session["_csrf_token"] = "callback-csrf-token"
+        environment = self._oauth_environment()
+        environment["PUBLIC_BASE_URL"] = "https://postenza.app"
+        with patch.dict("os.environ", environment, clear=False):
+            start = client.post(
+                "/connect/instagram",
+                base_url="https://postenza.app",
+                data={"csrf_token": "callback-csrf-token"},
+                follow_redirects=False,
+            )
+        authorization_parameters = parse_qs(urlparse(start.headers["Location"]).query)
+        authorization_redirect_uri = authorization_parameters["redirect_uri"][0]
+        with patch.dict("os.environ", environment, clear=False), patch(
+            "auth.complete_instagram_token_exchange",
+            side_effect=lambda code, configuration: (
+                self.assertEqual(code, "authorization-code-must-not-leak"),
+                self.assertEqual(configuration.redirect_uri, authorization_redirect_uri),
+                InstagramOAuthTokenResult("long-token-must-not-leak", None, None),
+            )[-1],
+        ), patch("auth.discover_instagram_account", side_effect=OAuthDiscoveryError()):
+            response = client.get(
+                "/connect/instagram/callback",
+                base_url="https://postenza.app",
+                query_string={
+                    "state": self._issue_state(client, base_url="https://postenza.app"),
+                    "code": "authorization-code-must-not-leak",
+                },
+            )
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(
+            authorization_redirect_uri,
+            "https://postenza.app/connect/instagram/callback",
+        )
 
     def test_invalid_expired_replayed_cross_user_and_cross_session_state_make_zero_calls(self):
         authorization_code = "authorization-code-must-not-leak"
@@ -670,7 +712,11 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
         rendered = response.get_data(as_text=True) + response.headers.get("Location", "")
         for sensitive_value in (authorization_code, secret, sensitive_url):
             self.assertNotIn(sensitive_value, rendered)
-        warning.assert_called_once_with(OAUTH_CALLBACK_STAGE_SHORT_RESPONSE_INVALID)
+        self.assertEqual(warning.call_args_list[0].args, ("token_exchange_failed",))
+        self.assertEqual(
+            warning.call_args_list[1].args,
+            (OAUTH_CALLBACK_STAGE_SHORT_RESPONSE_INVALID,),
+        )
         self._assert_no_database_writes()
 
     def test_callback_emits_safe_long_exchange_diagnostics_in_formatted_warning(self):
@@ -699,14 +745,15 @@ class InstagramOAuthCallbackTest(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 502)
-        warning.assert_called_once_with(
+        self.assertEqual(warning.call_args_list[0].args, ("token_exchange_failed",))
+        self.assertEqual(warning.call_args_list[1].args, (
             "oauth_long_exchange_failed "
             "provider_http_status=400 "
             "provider_error_classification=provider_error_metadata "
             "provider_error_type=OAuthException "
             "provider_error_code=190 "
             "provider_error_subcode=460",
-        )
+        ))
         for sensitive_value in (
             authorization_code,
             access_token,

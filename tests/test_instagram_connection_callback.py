@@ -75,9 +75,12 @@ class InstagramConnectionCallbackTest(unittest.TestCase):
         self.engine.dispose()
         self.temp_dir.cleanup()
 
-    def _client_with_state(self):
+    def _client_with_state(self, *, base_url=None):
         client = self.app.test_client()
-        with client.session_transaction() as browser_session:
+        transaction = client.session_transaction(
+            **({"base_url": base_url} if base_url else {})
+        )
+        with transaction as browser_session:
             browser_session["user_id"] = str(self.user_id)
             browser_session["_csrf_token"] = "connection-callback-csrf-token"
             browser_session[INSTAGRAM_OAUTH_STATE_SESSION_KEY] = {
@@ -86,6 +89,23 @@ class InstagramConnectionCallbackTest(unittest.TestCase):
                 "issued_at": int(time.time()),
             }
         return client
+
+    def test_successful_public_callback_redirects_back_to_postenza(self):
+        client = self._client_with_state(base_url="https://postenza.app")
+        environment = dict(self.environment, PUBLIC_BASE_URL="https://postenza.app")
+        with patch.dict("os.environ", environment, clear=False), patch(
+            "auth.complete_instagram_token_exchange", return_value=self._token_result()
+        ), patch("auth.discover_instagram_account", return_value=self._discovery()), patch(
+            "database.instagram_connection.subscribe_oauth_account_webhooks", return_value=True
+        ):
+            response = client.get(
+                "/connect/instagram/callback",
+                base_url="https://postenza.app",
+                query_string={"state": "connection-callback-state", "code": self.authorization_code},
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.headers["Location"].startswith("https://postenza.app/app?account="))
 
     def _token_result(self):
         return InstagramOAuthTokenResult(
@@ -259,7 +279,11 @@ class InstagramConnectionCallbackTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 502)
         self.assertEqual(response.get_data(as_text=True), "Instagram connection could not be completed.")
-        warning.assert_called_once_with(OAUTH_CALLBACK_STAGE_CONNECTION_PRECOMMIT_FAILED)
+        self.assertEqual(warning.call_args_list[0].args, ("credential_persistence_failed",))
+        self.assertEqual(
+            warning.call_args_list[1].args,
+            (OAUTH_CALLBACK_STAGE_CONNECTION_PRECOMMIT_FAILED,),
+        )
         logged = " ".join(str(argument) for call in warning.call_args_list for argument in call.args)
         for sensitive_value in (
             self.authorization_code,
