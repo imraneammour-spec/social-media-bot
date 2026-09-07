@@ -155,9 +155,10 @@ def resolve_instagram_account_route(
             and hmac.compare_digest(external_id, legacy_id)
             and hmac.compare_digest(str(account.instagram_user_id), legacy_id)
         )
-        if is_exact_legacy_account:
-            if account.connection_status != LEGACY_CONNECTION_STATUS:
-                raise _route_unavailable()
+        if (
+            is_exact_legacy_account
+            and account.connection_status == LEGACY_CONNECTION_STATUS
+        ):
             return InstagramAccountRoute(
                 instagram_account_id=account.id,
                 connection_mode="legacy_environment",

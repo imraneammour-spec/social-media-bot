@@ -166,6 +166,52 @@ class AccountRuntimeResolverTest(unittest.TestCase):
                 self.assertEqual(route.instagram_account_id, self.account_a_id)
                 self.assertEqual(route.connection_mode, "oauth")
 
+    def test_connected_oauth_route_wins_when_its_id_matches_legacy_configuration(self):
+        with self.Session.begin() as session:
+            account = session.get(InstagramAccount, self.legacy_account_id)
+            account.connection_status = "connected"
+            account.provider = "instagram"
+            account.last_connection_error_code = None
+            account.token_expires_at = datetime.now(timezone.utc) + timedelta(days=1)
+
+        with patch(
+            "database.account_runtime.credential_keyring_from_environment",
+            side_effect=AssertionError("routing must not load a keyring"),
+        ), patch(
+            "database.account_runtime.decrypt_access_token",
+            side_effect=AssertionError("routing must not decrypt a credential"),
+        ):
+            route = self._resolve_route(self.legacy_external_id)
+
+        self.assertEqual(route.instagram_account_id, self.legacy_account_id)
+        self.assertEqual(route.connection_mode, "oauth")
+        rendered = repr(route)
+        for secret in (self.legacy_token, self.key, "KEY_2026_01"):
+            self.assertNotIn(secret, rendered)
+
+    def test_legacy_id_collision_still_rejects_unusable_oauth_lifecycle(self):
+        mutations = (
+            {"connection_status": "disconnected"},
+            {"connection_status": "connected", "last_connection_error_code": "token_invalid"},
+            {
+                "connection_status": "connected",
+                "token_expires_at": datetime.now(timezone.utc) - timedelta(seconds=1),
+            },
+            {"connection_status": "connected", "provider": "another_provider"},
+        )
+        for values in mutations:
+            with self.subTest(values=values):
+                with self.Session.begin() as session:
+                    account = session.get(InstagramAccount, self.legacy_account_id)
+                    account.connection_status = "connected"
+                    account.provider = "instagram"
+                    account.last_connection_error_code = None
+                    account.token_expires_at = None
+                    for field, value in values.items():
+                        setattr(account, field, value)
+
+                self._assert_route_unavailable(self.legacy_external_id)
+
     def test_legacy_route_requires_usable_legacy_configuration(self):
         messages = [
             self._assert_route_unavailable(

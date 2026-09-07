@@ -202,6 +202,41 @@ class WebhookTenantRoutingTest(unittest.TestCase):
         rendered = " ".join(messages)
         self.assertNotIn(self.environment["INSTAGRAM_ACCESS_TOKEN"], rendered)
 
+    def test_connected_oauth_entry_matching_legacy_id_dispatches_to_its_oauth_account(self):
+        with self.session_factory.begin() as session:
+            account = session.scalar(select(InstagramAccount).where(
+                InstagramAccount.instagram_user_id == self.module.INSTAGRAM_USER_ID
+            ))
+            collision_account_id = account.id
+            account.connection_status = "connected"
+            account.provider = "instagram"
+            account.last_connection_error_code = None
+            account.token_expires_at = datetime.now(timezone.utc) + timedelta(days=1)
+
+        entry = {
+            "id": self.module.INSTAGRAM_USER_ID,
+            "changes": [{"field": "comments", "value": {"id": "oauth-collision"}}],
+        }
+        payload = {"entry": [entry]}
+        with patch.object(self.module, "process_oauth_webhook_entry") as oauth_handler, patch.object(
+            self.module, "process_comment"
+        ) as legacy_handler, patch(
+            "database.account_runtime.credential_keyring_from_environment",
+            side_effect=AssertionError("OAuth webhook routing must not load key material"),
+        ), patch(
+            "database.account_runtime.decrypt_access_token",
+            side_effect=AssertionError("OAuth webhook routing must not decrypt credentials"),
+        ):
+            self.module.process_webhook_background(payload, "http://localhost")
+
+        oauth_handler.assert_called_once_with(
+            entry,
+            InstagramAccountRoute(collision_account_id, "oauth"),
+            self.module.INSTAGRAM_USER_ID,
+            "http://localhost",
+        )
+        legacy_handler.assert_not_called()
+
     def test_legacy_route_does_not_log_oauth_route_confirmation(self):
         payload = {
             "entry": [{
