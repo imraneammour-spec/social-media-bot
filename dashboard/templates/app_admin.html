@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#101828">
+    <title>Admin | Postenza</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='brand/postenza-favicon-32.png') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='tenant_dashboard.css') }}">
+</head>
+<body class="tenant-dashboard admin-dashboard">
+    <a class="skip-link" href="#admin-content">Skip to content</a>
+    <main id="admin-content" class="admin-shell" tabindex="-1">
+        <header class="admin-header">
+            <div><p class="eyebrow">Internal operations</p><h1>Postenza Admin</h1><p class="muted">Read-only product visibility for {{ current_user.display_name }}.</p></div>
+            <a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_overview') }}">Back to workspace</a>
+        </header>
+
+        <dl class="summary-grid admin-summary" aria-label="Product summary">
+            <div class="summary-card card"><dt>Total registered users</dt><dd data-admin-metric="registered-users">{{ admin.total_registered_users }}</dd></div>
+            <div class="summary-card card"><dt>Connected Instagram accounts</dt><dd data-admin-metric="connected-instagram">{{ admin.connected_instagram_accounts }}</dd></div>
+            <div class="summary-card card"><dt>Active users</dt><dd data-admin-metric="active-users">Unavailable</dd><p class="helper-text">Active users are unavailable until a persisted activity definition exists.</p></div>
+        </dl>
+
+        <section class="card admin-section">
+            <div class="section-heading"><div><p class="eyebrow">Accounts</p><h2>Recent signups</h2></div><span class="status-pill status-neutral">Latest {{ admin.recent_signups | length }}</span></div>
+            <div class="admin-table-wrap">
+                <table class="admin-table">
+                    <thead><tr><th scope="col">User</th><th scope="col">Created</th><th scope="col">Instagram accounts</th></tr></thead>
+                    <tbody>{% for signup in admin.recent_signups %}<tr><td><strong>{{ signup.display_name }}</strong><span>{{ signup.email }}</span></td><td>{{ display_time(signup.created_at) }}</td><td>{{ signup.owned_instagram_accounts }} owned / {{ signup.connected_instagram_accounts }} connected</td></tr>{% else %}<tr><td colspan="3">No registered users yet.</td></tr>{% endfor %}</tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="admin-future-grid" aria-label="Future product data">
+            <article class="card admin-section"><p class="eyebrow">Plans</p><h2>Plan distribution</h2><p class="empty-state">Plan distribution is unavailable until plan data is persisted.</p></article>
+            <article class="card admin-section"><p class="eyebrow">Attribution</p><h2>Onboarding sources</h2><p class="empty-state">Onboarding source attribution is unavailable until source data is persisted.</p></article>
+        </section>
+    </main>
+</body>
+</html>

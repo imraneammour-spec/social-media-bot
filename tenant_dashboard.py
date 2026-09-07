@@ -28,12 +28,14 @@ from auth import (
     csrf_token,
     current_user_has_legacy_workspace_access,
     get_current_user,
+    login_required,
     request_csrf_token,
     resolve_owned_account_action_reference,
     USER_SESSION_KEY,
     validate_csrf_token,
 )
 from database import tenant_dashboard as tenant_data
+from database.admin_dashboard import admin_snapshot
 from database.tenant_insights import direct_interactions
 from dashboard.presentation import display_time, public_image_url
 from dashboard.i18n import LOCALE_META, LOCALE_SESSION_KEY, locale_context, normalize_locale, translate, session_locale
@@ -446,6 +448,7 @@ def _render_page(
     locale = locale_context(session_locale(browser_session))
     if "internal_prompt_access" not in context:
         context["internal_prompt_access"] = current_user_has_legacy_workspace_access()
+    context["internal_admin_access"] = bool(context["internal_prompt_access"])
     return _cache_control(
         render_template(
             template_name,
@@ -1135,6 +1138,31 @@ def register_tenant_dashboard(app) -> None:
     @dashboard.after_request
     def tenant_no_store(response):
         return _cache_control(response)
+
+    @dashboard.get("/admin")
+    @login_required
+    def app_admin():
+        if not current_user_has_legacy_workspace_access():
+            return make_response("Forbidden.", 403)
+
+        user = get_current_user()
+        state = _auth_state()
+        session_factory = getattr(state, "session_factory", None)
+        if user is None or session_factory is None:
+            return _workspace_unavailable()
+
+        try:
+            with session_factory() as session:
+                snapshot = admin_snapshot(session)
+        except SQLAlchemyError:
+            return _workspace_unavailable()
+
+        return render_template(
+            "app_admin.html",
+            current_user=user,
+            admin=snapshot,
+            display_time=lambda value: display_time(value, "en"),
+        )
 
     @dashboard.get("")
     @_require_tenant
