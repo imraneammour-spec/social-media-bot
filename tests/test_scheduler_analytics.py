@@ -692,7 +692,7 @@ class SchedulerAnalyticsDashboardTest(unittest.TestCase):
         self._login_as(self.owner_a)
         ref = self._reference(self.owner_a, self.account_a)
         page = self.client.get(f"/app/analytics?account={ref}").get_data(as_text=True)
-        self.assertIn('aria-current="page">Analytics', page)
+        self.assertRegex(page, r'<a href="/app/analytics[^"\s]*" data-nav="analytics" aria-current="page"><svg[^>]*>.*?</svg>Analytics</a>')
 
     # ==================================================================
     # REGRESSION — existing pages still work
