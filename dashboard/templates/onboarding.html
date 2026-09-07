@@ -3,11 +3,11 @@
 {% block auth_content %}
 <div class="onboarding-flow">
 <nav class="onboarding-progress" aria-label="{{ t('Onboarding progress') }}">
-    <p>{{ t('Step {current} of 4', current=onboarding_step_number) }}</p>
-    <ol>
+    <p class="onboarding-progress-label">{{ t('Step {current} of 4', current=onboarding_step_number) }}</p>
+    <ol class="onboarding-steps">
         {% for step_name, step_label in [('profile', 'Your work'), ('source', 'Discovery'), ('plan', 'Plan preference'), ('instagram', 'Instagram')] %}
         <li class="{% if loop.index < onboarding_step_number %}is-complete{% elif loop.index == onboarding_step_number %}is-current{% endif %}" {% if loop.index == onboarding_step_number %}aria-current="step"{% endif %}>
-            <span>{{ loop.index }}</span><small>{{ t(step_label) }}</small>
+            <span class="onboarding-step-dot"><span class="onboarding-step-num">{{ loop.index }}</span><span class="onboarding-step-check" aria-hidden="true">&#10003;</span></span><small>{{ t(step_label) }}</small>
         </li>
         {% endfor %}
     </ol>
@@ -45,7 +45,7 @@
     <fieldset><legend class="visually-hidden">{{ t('Plan preference') }}</legend><div class="plan-grid">
         {% for value, details in plan_options %}<label class="choice-card plan-card"><input type="radio" name="selected_plan" value="{{ value }}" {% if submitted.selected_plan == value %}checked{% endif %} required><span><strong>{{ t(details[0]) }}</strong><small>{{ t(details[1]) }}</small><em>{{ t('Pricing coming soon') }}</em></span></label>{% endfor %}
     </div></fieldset>
-    <p class="auth-note">{{ t('Plan selection is informational only. No billing or entitlement changes are applied.') }}</p>
+    <p class="auth-note onboarding-note">{{ t('Plan selection is informational only. No billing or entitlement changes are applied.') }}</p>
     <button class="button button-primary" type="submit">{{ t('Finish setup') }}</button>
 </form>
 {% else %}
