@@ -15,11 +15,12 @@
     <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='brand/postenza-favicon-32.png') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='landing.css') }}">
 </head>
-<body>
+<body id="top">
+    <a class="skip-link" href="#main-content">{{ t('Skip to content') }}</a>
     <header class="site-header">
         <nav class="site-nav landing-container" aria-label="Postenza">
             <a class="site-brand" href="#top"><img src="{{ url_for('static', filename='brand/postenza-logo-light.png') }}" alt="Postenza"></a>
-            <button class="nav-toggle" type="button" aria-controls="landing-navigation" aria-expanded="false" aria-label="{{ t('landing_menu') }}"><span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"></span></button>
+            <button class="nav-toggle" type="button" aria-controls="landing-navigation" aria-expanded="false" aria-label="{{ t('landing_menu') }}" data-open-label="{{ t('landing_close_menu') }}" data-closed-label="{{ t('landing_menu') }}"><span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"></span></button>
             <div id="landing-navigation" class="nav-panel" data-open="false">
                 <div class="nav-links">
                     <a href="#features">{{ t('landing_features') }}</a><a href="#how-it-works">{{ t('landing_how_it_works') }}</a><a href="#automation">{{ t('landing_automation') }}</a><a href="#faq">{{ t('landing_faq') }}</a>
@@ -29,10 +30,10 @@
             </div>
         </nav>
     </header>
-    <main id="top">
+    <main id="main-content">
         <section class="hero landing-container">
             <div class="hero-copy"><p class="eyebrow">{{ t('social_tagline') }}</p><h1>{{ t('landing_hero_title') }}</h1><p class="hero-lede">{{ t('landing_hero_copy') }}</p><div class="button-row"><a class="button button-primary" href="{{ url_for('register') }}">{{ t('landing_get_started') }}</a><a class="button button-secondary" href="#how-it-works">{{ t('landing_see_how') }}</a></div></div>
-            <div class="product-stage" aria-label="{{ t('landing_eyebrow') }}"><div class="browser-frame"><div class="browser-top"><span></span><span></span><span></span><b>Postenza</b></div><div class="mockup-body"><aside><img src="{{ url_for('static', filename='brand/postenza-icon.png') }}" alt=""><i></i><i></i><i></i><i></i></aside><section><div class="mockup-heading"><div><small>{{ t('instagram_workspace') }}</small><strong>{{ t('overview') }}</strong></div><em>{{ t('landing_strip_instagram') }}</em></div><div class="mockup-stats"><div><small>{{ t('landing_schedule') }}</small><b>04</b></div><div><small>{{ t('landing_publish') }}</small><b>12</b></div><div><small>{{ t('landing_automation') }}</small><b>On</b></div></div><div class="mockup-card"><div class="post-thumb"></div><div><small>{{ t('landing_image_only') }}</small><b>{{ t('landing_schedule_title') }}</b><p>{{ t('landing_schedule_copy') }}</p></div><span>{{ t('landing_track') }}</span></div></section></div></div></div>
+            <div class="product-stage" aria-label="{{ t('landing_eyebrow') }}"><div class="browser-frame"><div class="browser-top"><span></span><span></span><span></span><b>Postenza</b></div><div class="mockup-body"><aside><img src="{{ url_for('static', filename='brand/postenza-icon.png') }}" alt=""><i></i><i></i><i></i><i></i></aside><section><div class="mockup-heading"><div><small>{{ t('instagram_workspace') }}</small><strong>{{ t('overview') }}</strong></div><em>{{ t('landing_strip_instagram') }}</em></div><div class="mockup-stats"><div><small>{{ t('landing_schedule') }}</small><b>04</b></div><div><small>{{ t('landing_publish') }}</small><b>12</b></div><div><small>{{ t('landing_automation') }}</small><b>{{ t('landing_status_on') }}</b></div></div><div class="mockup-card"><div class="post-thumb"></div><div><small>{{ t('landing_image_only') }}</small><b>{{ t('landing_schedule_title') }}</b><p>{{ t('landing_schedule_copy') }}</p></div><span>{{ t('landing_track') }}</span></div></section></div></div></div>
         </section>
         <section class="value-strip"><div class="landing-container">{% for key in ('landing_strip_instagram', 'landing_strip_publish', 'landing_strip_controls', 'landing_strip_accounts') %}<span>✦ {{ t(key) }}</span>{% endfor %}</div></section>
         <section id="features" class="section landing-container"><div class="section-intro"><p class="eyebrow">{{ t('landing_eyebrow') }}</p><h2>{{ t('landing_features') }}</h2></div><div class="feature-grid">{% for title, copy, icon in [('landing_schedule_title', 'landing_schedule_copy', '01'), ('landing_replies_title', 'landing_replies_copy', '02'), ('landing_followups_title', 'landing_followups_copy', '03'), ('landing_smart_title', 'landing_smart_copy', '04'), ('landing_engagement_title', 'landing_engagement_copy', '05'), ('landing_accounts_title', 'landing_accounts_copy', '06')] %}<article class="feature-card"><span>{{ icon }}</span><h3>{{ t(title) }}</h3><p>{{ t(copy) }}</p></article>{% endfor %}</div></section>
@@ -44,6 +45,32 @@
         <section class="final-cta"><div class="landing-container"><img src="{{ url_for('static', filename='brand/postenza-icon.png') }}" alt=""><div><h2>{{ t('landing_final_title') }}</h2><p>{{ t('landing_final_copy') }}</p></div><div class="button-row"><a class="button button-primary" href="{{ url_for('register') }}">{{ t('landing_get_started') }}</a><a class="button button-secondary" href="{{ url_for('login') }}">{{ t('landing_login') }}</a></div></div></section>
     </main>
     <footer class="site-footer"><div class="landing-container"><div><img src="{{ url_for('static', filename='brand/postenza-logo-dark.png') }}" alt="Postenza"><p>{{ t('social_tagline') }}</p></div><div><b>{{ t('landing_product') }}</b><a href="#features">{{ t('landing_features') }}</a><a href="{{ url_for('login') }}">{{ t('landing_login') }}</a><a href="{{ url_for('register') }}">{{ t('landing_get_started') }}</a></div><div><b>{{ t('landing_faq') }}</b><a href="{{ url_for('privacy') }}">{{ t('landing_privacy') }}</a><a href="{{ url_for('terms') }}">{{ t('landing_terms') }}</a><a href="{{ url_for('deletion') }}">{{ t('landing_data_deletion') }}</a></div></div></footer>
-    <script>const toggle=document.querySelector('.nav-toggle'),panel=document.querySelector('.nav-panel');toggle.addEventListener('click',()=>{const open=toggle.getAttribute('aria-expanded')==='true';toggle.setAttribute('aria-expanded',String(!open));toggle.setAttribute('aria-label',open?'{{ t("landing_menu") }}':'{{ t("landing_close_menu") }}');panel.dataset.open=String(!open)});</script>
+    <script>
+        (() => {
+            const toggle = document.querySelector('.nav-toggle');
+            const panel = document.querySelector('.nav-panel');
+            const mobile = window.matchMedia('(max-width: 720px)');
+            let open = false;
+            const setOpen = (requested, restoreFocus = false) => {
+                open = mobile.matches && requested;
+                document.body.classList.toggle('landing-menu-open', open);
+                toggle.setAttribute('aria-expanded', String(open));
+                toggle.setAttribute('aria-label', open ? toggle.dataset.openLabel : toggle.dataset.closedLabel);
+                panel.dataset.open = String(open);
+                panel.inert = mobile.matches && !open;
+                if (restoreFocus) toggle.focus();
+            };
+            toggle.addEventListener('click', () => setOpen(!open));
+            panel.querySelectorAll('a[href]').forEach(link => link.addEventListener('click', () => setOpen(false)));
+            document.addEventListener('keydown', event => {
+                if (open && event.key === 'Escape') {
+                    event.preventDefault();
+                    setOpen(false, true);
+                }
+            });
+            mobile.addEventListener('change', () => setOpen(false, mobile.matches && panel.contains(document.activeElement)));
+            setOpen(false);
+        })();
+    </script>
 </body>
 </html>

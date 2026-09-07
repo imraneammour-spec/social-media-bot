@@ -298,6 +298,37 @@ class ProductPolishTest(unittest.TestCase):
             empty_followups,
         )
 
+    def test_account_and_overview_states_use_clear_nonredundant_status_presentation(self):
+        self.login()
+        accounts = self.get("/app/accounts").get_data(as_text=True)
+        self.assertIn(
+            '<span class="status-pill status-primary">Currently selected</span>',
+            accounts,
+        )
+        self.assertNotIn(">Currently selected</a>", accounts)
+
+        overview = self.get("/app").get_data(as_text=True)
+        self.assertIn('class="status-pill status-success">Completed</span>', overview)
+        self.assertIn('class="status-pill status-warning">Waiting</span>', overview)
+
+    def test_followup_pagination_uses_the_shared_button_presentation(self):
+        self.login()
+        now = datetime.now(timezone.utc)
+        with self.Session.begin() as session:
+            for index in range(25):
+                session.add(InstagramOAuthFollowupJob(
+                    instagram_account_id=self.account_a1.id,
+                    source_message_id=f"pagination-source-{index}",
+                    recipient_id=f"pagination-recipient-{index}",
+                    state="pending",
+                    run_at=now + timedelta(minutes=index),
+                ))
+        page = self.get("/app/followups").get_data(as_text=True)
+        self.assertRegex(
+            page,
+            r'<a class="button button-secondary" href="[^"]*page=2[^"]*">Next</a>',
+        )
+
     def test_rendered_scripts_compile_in_every_locale(self):
         node = shutil.which("node")
         if not node:

@@ -15,5 +15,5 @@
 </article>
 {% else %}<p class="empty-state">{{ t('No follow-ups yet. Scheduled and sent follow-ups will appear here.') }}</p>{% endfor %}
 </section>
-<nav aria-label="{{ t('Follow-up pagination') }}">{% if scheduler_page.has_previous %}<a href="{{ url_for('tenant_dashboard.app_followups', account=selected_account.selection_ref, status=selected_status, page=scheduler_page.page - 1) }}">{{ t('Previous') }}</a>{% endif %}<span>{{ t("Page {number}", number=scheduler_page.page) }}</span>{% if scheduler_page.has_next %}<a href="{{ url_for('tenant_dashboard.app_followups', account=selected_account.selection_ref, status=selected_status, page=scheduler_page.page + 1) }}">{{ t('Next') }}</a>{% endif %}</nav>
+<nav aria-label="{{ t('Follow-up pagination') }}">{% if scheduler_page.has_previous %}<a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_followups', account=selected_account.selection_ref, status=selected_status, page=scheduler_page.page - 1) }}">{{ t('Previous') }}</a>{% endif %}<span>{{ t("Page {number}", number=scheduler_page.page) }}</span>{% if scheduler_page.has_next %}<a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_followups', account=selected_account.selection_ref, status=selected_status, page=scheduler_page.page + 1) }}">{{ t('Next') }}</a>{% endif %}</nav>
 {% endblock %}

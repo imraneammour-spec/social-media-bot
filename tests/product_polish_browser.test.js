@@ -8,7 +8,7 @@ const vm = require('node:vm');
 function script(name) {
   const html = fs.readFileSync(path.join(__dirname, '../dashboard/templates', name), 'utf8');
   return [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].at(-1)[1]
-    .replace(/{{\s*t\('([^']*)'\)\|tojson\s*}}/g, (_, text) => JSON.stringify(text));
+    .replace(/{{\s*t\((['"])(.*?)\1\)(?:\|tojson)?\s*}}/g, (_, quote, text) => JSON.stringify(text));
 }
 function element(document) {
   return {
@@ -66,6 +66,47 @@ test('mobile menu closes with backdrop/Escape, traps focus, and resets on deskto
   assert.match(css, /html\[dir="rtl"\]/);
 });
 
+test('landing mobile menu closes accessibly and resets outside mobile width', () => {
+  const handlers = {}, document = { addEventListener: (type, fn) => { handlers[type] = fn; } };
+  const classes = new Set();
+  document.body = { classList: { toggle: (name, on) => on ? classes.add(name) : classes.delete(name) } };
+  const toggle = element(document), panel = element(document), link = element(document);
+  toggle.attributes['aria-expanded'] = 'false';
+  toggle.dataset = { openLabel: 'Close navigation', closedLabel: 'Open navigation' };
+  panel.dataset.open = 'false';
+  panel.querySelectorAll = () => [link];
+  panel.contains = value => value === link;
+  document.querySelector = selector => ({ '.nav-toggle': toggle, '.nav-panel': panel })[selector];
+  const mobile = { matches: true, addEventListener: (_, fn) => { mobile.change = fn; } };
+  const window = { matchMedia: () => mobile };
+
+  vm.runInNewContext(script('landing.html'), { document, window });
+
+  assert.equal(typeof handlers.keydown, 'function');
+  assert.equal(panel.inert, true);
+  toggle.listeners.click();
+  assert.equal(panel.dataset.open, 'true');
+  assert.equal(panel.inert, false);
+  assert.equal(toggle.attributes['aria-label'], 'Close navigation');
+  assert.equal(classes.has('landing-menu-open'), true);
+  handlers.keydown({ key: 'Escape', preventDefault() {} });
+  assert.equal(panel.dataset.open, 'false');
+  assert.equal(document.activeElement, toggle);
+  toggle.listeners.click();
+  link.listeners.click();
+  assert.equal(panel.dataset.open, 'false');
+  toggle.listeners.click();
+  mobile.matches = false;
+  mobile.change();
+  assert.equal(toggle.attributes['aria-expanded'], 'false');
+  assert.equal(panel.inert, false);
+  assert.equal(classes.has('landing-menu-open'), false);
+
+  const css = fs.readFileSync(path.join(__dirname, '../dashboard/static/landing.css'), 'utf8');
+  assert.match(css, /\.skip-link:focus/);
+  assert.match(css, /\.landing-menu-open\{overflow:hidden\}/);
+});
+
 test('mode disclosure switches Message and Link panels without erasing either modes edits', () => {
   const document = {}, mode = element(document), destination = element(document);
   const messageOpening = element(document), linkOpening = element(document);
@@ -116,4 +157,10 @@ test('preview rejects unsafe syntax and reports loading/success/failure without 
   preview.listeners.error();
   assert.equal(preview.hidden, true);
   assert.match(status.textContent, /could not load/);
+});
+
+test('narrow account layouts and long identity labels cannot force horizontal overflow', () => {
+  const css = fs.readFileSync(path.join(__dirname, '../dashboard/static/tenant_dashboard.css'), 'utf8');
+  assert.match(css, /overflow-wrap:anywhere/);
+  assert.match(css, /@media\(max-width:620px\).*\.account-grid\{grid-template-columns:minmax\(0,1fr\)\}/s);
 });

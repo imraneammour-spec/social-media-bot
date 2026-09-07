@@ -110,6 +110,8 @@ class LandingPageTest(unittest.TestCase):
                 self.assertIn('href="/static/legal.css"', page)
                 self.assertIn('href="/static/brand/postenza-favicon-32.png"', page)
                 self.assertIn('href="/"', page)
+                self.assertIn('<a class="skip-link" href="#main-content">Skip to content</a>', page)
+                self.assertIn('<main id="main-content" tabindex="-1">', page)
                 response.close()
 
     def test_landing_uses_existing_session_locale_and_rtl(self):
@@ -144,11 +146,26 @@ class LandingPageTest(unittest.TestCase):
     def test_landing_has_accessible_mobile_navigation_and_seo_metadata(self):
         page = self.client.get("/").get_data(as_text=True)
 
+        self.assertIn('<a class="skip-link" href="#main-content">', page)
+        self.assertIn('<main id="main-content">', page)
         self.assertIn('aria-controls="landing-navigation"', page)
         self.assertIn('aria-expanded="false"', page)
+        self.assertIn('data-open-label="Close navigation"', page)
+        self.assertIn('data-closed-label="Open navigation"', page)
         self.assertIn('name="description"', page)
         self.assertIn('property="og:title"', page)
         self.assertIn('rel="canonical"', page)
+
+    def test_landing_mockup_status_is_localized(self):
+        expected = {
+            "en": "On",
+            "fr": "Activée",
+            "ar": "مفعّلة",
+        }
+        for locale, label in expected.items():
+            with self.subTest(locale=locale):
+                page = self._page_for_locale(locale)
+                self.assertIn(f"<b>{label}</b>", page)
 
     def test_landing_metadata_uses_configured_https_origin_behind_proxy(self):
         with patch.object(

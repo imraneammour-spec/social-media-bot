@@ -78,3 +78,5 @@ html[dir="rtl"] .tenant-dashboard .workspace-nav a,html[dir="rtl"] .tenant-dashb
 .sidebar-legal{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:10px}
 .sidebar-legal a{color:var(--sidebar-muted);font-size:.75rem;font-weight:600;text-decoration:underline;text-underline-offset:2px}
 .sidebar-legal a:hover,.sidebar-legal a:focus-visible{color:#fff}
+.page-heading,.account-switcher,.account-switcher a,.account-state-card h2,.sidebar-user{min-width:0;overflow-wrap:anywhere}
+@media(max-width:620px){.account-grid{grid-template-columns:minmax(0,1fr)}}
