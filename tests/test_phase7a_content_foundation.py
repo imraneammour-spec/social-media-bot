@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import create_engine
@@ -12,6 +13,7 @@ from database.content import (
     list_content_drafts,
     mark_content_ready,
     normalize_content_type,
+    recover_failed_content_draft,
     update_content_draft,
 )
 from database.models import Base, InstagramAccount, InstagramContentItem, User
@@ -158,6 +160,105 @@ class Phase7AContentFoundationTest(unittest.TestCase):
         self.assertEqual(normalize_content_type("REEL"), "reel")
         self.assertIn("image", CONTENT_TYPES)
         self.assertIn("reel", CONTENT_TYPES)
+
+    def test_recover_failed_content_draft_returns_owned_failed_item_to_draft(self):
+        with self.session_factory.begin() as session:
+            failed = InstagramContentItem(
+                instagram_account_id=self.account_a_id,
+                status="failed",
+                content_type="image",
+                caption="Recover me",
+                media_url="https://images.example.com/recover.jpg",
+                cover_url="https://images.example.com/recover-cover.jpg",
+                alt_text="Recover alt",
+                metadata_json={"content_type": "image", "keep": True},
+                scheduled_for=datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc),
+                publish_error_code="provider_rejected",
+                provider_request_may_have_been_sent=True,
+            )
+            session.add(failed)
+            session.flush()
+
+            recovered = recover_failed_content_draft(session, self.account_a_id, failed.id)
+
+            self.assertEqual(recovered.status, "draft")
+            # Caption / media URL / metadata are preserved for the Draft editor.
+            self.assertEqual(recovered.caption, "Recover me")
+            self.assertEqual(recovered.media_url, "https://images.example.com/recover.jpg")
+            self.assertEqual(recovered.cover_url, "https://images.example.com/recover-cover.jpg")
+            self.assertEqual(recovered.alt_text, "Recover alt")
+            self.assertEqual(recovered.metadata_json, {"content_type": "image", "keep": True})
+            # Scheduled/publishing lifecycle metadata must not linger on a Draft.
+            self.assertIsNone(recovered.scheduled_for)
+            self.assertIsNone(recovered.publish_error_code)
+            self.assertIsNone(recovered.published_at)
+            self.assertIsNone(recovered.provider_media_id)
+            self.assertFalse(recovered.provider_request_may_have_been_sent)
+
+    def test_recover_failed_content_draft_rejects_nonfailed_and_cross_account(self):
+        with self.session_factory.begin() as session:
+            failed = InstagramContentItem(
+                instagram_account_id=self.account_a_id,
+                status="failed",
+                content_type="image",
+                caption="Keep failed",
+                media_url="https://images.example.com/failed.jpg",
+                scheduled_for=datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc),
+                publish_error_code="provider_rejected",
+            )
+            ready = InstagramContentItem(
+                instagram_account_id=self.account_a_id,
+                status="ready",
+                content_type="image",
+                caption="Ready row",
+                media_url="https://images.example.com/ready.jpg",
+            )
+            scheduled = InstagramContentItem(
+                instagram_account_id=self.account_a_id,
+                status="scheduled",
+                content_type="image",
+                caption="Scheduled row",
+                media_url="https://images.example.com/scheduled.jpg",
+                scheduled_for=datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc),
+            )
+            published = InstagramContentItem(
+                instagram_account_id=self.account_a_id,
+                status="published",
+                content_type="image",
+                caption="Published row",
+                media_url="https://images.example.com/published.jpg",
+                published_at=datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc),
+                provider_media_id="published-provider-id",
+            )
+            session.add_all([failed, ready, scheduled, published])
+            session.flush()
+            failed_id = failed.id
+            ready_id = ready.id
+            scheduled_id = scheduled.id
+            published_id = published.id
+
+        # Healthy states are not recoverable; only the terminal failed state is.
+        for item_id in (ready_id, scheduled_id, published_id):
+            with self.session_factory() as session:
+                with self.assertRaises(ValueError):
+                    recover_failed_content_draft(session, self.account_a_id, item_id)
+
+        # Another account cannot recover an item it does not own.
+        with self.session_factory() as session:
+            with self.assertRaises(PermissionError):
+                recover_failed_content_draft(session, self.account_b_id, failed_id)
+
+        with self.session_factory() as session:
+            failed = session.get(InstagramContentItem, failed_id)
+            ready = session.get(InstagramContentItem, ready_id)
+            scheduled = session.get(InstagramContentItem, scheduled_id)
+            published = session.get(InstagramContentItem, published_id)
+            self.assertEqual(failed.status, "failed")
+            self.assertEqual(failed.publish_error_code, "provider_rejected")
+            self.assertEqual(ready.status, "ready")
+            self.assertEqual(scheduled.status, "scheduled")
+            self.assertEqual(published.status, "published")
+            self.assertEqual(published.provider_media_id, "published-provider-id")
 
 
 if __name__ == "__main__":

@@ -211,6 +211,32 @@ def mark_content_ready(session: Session, instagram_account_id: object, item_id: 
     return transition_content_status(session, instagram_account_id, item_id, "ready")
 
 
+def recover_failed_content_draft(
+    session: Session,
+    instagram_account_id: object,
+    item_id: object,
+) -> InstagramContentItem:
+    """Return one owned failed item to Draft so the owner can fix it.
+
+    This is a pure lifecycle recovery: it never publishes, schedules, or calls
+    the provider, and it applies only to the terminal ``failed`` state already
+    persisted by the scheduled publisher.  Draft rows retain their content
+    fields, but none of the scheduled/publishing lifecycle metadata.
+    """
+
+    item = _load_owned_item(session, instagram_account_id, item_id)
+    if item.status != "failed":
+        raise ValueError("Only failed content can be returned to draft.")
+    item.status = "draft"
+    item.scheduled_for = None
+    item.published_at = None
+    item.provider_media_id = None
+    item.publish_error_code = None
+    item.provider_request_may_have_been_sent = False
+    session.flush()
+    return item
+
+
 def delete_content_draft(session: Session, instagram_account_id: object, item_id: object) -> None:
     """Delete a single content item only for the owning account."""
 
@@ -227,6 +253,7 @@ __all__ = [
     "list_content_drafts",
     "mark_content_ready",
     "normalize_content_type",
+    "recover_failed_content_draft",
     "schedule_content_draft",
     "unschedule_content_draft",
     "update_content_draft",

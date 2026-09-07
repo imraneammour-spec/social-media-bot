@@ -44,6 +44,7 @@ from database.content import (
     MAX_CAPTION_LENGTH,
     create_content_draft,
     delete_content_draft,
+    recover_failed_content_draft,
     schedule_content_draft,
     transition_content_status,
     unschedule_content_draft,
@@ -1366,6 +1367,7 @@ def register_tenant_dashboard(app) -> None:
                             ) if draft.get("id") else None,
                             "schedule_ref": _content_draft_reference(user.id, draft["id"], purpose="content-schedule") if draft.get("id") else None,
                             "unschedule_ref": _content_draft_reference(user.id, draft["id"], purpose="content-unschedule") if draft.get("id") else None,
+                            "recover_ref": _content_draft_reference(user.id, draft["id"], purpose="content-recover") if draft.get("id") else None,
                             "edit_form": (
                                 content_edit_form
                                 if submitted_edit_draft is not None
@@ -1671,6 +1673,25 @@ def register_tenant_dashboard(app) -> None:
                 if draft is None:
                     raise PermissionError("Draft not found for this account.")
                 unschedule_content_draft(session, selected.instagram_account_id, draft.id)
+        except (PermissionError, SQLAlchemyError, ValueError):
+            return _safe_content_update_error()
+        return _cache_control(redirect(url_for("tenant_dashboard.app_content", account=action_reference_for_account(user.id, selected.instagram_account_id, ACCOUNT_REFERENCE_PURPOSE, secret_key=current_app.secret_key)), code=303))
+
+    @dashboard.post("/content/drafts/recover")
+    @_require_tenant
+    def app_content_recover_draft(user, accounts, selected):
+        if not validate_csrf_token(request_csrf_token()):
+            return _safe_content_update_error()
+        draft_ref = str(request.form.get("draft_ref") or "").strip()
+        try:
+            session_factory = getattr(_auth_state(), "session_factory", None)
+            if session_factory is None:
+                return _workspace_unavailable()
+            with session_factory.begin() as session:
+                draft = _resolve_owned_content_draft(session, user_id=user.id, selected_account_id=selected.instagram_account_id, reference=draft_ref, purpose="content-recover")
+                if draft is None:
+                    raise PermissionError("Draft not found for this account.")
+                recover_failed_content_draft(session, selected.instagram_account_id, draft.id)
         except (PermissionError, SQLAlchemyError, ValueError):
             return _safe_content_update_error()
         return _cache_control(redirect(url_for("tenant_dashboard.app_content", account=action_reference_for_account(user.id, selected.instagram_account_id, ACCOUNT_REFERENCE_PURPOSE, secret_key=current_app.secret_key)), code=303))

@@ -673,6 +673,224 @@ class MessagesContentDashboardTest(unittest.TestCase):
                 "https://cdn.example.com/original-edit.jpg",
             )
 
+    def test_content_draft_recover_returns_owned_failed_item_to_draft_and_editable(self):
+        """Recovering an owned failed item returns it to Draft with content intact."""
+        self._login_as(self.owner_a)
+        ref = self._reference(self.owner_a, self.account_a)
+        now = datetime.now(timezone.utc)
+        with self.Session.begin() as session:
+            failed = InstagramContentItem(
+                instagram_account_id=self.account_a.id,
+                status="failed",
+                content_type="image",
+                caption="Recover caption",
+                media_url="https://cdn.example.com/recover.jpg",
+                cover_url="https://cdn.example.com/recover-cover.jpg",
+                alt_text="Recover alt",
+                metadata_json={"content_type": "image", "keep": True},
+                scheduled_for=now + timedelta(hours=1),
+                publish_error_code="provider_rejected",
+                provider_request_may_have_been_sent=True,
+            )
+            session.add(failed)
+            session.flush()
+            failed_id = failed.id
+
+        page = self.client.get(f"/app/content?account={ref}").get_data(as_text=True)
+        self.assertIn("Needs attention", page)
+        self.assertIn("Recover caption", page)
+        self.assertIn('action="/app/content/drafts/recover?account=', page)
+        csrf = re.search(r'name="csrf_token" value="([^"]+)"', page).group(1)
+        recover_ref = re.search(
+            r'action="/app/content/drafts/recover\?account=[^"]+".*?'
+            r'name="draft_ref" value="([^"]+)"',
+            page,
+            re.DOTALL,
+        ).group(1)
+        self.assertTrue(csrf)
+        self.assertTrue(recover_ref)
+
+        response = self.client.post(
+            f"/app/content/drafts/recover?account={ref}",
+            data={"csrf_token": csrf, "draft_ref": recover_ref},
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 303)
+        self.assertIn("/app/content?account=", response.location)
+
+        with self.Session() as session:
+            recovered = session.get(InstagramContentItem, failed_id)
+            self.assertEqual(recovered.status, "draft")
+            self.assertEqual(recovered.caption, "Recover caption")
+            self.assertEqual(recovered.media_url, "https://cdn.example.com/recover.jpg")
+            self.assertEqual(recovered.cover_url, "https://cdn.example.com/recover-cover.jpg")
+            self.assertEqual(recovered.alt_text, "Recover alt")
+            self.assertEqual(recovered.metadata_json, {"content_type": "image", "keep": True})
+            # No scheduled/publishing lifecycle metadata lingers; no publish side effect.
+            self.assertIsNone(recovered.scheduled_for)
+            self.assertIsNone(recovered.publish_error_code)
+            self.assertIsNone(recovered.published_at)
+            self.assertIsNone(recovered.provider_media_id)
+            self.assertFalse(recovered.provider_request_may_have_been_sent)
+
+        # The recovered item is a Draft and editable through the existing Draft editor.
+        recovered_page = self.client.get(f"/app/content?account={ref}").get_data(as_text=True)
+        self.assertIn("Edit image draft", recovered_page)
+        self.assertIn("Recover caption", recovered_page)
+        self.assertNotIn('action="/app/content/drafts/recover', recovered_page)
+    def test_failed_content_recovery_rejects_csrf_forged_ref_and_healthy_states(self):
+        """CSRF, invalid references, and healthy states are rejected without mutation."""
+        self._login_as(self.owner_a)
+        ref_a = self._reference(self.owner_a, self.account_a)
+        now = datetime.now(timezone.utc)
+        with self.Session.begin() as session:
+            failed = InstagramContentItem(
+                instagram_account_id=self.account_a.id,
+                status="failed",
+                content_type="image",
+                caption="Recover locked",
+                media_url="https://cdn.example.com/locked.jpg",
+                scheduled_for=now + timedelta(hours=1),
+                publish_error_code="provider_rejected",
+            )
+            ready = InstagramContentItem(
+                instagram_account_id=self.account_a.id,
+                status="ready",
+                content_type="image",
+                caption="Ready locked",
+                media_url="https://cdn.example.com/ready.jpg",
+            )
+            scheduled = InstagramContentItem(
+                instagram_account_id=self.account_a.id,
+                status="scheduled",
+                content_type="image",
+                caption="Scheduled locked",
+                media_url="https://cdn.example.com/scheduled.jpg",
+                scheduled_for=now + timedelta(days=1),
+            )
+            published = InstagramContentItem(
+                instagram_account_id=self.account_a.id,
+                status="published",
+                content_type="image",
+                caption="Published locked",
+                media_url="https://cdn.example.com/published.jpg",
+                published_at=now,
+                provider_media_id="locked-provider-id",
+            )
+            session.add_all([failed, ready, scheduled, published])
+            session.flush()
+            failed_id = failed.id
+
+        with self.app.app_context():
+            recover_ref = _content_draft_reference(self.owner_a.id, failed.id, purpose="content-recover")
+            wrong_purpose_ref = _content_draft_reference(self.owner_a.id, failed.id, purpose="content-draft-edit")
+            ready_ref = _content_draft_reference(self.owner_a.id, ready.id, purpose="content-recover")
+            scheduled_ref = _content_draft_reference(self.owner_a.id, scheduled.id, purpose="content-recover")
+            published_ref = _content_draft_reference(self.owner_a.id, published.id, purpose="content-recover")
+
+        # CSRF is required.
+        no_csrf = self.client.post(
+            f"/app/content/drafts/recover?account={ref_a}",
+            data={"draft_ref": recover_ref},
+            follow_redirects=False,
+        )
+        self.assertEqual(no_csrf.status_code, 400)
+
+        # A forged / mis-purposed reference is rejected safely.
+        forged = self.client.post(
+            f"/app/content/drafts/recover?account={ref_a}",
+            data={"csrf_token": "csrf-test-token", "draft_ref": wrong_purpose_ref},
+            follow_redirects=False,
+        )
+        self.assertEqual(forged.status_code, 400)
+
+        # Healthy scheduled/published/ready items cannot use this action.
+        for item_ref in (ready_ref, scheduled_ref, published_ref):
+            response = self.client.post(
+                f"/app/content/drafts/recover?account={ref_a}",
+                data={"csrf_token": "csrf-test-token", "draft_ref": item_ref},
+                follow_redirects=False,
+            )
+            self.assertEqual(response.status_code, 400, item_ref)
+
+        with self.Session() as session:
+            failed = session.get(InstagramContentItem, failed_id)
+            self.assertEqual(failed.status, "failed")
+            self.assertEqual(failed.publish_error_code, "provider_rejected")
+            for caption, expected_status in (
+                ("Ready locked", "ready"),
+                ("Scheduled locked", "scheduled"),
+                ("Published locked", "published"),
+            ):
+                row = session.scalar(
+                    select(InstagramContentItem).where(
+                        InstagramContentItem.caption == caption
+                    )
+                )
+                self.assertEqual(row.status, expected_status)
+            published = session.scalar(
+                select(InstagramContentItem).where(
+                    InstagramContentItem.caption == "Published locked"
+                )
+            )
+            self.assertEqual(published.provider_media_id, "locked-provider-id")
+
+    def test_failed_content_recovery_is_tenant_isolated_and_account_scoped(self):
+        """Another tenant and another account of the same owner cannot recover the item."""
+        self._login_as(self.owner_a)
+        ref_a = self._reference(self.owner_a, self.account_a)
+        with self.Session.begin() as session:
+            failed = InstagramContentItem(
+                instagram_account_id=self.account_a.id,
+                status="failed",
+                content_type="image",
+                caption="Tenant locked",
+                media_url="https://cdn.example.com/tenant-locked.jpg",
+                publish_error_code="provider_rejected",
+            )
+            session.add(failed)
+            second_account = InstagramAccount(
+                user_id=self.owner_a.id,
+                instagram_user_id="10000000000000003",
+                username="alpha_second",
+                connection_status="connected",
+            )
+            session.add(second_account)
+            session.flush()
+            failed_id = failed.id
+            second_account_id = second_account.id
+
+        with self.app.app_context():
+            recover_ref = _content_draft_reference(self.owner_a.id, failed.id, purpose="content-recover")
+
+        # Another account of the same owner cannot recover the item.
+        wrong_account_ref = action_reference_for_account(
+            self.owner_a.id,
+            second_account_id,
+            "tenant-dashboard-select",
+            secret_key=self.app.secret_key,
+        )
+        wrong_account = self.client.post(
+            f"/app/content/drafts/recover?account={wrong_account_ref}",
+            data={"csrf_token": "csrf-test-token", "draft_ref": recover_ref},
+            follow_redirects=False,
+        )
+        self.assertEqual(wrong_account.status_code, 400)
+
+        # Another tenant cannot recover the item.
+        self._login_as(self.owner_b)
+        ref_b = self._reference(self.owner_b, self.account_b)
+        cross_tenant = self.client.post(
+            f"/app/content/drafts/recover?account={ref_b}",
+            data={"csrf_token": "csrf-test-token", "draft_ref": recover_ref},
+            follow_redirects=False,
+        )
+        self.assertEqual(cross_tenant.status_code, 400)
+
+        with self.Session() as session:
+            failed = session.get(InstagramContentItem, failed_id)
+            self.assertEqual(failed.status, "failed")
+            self.assertEqual(failed.caption, "Tenant locked")
     def test_content_draft_status_route_transitions_owned_item(self):
         """Status changes use the page-generated reference for both supported transitions."""
         self._login_as(self.owner_a)
