@@ -266,7 +266,7 @@ class AuthenticationCoreTest(unittest.TestCase):
         for path in ("/login", "/register"):
             page = client.get(path).get_data(as_text=True)
             self.assertIn("Postenza", page)
-            self.assertIn("postenza-logo-dark.png", page)
+            self.assertIn("postenza-logo-light.png", page)
             self.assertIn("postenza-favicon.png", page)
             self.assertIn('sizes="16x16" href="/static/brand/postenza-favicon-16.png"', page)
             self.assertIn('sizes="32x32" href="/static/brand/postenza-favicon-32.png"', page)
@@ -292,10 +292,15 @@ class AuthenticationCoreTest(unittest.TestCase):
             self.assertIn(login_text, login_page)
             self.assertIn(register_text, register_page)
 
+        stylesheet = (
+            Path(__file__).resolve().parents[1] / "dashboard" / "static" / "auth.css"
+        ).read_text(encoding="utf-8")
+        self.assertIn("* { box-sizing: border-box; }", stylesheet)
+        self.assertIn("@media (max-width: 560px)", stylesheet)
         for path in ("/login", "/register"):
             page = client.get(path).get_data(as_text=True)
-            self.assertIn("main { box-sizing: border-box;", page)
-            self.assertIn(":focus-visible", page)
+            self.assertIn("auth.css", page)
+            self.assertIn(":focus-visible", stylesheet)
 
     def test_auth_validation_messages_follow_session_locale(self):
         client = self.app.test_client()

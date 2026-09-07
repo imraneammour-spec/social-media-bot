@@ -120,7 +120,7 @@ class OnboardingStatusTest(unittest.TestCase):
         page = self._onboarding(user_id).get_data(as_text=True)
 
         self.assertIn("Postenza", page)
-        self.assertIn("postenza-logo-dark.png", page)
+        self.assertIn("postenza-logo-light.png", page)
         self.assertIn("postenza-favicon.png", page)
         self.assertIn('alt="Postenza"', page)
         self.assertNotIn("Sociora", page)

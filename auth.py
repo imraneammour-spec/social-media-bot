@@ -14,13 +14,14 @@ from dataclasses import dataclass
 from datetime import timedelta
 from functools import wraps
 from typing import Callable, TypeVar
+from urllib.parse import urlsplit
 
-from flask import current_app, jsonify, redirect, render_template, request, session, url_for
+from flask import Response, current_app, jsonify, redirect, render_template, request, session, url_for
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 from werkzeug.security import check_password_hash, generate_password_hash
-from dashboard.i18n import locale_context, session_locale, translate
+from dashboard.i18n import LOCALE_META, LOCALE_SESSION_KEY, locale_context, normalize_locale, session_locale, translate
 
 from database.credentials import CredentialConfigurationError, credential_keyring_from_environment
 from database.instagram_connection import (
@@ -337,9 +338,17 @@ def build_onboarding_account_statuses(
 
 
 def rotate_authenticated_session(user: User) -> None:
-    """Replace session state on login to prevent fixation and rotate CSRF state."""
+    """Replace session state on login to prevent fixation and rotate CSRF state.
 
+    Only the allowlisted public UI locale survives rotation; every other
+    pre-authentication session key, including the previous CSRF token, is
+    cleared exactly as before.
+    """
+
+    preserved_locale = session.get(LOCALE_SESSION_KEY)
     session.clear()
+    if isinstance(preserved_locale, str) and preserved_locale in LOCALE_META:
+        session[LOCALE_SESSION_KEY] = preserved_locale
     session[USER_SESSION_KEY] = str(user.id)
     session[CSRF_SESSION_KEY] = secrets.token_urlsafe(CSRF_TOKEN_BYTES)
     session.permanent = True
@@ -384,15 +393,64 @@ def _auth_ui_text(message, **values):
     return translate(session_locale(session), message, **values)
 
 
-def _auth_template(template_name: str, *, status: int = 200, error: str | None = None):
+SUPPORT_EMAIL = "imran-ichiigo@hotmail.com"
+
+
+def _safe_locale_return_path() -> str:
+    """Return the current page path for locale switches, with a safe fallback."""
+
+    request_path = request.path
+    if (
+        isinstance(request_path, str)
+        and request_path.startswith("/")
+        and not request_path.startswith("//")
+        and "\\" not in request_path
+    ):
+        return request_path
+    return url_for("login")
+
+
+def _resolve_locale_return_path(raw_next: object) -> str:
+    """Reject arbitrary or external locale return destinations before redirecting."""
+
+    fallback = url_for("login")
+    if not isinstance(raw_next, str):
+        return fallback
+    candidate = raw_next.strip()
+    if (
+        not candidate
+        or not candidate.startswith("/")
+        or candidate.startswith("//")
+        or candidate.startswith("/\\")
+        or "\\" in candidate
+    ):
+        return fallback
+    parts = urlsplit(candidate)
+    if parts.netloc or parts.scheme:
+        return fallback
+    return candidate
+
+
+def _auth_shell_context() -> dict[str, object]:
+    """Shared presentation context for the Postenza auth/onboarding shell."""
+
     locale = locale_context(session_locale(session))
-    return render_template(
-        template_name,
-        csrf_token=csrf_token(),
-        error=error,
-        locale=locale,
-        t=lambda key: translate(locale["code"], key),
-    ), status
+    home_endpoint = "home" if "home" in current_app.view_functions else None
+    return {
+        "csrf_token": csrf_token(),
+        "locale": locale,
+        "locale_options": LOCALE_META,
+        "locale_return_path": _safe_locale_return_path(),
+        "auth_home_url": url_for(home_endpoint) if home_endpoint else "/",
+        "terms_url": url_for("terms") if "terms" in current_app.view_functions else "/terms",
+        "privacy_url": url_for("privacy") if "privacy" in current_app.view_functions else "/privacy",
+        "support_email": SUPPORT_EMAIL,
+        "t": lambda key, **values: translate(locale["code"], key, **values),
+    }
+
+
+def _auth_template(template_name: str, *, status: int = 200, error: str | None = None):
+    return render_template(template_name, error=error, **_auth_shell_context()), status
 
 
 def user_has_connected_instagram_account(user: User | None) -> bool:
@@ -493,6 +551,15 @@ def register_auth_routes(app) -> None:
             return _auth_template("login.html", status=401, error="Invalid email or password.")
         rotate_authenticated_session(user)
         return redirect(post_login_destination(user))
+
+    @app.post("/auth/locale")
+    def auth_locale():
+        """Store an allowlisted public UI locale and return to the current page."""
+
+        if not validate_csrf_token(request_csrf_token()):
+            return _auth_template("login.html", status=400, error="Invalid form token. Refresh and try again.")
+        session[LOCALE_SESSION_KEY] = normalize_locale(request.form.get("locale"))
+        return redirect(_resolve_locale_return_path(request.form.get("next")), code=303)
 
     @app.post("/logout")
     @login_required
@@ -661,16 +728,14 @@ def register_auth_routes(app) -> None:
             return _unavailable_response()
         return render_template(
             "onboarding.html",
-            locale=locale_context(session_locale(session)),
-            t=_auth_ui_text,
             current_user=user,
-            csrf_token=csrf_token(),
             account_statuses=build_onboarding_account_statuses(
                 accounts,
                 legacy_instagram_user_id=state.legacy_instagram_user_id,
                 user_id=user.id,
                 action_secret=current_app.secret_key,
             ),
+            **_auth_shell_context(),
         )
 
 
@@ -679,7 +744,7 @@ def install_auth_route_guard(app) -> None:
 
     public_endpoints = {
         "home", "privacy", "terms", "deletion", "verify_webhook", "receive_webhook",
-        "login", "register", "logout", "onboarding", "static",
+        "login", "register", "logout", "onboarding", "auth_locale", "static",
     }
     disabled_post_endpoints = {
         "approve_dashboard_draft", "publish_dashboard_draft", "schedule_dashboard_draft",
