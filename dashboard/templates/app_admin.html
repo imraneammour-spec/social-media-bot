@@ -32,9 +32,9 @@
             </div>
         </section>
 
-        <section class="admin-future-grid" aria-label="Future product data">
-            <article class="card admin-section"><p class="eyebrow">Plans</p><h2>Plan distribution</h2><p class="empty-state">Plan distribution is unavailable until plan data is persisted.</p></article>
-            <article class="card admin-section"><p class="eyebrow">Attribution</p><h2>Onboarding sources</h2><p class="empty-state">Onboarding source attribution is unavailable until source data is persisted.</p></article>
+        <section class="admin-future-grid" aria-label="Onboarding distributions">
+            <article class="card admin-section"><p class="eyebrow">Plans</p><h2>Plan distribution</h2><dl class="admin-distribution">{% for item in admin.plan_distribution %}<div><dt>{{ item.label }}</dt><dd data-admin-plan="{{ item.value }}">{{ item.count }}</dd></div>{% endfor %}</dl><p class="helper-text">Selections are informational and do not represent billing or entitlements.</p></article>
+            <article class="card admin-section"><p class="eyebrow">Attribution</p><h2>Onboarding sources</h2><dl class="admin-distribution">{% for item in admin.onboarding_source_attribution %}<div><dt>{{ item.label }}</dt><dd data-admin-source="{{ item.value }}">{{ item.count }}</dd></div>{% endfor %}</dl></article>
         </section>
     </main>
 </body>

@@ -1,6 +1,54 @@
 {% extends "auth_shell.html" %}
-{% block auth_title %}{{ t('Instagram workspace status') }} | {{ t('product_name') }}{% endblock %}
+{% block auth_title %}{{ t('Set up your Postenza workspace') }} | {{ t('product_name') }}{% endblock %}
 {% block auth_content %}
+<div class="onboarding-flow">
+<nav class="onboarding-progress" aria-label="{{ t('Onboarding progress') }}">
+    <p>{{ t('Step {current} of 4', current=onboarding_step_number) }}</p>
+    <ol>
+        {% for step_name, step_label in [('profile', 'Your work'), ('source', 'Discovery'), ('plan', 'Plan preference'), ('instagram', 'Instagram')] %}
+        <li class="{% if loop.index < onboarding_step_number %}is-complete{% elif loop.index == onboarding_step_number %}is-current{% endif %}" {% if loop.index == onboarding_step_number %}aria-current="step"{% endif %}>
+            <span>{{ loop.index }}</span><small>{{ t(step_label) }}</small>
+        </li>
+        {% endfor %}
+    </ol>
+</nav>
+{% if error %}<div class="alert alert-error auth-alert" role="alert">{{ t(error) }}</div>{% endif %}
+{% if onboarding_step == 'profile' %}
+<div class="auth-card-header">
+    <h1>{{ t('Tell us about your Instagram work') }}</h1>
+    <p class="auth-lede">{{ t('Your answers help us understand how you want to use Postenza.') }}</p>
+</div>
+<form class="onboarding-form" method="post" action="{{ url_for('onboarding') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="step" value="profile">
+    <fieldset><legend>{{ t('How will you use Postenza?') }}</legend><div class="choice-grid">
+        {% for value, label in use_case_options %}<label class="choice-card"><input type="radio" name="use_case" value="{{ value }}" {% if submitted.use_case == value %}checked{% endif %} required><span>{{ t(label) }}</span></label>{% endfor %}
+    </div></fieldset>
+    <fieldset><legend>{{ t('What is your main goal?') }}</legend><div class="choice-grid">
+        {% for value, label in main_goal_options %}<label class="choice-card"><input type="radio" name="main_goal" value="{{ value }}" {% if submitted.main_goal == value %}checked{% endif %} required><span>{{ t(label) }}</span></label>{% endfor %}
+    </div></fieldset>
+    <button class="button button-primary" type="submit">{{ t('Continue') }}</button>
+</form>
+{% elif onboarding_step == 'source' %}
+<div class="auth-card-header"><h1>{{ t('How did you hear about Postenza?') }}</h1><p class="auth-lede">{{ t('Choose the source that best matches how you found us.') }}</p></div>
+<form class="onboarding-form" method="post" action="{{ url_for('onboarding') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="step" value="source">
+    <fieldset><legend class="visually-hidden">{{ t('Discovery source') }}</legend><div class="choice-grid">
+        {% for value, label in source_options %}<label class="choice-card"><input type="radio" name="onboarding_source" value="{{ value }}" {% if submitted.onboarding_source == value %}checked{% endif %} required><span>{{ t(label) }}</span></label>{% endfor %}
+    </div></fieldset>
+    <button class="button button-primary" type="submit">{{ t('Continue') }}</button>
+</form>
+{% elif onboarding_step == 'plan' %}
+<div class="auth-card-header"><h1>{{ t('Choose your plan preference') }}</h1><p class="auth-lede">{{ t('This selection records your preference and does not change your current access.') }}</p></div>
+<form class="onboarding-form" method="post" action="{{ url_for('onboarding') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="step" value="plan">
+    <fieldset><legend class="visually-hidden">{{ t('Plan preference') }}</legend><div class="plan-grid">
+        {% for value, details in plan_options %}<label class="choice-card plan-card"><input type="radio" name="selected_plan" value="{{ value }}" {% if submitted.selected_plan == value %}checked{% endif %} required><span><strong>{{ t(details[0]) }}</strong><small>{{ t(details[1]) }}</small><em>{{ t('Pricing coming soon') }}</em></span></label>{% endfor %}
+    </div></fieldset>
+    <p class="auth-note">{{ t('Plan selection is informational only. No billing or entitlement changes are applied.') }}</p>
+    <button class="button button-primary" type="submit">{{ t('Finish setup') }}</button>
+</form>
+{% else %}
 <div class="auth-card-header">
     <h1>{{ t('Instagram workspace status') }}</h1>
     <p class="auth-lede">{{ t("{name}, your Instagram connection status is shown below.", name=current_user.display_name) }}</p>
@@ -40,10 +88,12 @@
     </section>
 </div>
 {% endif %}
+{% endif %}
 <div class="auth-signout">
     <form method="post" action="{{ url_for('logout') }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button class="button button-secondary" type="submit">{{ t('Sign out') }}</button>
     </form>
+</div>
 </div>
 {% endblock %}

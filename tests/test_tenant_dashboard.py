@@ -31,6 +31,7 @@ from database.models import (
     InstagramPromptRequest,
     InstagramSmartReplyActivity,
     User,
+    UserOnboardingProfile,
 )
 from tenant_dashboard import register_tenant_dashboard
 
@@ -242,6 +243,23 @@ class TenantDashboardTest(unittest.TestCase):
         response = self.client.get("/app")
         self.assertEqual(response.status_code, 302)
         self.assertTrue(response.headers["Location"].endswith("/onboarding"))
+
+    def test_incomplete_profile_blocks_tenant_entry_before_account_selection(self):
+        with self.Session.begin() as session:
+            session.add(UserOnboardingProfile(user_id=self.owner_a.id))
+        self._login_as(self.owner_a)
+        forged_foreign_reference = self._reference(self.owner_b, self.account_b)
+
+        response = self.client.get(
+            f"/app?account={forged_foreign_reference}", follow_redirects=False
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.headers["Location"].endswith("/onboarding"))
+
+        self._login_as(self.owner_b)
+        legacy_compatible = self.client.get("/app")
+        self.assertEqual(legacy_compatible.status_code, 200)
 
     def test_default_switching_and_activation_status_are_owned_and_deterministic(self):
         self._login_as(self.owner_a)

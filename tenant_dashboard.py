@@ -41,6 +41,7 @@ from dashboard.presentation import display_time, public_image_url
 from dashboard.i18n import LOCALE_META, LOCALE_SESSION_KEY, locale_context, normalize_locale, translate, session_locale
 from database.lead_intelligence import LeadIntelligence, lead_analysis_context
 from database.oauth_deployment import oauth_deployment_readiness
+from database.onboarding import user_onboarding_is_complete
 from database.content import (
     CONTENT_TYPES,
     MAX_CAPTION_LENGTH,
@@ -151,6 +152,12 @@ def _tenant_context():
 
     try:
         with session_factory() as session:
+            if not user_onboarding_is_complete(session, user.id):
+                return (
+                    None,
+                    None,
+                    _cache_control(redirect(url_for("onboarding"))),
+                )
             accounts = tenant_data.list_tenant_accounts(
                 session,
                 user_id=user.id,

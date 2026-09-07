@@ -8,7 +8,8 @@ from datetime import datetime
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
-from database.models import InstagramAccount, User
+from database.models import InstagramAccount, User, UserOnboardingProfile
+from database.onboarding import ONBOARDING_SOURCE_VALUES, PLAN_VALUES
 
 
 @dataclass(frozen=True)
@@ -21,13 +22,69 @@ class AdminRecentSignup:
 
 
 @dataclass(frozen=True)
+class AdminDistributionItem:
+    value: str
+    label: str
+    count: int
+
+
+@dataclass(frozen=True)
 class AdminSnapshot:
     total_registered_users: int
     connected_instagram_accounts: int
     active_users: None
     recent_signups: tuple[AdminRecentSignup, ...]
-    plan_distribution: None
-    onboarding_source_attribution: None
+    plan_distribution: tuple[AdminDistributionItem, ...]
+    onboarding_source_attribution: tuple[AdminDistributionItem, ...]
+
+
+PLAN_LABELS = {
+    "free": "Free",
+    "pro": "Pro",
+    "agency": "Agency",
+}
+SOURCE_LABELS = {
+    "google": "Google",
+    "instagram": "Instagram",
+    "tiktok": "TikTok",
+    "youtube": "YouTube",
+    "friend_colleague": "Friend or colleague",
+    "github": "GitHub",
+    "ai_tool": "AI tool or ChatGPT",
+    "other": "Other",
+}
+
+
+def _distribution(
+    session: Session,
+    column,
+    *,
+    allowed: tuple[str, ...],
+    labels: dict[str, str],
+) -> tuple[AdminDistributionItem, ...]:
+    counts = {value: 0 for value in allowed}
+    unknown = 0
+    rows = session.execute(
+        select(column, func.count(User.id))
+        .select_from(User)
+        .outerjoin(UserOnboardingProfile, UserOnboardingProfile.user_id == User.id)
+        .group_by(column)
+    )
+    for value, count in rows:
+        normalized = str(value or "").strip()
+        if normalized in counts:
+            counts[normalized] += int(count or 0)
+        else:
+            unknown += int(count or 0)
+    return (
+        *(
+            AdminDistributionItem(value=value, label=labels[value], count=counts[value])
+            for value in allowed
+        ),
+        AdminDistributionItem(
+            value="unknown", label="Unknown / not provided", count=unknown
+        ),
+    )
 
 
 def admin_snapshot(session: Session, *, recent_limit: int = 15) -> AdminSnapshot:
@@ -92,6 +149,16 @@ def admin_snapshot(session: Session, *, recent_limit: int = 15) -> AdminSnapshot
             )
             for user in recent_users
         ),
-        plan_distribution=None,
-        onboarding_source_attribution=None,
+        plan_distribution=_distribution(
+            session,
+            UserOnboardingProfile.selected_plan,
+            allowed=PLAN_VALUES,
+            labels=PLAN_LABELS,
+        ),
+        onboarding_source_attribution=_distribution(
+            session,
+            UserOnboardingProfile.onboarding_source,
+            allowed=ONBOARDING_SOURCE_VALUES,
+            labels=SOURCE_LABELS,
+        ),
     )

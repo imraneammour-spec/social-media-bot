@@ -10,6 +10,7 @@ from database.models import (
     InstagramAutomationConfig,
     InstagramCredential,
     User,
+    UserOnboardingProfile,
 )
 from tests import test_tenant_dashboard as fixture
 
@@ -132,21 +133,61 @@ class AdminDashboardTest(unittest.TestCase):
         ):
             self.assertNotIn(secret, page)
 
-    def test_missing_future_metrics_are_truthfully_unavailable(self):
-        """Future plan/source sections must not fabricate distributions."""
+    def test_plan_and_source_distributions_use_persisted_answers_and_unknown(self):
+        """Every user must appear once without fabricating historical answers."""
+
+        with self.Session.begin() as session:
+            session.add_all(
+                [
+                    UserOnboardingProfile(
+                        user_id=self.owner_a.id,
+                        use_case="business_account",
+                        main_goal="save_time",
+                        onboarding_source="google",
+                        selected_plan="free",
+                        completed_at=datetime(2026, 9, 7, tzinfo=timezone.utc),
+                    ),
+                    UserOnboardingProfile(
+                        user_id=self.owner_b.id,
+                        use_case="agency_clients",
+                        main_goal="multiple_accounts",
+                        onboarding_source="instagram",
+                        selected_plan="pro",
+                        completed_at=datetime(2026, 9, 7, tzinfo=timezone.utc),
+                    ),
+                ]
+            )
 
         self._login_as(self.legacy_owner)
 
         page = self.client.get("/app/admin").get_data(as_text=True)
 
         self.assertIn("Active users are unavailable until a persisted activity definition exists.", page)
-        self.assertIn("Plan distribution is unavailable until plan data is persisted.", page)
-        self.assertIn(
-            "Onboarding source attribution is unavailable until source data is persisted.",
-            page,
-        )
-        self.assertNotIn("Free plan", page)
-        self.assertNotIn("Organic traffic", page)
+        self.assertIn('<dd data-admin-plan="free">1</dd>', page)
+        self.assertIn('<dd data-admin-plan="pro">1</dd>', page)
+        self.assertIn('<dd data-admin-plan="agency">0</dd>', page)
+        self.assertIn('<dd data-admin-plan="unknown">1</dd>', page)
+        self.assertIn('<dd data-admin-source="google">1</dd>', page)
+        self.assertIn('<dd data-admin-source="instagram">1</dd>', page)
+        self.assertIn('<dd data-admin-source="unknown">1</dd>', page)
+        self.assertEqual(page.count('data-admin-plan="'), 4)
+        self.assertEqual(page.count('data-admin-source="'), 9)
+
+    def test_unrecognized_persisted_answers_are_counted_as_unknown(self):
+        with self.Session.begin() as session:
+            session.add(
+                UserOnboardingProfile(
+                    user_id=self.owner_a.id,
+                    onboarding_source="manual-unrecognized-source",
+                    selected_plan="manual-unrecognized-plan",
+                )
+            )
+        self._login_as(self.legacy_owner)
+
+        page = self.client.get("/app/admin").get_data(as_text=True)
+
+        self.assertIn('<dd data-admin-plan="unknown">3</dd>', page)
+        self.assertIn('<dd data-admin-source="unknown">3</dd>', page)
 
     def test_admin_get_does_not_mutate_persisted_records(self):
         """Adding a write side effect to the Admin GET breaks this invariant."""

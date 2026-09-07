@@ -15,7 +15,13 @@ from auth import (
     install_auth_route_guard,
     register_auth_routes,
 )
-from database.models import Base, InstagramAccount, InstagramCredential, User
+from database.models import (
+    Base,
+    InstagramAccount,
+    InstagramCredential,
+    User,
+    UserOnboardingProfile,
+)
 from database.oauth_webhook_subscription import OAuthWebhookSubscriptionError
 from database.instagram_connection import InstagramConnectionError
 from instagram_oauth import (
@@ -170,6 +176,35 @@ class InstagramConnectionCallbackTest(unittest.TestCase):
             key_id,
         ):
             self.assertNotIn(secret, onboarding_page)
+
+    def test_successful_callback_for_incomplete_profile_returns_to_onboarding(self):
+        with self.Session.begin() as session:
+            session.add(UserOnboardingProfile(user_id=self.user_id))
+        client = self._client_with_state()
+
+        with patch.dict("os.environ", self.environment, clear=False), patch(
+            "auth.complete_instagram_token_exchange", return_value=self._token_result()
+        ), patch("auth.discover_instagram_account", return_value=self._discovery()), patch(
+            "database.instagram_connection.subscribe_oauth_account_webhooks", return_value=True
+        ):
+            response = client.get(
+                "/connect/instagram/callback",
+                query_string={
+                    "state": "connection-callback-state",
+                    "code": self.authorization_code,
+                },
+                follow_redirects=False,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.headers["Location"].endswith("/onboarding"))
+        with self.Session() as session:
+            account = session.scalar(select(InstagramAccount))
+            credential = session.scalar(select(InstagramCredential))
+            self.assertIsNotNone(account)
+            self.assertEqual(account.user_id, self.user_id)
+            self.assertEqual(account.connection_status, "connected")
+            self.assertIsNotNone(credential)
 
     def test_callback_selects_newly_connected_account_for_multi_account_user(self):
         """OAuth completion keeps the newly connected account in app context."""

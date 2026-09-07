@@ -40,6 +40,26 @@ class User(TimestampMixin, Base):
     instagram_accounts: Mapped[list["InstagramAccount"]] = relationship(
         back_populates="owner", cascade="all, delete-orphan"
     )
+    onboarding_profile: Mapped["UserOnboardingProfile | None"] = relationship(
+        back_populates="user", cascade="all, delete-orphan", uselist=False
+    )
+
+
+class UserOnboardingProfile(TimestampMixin, Base):
+    """Allowlisted onboarding preferences for one newly registered user."""
+
+    __tablename__ = "user_onboarding_profiles"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    use_case: Mapped[str | None] = mapped_column(String(64))
+    main_goal: Mapped[str | None] = mapped_column(String(64))
+    onboarding_source: Mapped[str | None] = mapped_column(String(64))
+    selected_plan: Mapped[str | None] = mapped_column(String(32))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    user: Mapped[User] = relationship(back_populates="onboarding_profile")
 
 
 class InstagramAccount(TimestampMixin, Base):

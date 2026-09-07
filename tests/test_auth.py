@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 
 from flask import Flask, session
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from werkzeug.security import generate_password_hash
 
@@ -19,7 +20,7 @@ from auth import (
     validate_csrf_token,
     verify_meta_signature,
 )
-from database.models import Base, InstagramAccount, User
+from database.models import Base, InstagramAccount, User, UserOnboardingProfile
 
 
 class AuthenticationCoreTest(unittest.TestCase):
@@ -126,7 +127,7 @@ class AuthenticationCoreTest(unittest.TestCase):
             self.assertIsNone(get_current_user())
             self.assertNotIn("user_id", session)
 
-    def test_register_creates_non_owner_and_redirects_to_onboarding(self):
+    def test_register_creates_user_and_incomplete_onboarding_profile_atomically(self):
         client = self.app.test_client()
         with client.session_transaction() as browser_session:
             browser_session["_csrf_token"] = "register-csrf-token"
@@ -148,8 +149,91 @@ class AuthenticationCoreTest(unittest.TestCase):
             user = db_session.scalar(select(User).where(User.email == "new@example.test"))
             self.assertIsNotNone(user)
             self.assertNotEqual(user.password_hash, "correct horse battery staple")
+            profile = db_session.get(UserOnboardingProfile, user.id)
+            self.assertIsNotNone(profile)
+            self.assertIsNone(profile.use_case)
+            self.assertIsNone(profile.main_goal)
+            self.assertIsNone(profile.onboarding_source)
+            self.assertIsNone(profile.selected_plan)
+            self.assertIsNone(profile.completed_at)
         self.assertEqual(client.post("/api/test-mutation").status_code, 403)
         self.assertTrue(client.get("/dashboard").headers["Location"].endswith("/onboarding"))
+
+    def test_registration_profile_failure_rolls_back_user_and_does_not_authenticate(self):
+        client = self.app.test_client()
+        with client.session_transaction() as browser_session:
+            browser_session["_csrf_token"] = "register-profile-failure-csrf-token"
+
+        def reject_profile_insert(*_args, **_kwargs):
+            raise IntegrityError(
+                "INSERT INTO user_onboarding_profiles", {}, RuntimeError("unavailable")
+            )
+
+        event.listen(UserOnboardingProfile, "before_insert", reject_profile_insert)
+        try:
+            response = client.post(
+                "/register",
+                data={
+                    "csrf_token": "register-profile-failure-csrf-token",
+                    "display_name": "Rollback user",
+                    "email": "rollback@example.test",
+                    "password": "correct horse battery staple",
+                },
+                follow_redirects=False,
+            )
+        finally:
+            event.remove(UserOnboardingProfile, "before_insert", reject_profile_insert)
+
+        self.assertEqual(response.status_code, 503)
+        with self.Session() as db_session:
+            self.assertIsNone(
+                db_session.scalar(
+                    select(User).where(User.email == "rollback@example.test")
+                )
+            )
+            self.assertEqual(
+                db_session.query(UserOnboardingProfile).count(), 0
+            )
+        with client.session_transaction() as browser_session:
+            self.assertNotIn("user_id", browser_session)
+
+    def test_connected_incomplete_user_login_is_still_sent_to_onboarding(self):
+        with self.Session.begin() as db_session:
+            user = User(
+                email="connected-incomplete@example.test",
+                display_name="Incomplete",
+                password_hash=generate_password_hash("correct horse battery staple"),
+            )
+            db_session.add(user)
+            db_session.flush()
+            db_session.add_all(
+                [
+                    UserOnboardingProfile(user_id=user.id),
+                    InstagramAccount(
+                        user_id=user.id,
+                        instagram_user_id="connected-incomplete-account",
+                        username="connected_incomplete",
+                        connection_status="connected",
+                    ),
+                ]
+            )
+
+        client = self.app.test_client()
+        csrf = "connected-incomplete-login-csrf-token"
+        with client.session_transaction() as browser_session:
+            browser_session["_csrf_token"] = csrf
+        response = client.post(
+            "/login",
+            data={
+                "csrf_token": csrf,
+                "email": "connected-incomplete@example.test",
+                "password": "correct horse battery staple",
+            },
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.headers["Location"].endswith("/onboarding"))
 
     def test_login_and_logout_use_csrf_and_rotate_authenticated_session(self):
         owner = self._create_owner()

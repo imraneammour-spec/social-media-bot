@@ -65,7 +65,7 @@ class ResponseTriggeredFollowupMigrationTest(unittest.TestCase):
 
     def test_populated_upgrade_and_empty_response_state_downgrade_preserve_legacy(self):
         command.upgrade(self.config, "head")
-        self.assert_revision_and_legacy_intact("20260906_02")
+        self.assert_revision_and_legacy_intact("20260907_01")
         inspector = inspect(self.engine)
         table = "instagram_oauth_direct_message_interactions"
         self.assertIn(table, inspector.get_table_names())
@@ -83,7 +83,7 @@ class ResponseTriggeredFollowupMigrationTest(unittest.TestCase):
         self.assertEqual(self.snapshot(), self.before)
         self.assertNotIn(table, inspect(self.engine).get_table_names())
         command.upgrade(self.config, "head")
-        self.assert_revision_and_legacy_intact("20260906_02")
+        self.assert_revision_and_legacy_intact("20260907_01")
 
     def test_downgrade_refuses_existing_interaction_without_removing_data(self):
         command.upgrade(self.config, "head")

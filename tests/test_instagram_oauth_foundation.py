@@ -10,7 +10,13 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from auth import configure_auth, install_auth_route_guard, register_auth_routes
-from database.models import Base, InstagramAccount, InstagramCredential, User
+from database.models import (
+    Base,
+    InstagramAccount,
+    InstagramCredential,
+    User,
+    UserOnboardingProfile,
+)
 from instagram_oauth import (
     INSTAGRAM_OAUTH_SCOPE,
     INSTAGRAM_OAUTH_STATE_SESSION_KEY,
@@ -232,6 +238,23 @@ class InstagramOAuthStartFoundationTest(unittest.TestCase):
         with self.Session() as db_session:
             self.assertEqual(len(db_session.scalars(select(InstagramAccount)).all()), 0)
             self.assertEqual(len(db_session.scalars(select(InstagramCredential)).all()), 0)
+
+    def test_incomplete_profile_cannot_start_oauth_or_receive_state(self):
+        with self.Session.begin() as db_session:
+            db_session.add(UserOnboardingProfile(user_id=self.user_id))
+        client = self._authenticated_client()
+
+        with patch.dict("os.environ", self._oauth_environment(), clear=False):
+            response = client.post(
+                "/connect/instagram",
+                data={"csrf_token": "oauth-csrf-token"},
+                follow_redirects=False,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.headers["Location"].endswith("/onboarding"))
+        with client.session_transaction() as browser_session:
+            self.assertNotIn(INSTAGRAM_OAUTH_STATE_SESSION_KEY, browser_session)
 
     def test_forwarded_headers_cannot_choose_oauth_redirect_origin(self):
         client = self.app.test_client()

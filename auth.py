@@ -29,7 +29,18 @@ from database.instagram_connection import (
     complete_discovered_instagram_connection,
     disconnect_owned_instagram_connection,
 )
-from database.models import InstagramAccount, User
+from database.models import InstagramAccount, User, UserOnboardingProfile
+from database.onboarding import (
+    MAIN_GOAL_VALUES,
+    ONBOARDING_SOURCE_VALUES,
+    PLAN_VALUES,
+    USE_CASE_VALUES,
+    OnboardingValidationError,
+    apply_onboarding_step,
+    expected_onboarding_step,
+    onboarding_profile_for_user,
+    user_onboarding_is_complete,
+)
 from database.ownership import (
     list_owned_instagram_accounts,
     resolve_owned_instagram_account_by_external_id,
@@ -68,6 +79,38 @@ SESSION_LIFETIME_HOURS = 8
 READY_CONNECTION_STATUSES = {"connected"}
 RECONNECT_CONNECTION_STATUSES = {"disconnected", "error", "reconnect_required"}
 
+ONBOARDING_USE_CASE_OPTIONS = tuple(zip(USE_CASE_VALUES, (
+    "Grow my own Instagram account",
+    "Manage a business account",
+    "Manage client accounts or agency work",
+    "Publish content consistently",
+    "Automate comment and DM engagement",
+    "Other",
+)))
+ONBOARDING_MAIN_GOAL_OPTIONS = tuple(zip(MAIN_GOAL_VALUES, (
+    "Save time",
+    "Generate leads",
+    "Increase engagement",
+    "Stay consistent with posting",
+    "Manage multiple accounts",
+    "Other",
+)))
+ONBOARDING_SOURCE_OPTIONS = tuple(zip(ONBOARDING_SOURCE_VALUES, (
+    "Google",
+    "Instagram",
+    "TikTok",
+    "YouTube",
+    "Friend or colleague",
+    "GitHub",
+    "AI tool or ChatGPT",
+    "Other",
+)))
+ONBOARDING_PLAN_OPTIONS = tuple(zip(PLAN_VALUES, (
+    ("Free", "A simple starting preference for exploring Postenza."),
+    ("Pro", "A growth-focused preference for established Instagram workflows."),
+    ("Agency", "A service-focused preference for teams managing client work."),
+)))
+
 F = TypeVar("F", bound=Callable)
 
 
@@ -78,6 +121,10 @@ class AuthState:
     configured: bool
     rate_limit_attempts: dict[tuple[str, str], list[float]]
     rate_limit_lock: threading.Lock
+
+
+class _RegistrationEmailConflict(Exception):
+    """Internal signal distinguishing the user-email insert from profile setup."""
 
 
 def configure_auth(
@@ -473,8 +520,25 @@ def user_has_connected_instagram_account(user: User | None) -> bool:
     return False
 
 
+def user_has_completed_onboarding(user: User | None) -> bool:
+    """Return persisted completion, with missing rows reserved for legacy users."""
+
+    if user is None:
+        return False
+    state = _auth_state()
+    if not state.session_factory:
+        return False
+    try:
+        with state.session_factory() as db_session:
+            return user_onboarding_is_complete(db_session, user.id)
+    except SQLAlchemyError:
+        return False
+
+
 def post_login_destination(user: User | None) -> str:
-    """Direct connected users to /app and disconnected users to onboarding."""
+    """Require onboarding before applying the existing connection destination."""
+    if not user_has_completed_onboarding(user):
+        return url_for("onboarding")
     if user_has_connected_instagram_account(user):
         if "tenant_dashboard.app_overview" in current_app.view_functions:
             return url_for("tenant_dashboard.app_overview")
@@ -512,9 +576,14 @@ def register_auth_routes(app) -> None:
                     password_hash=generate_password_hash(password),
                 )
                 db_session.add(user)
+                try:
+                    db_session.flush()
+                except IntegrityError as error:
+                    raise _RegistrationEmailConflict from error
+                db_session.add(UserOnboardingProfile(user_id=user.id))
                 db_session.flush()
                 user_id = user.id
-        except IntegrityError:
+        except _RegistrationEmailConflict:
             return _auth_template("register.html", status=409, error="An account with that email already exists.")
         except SQLAlchemyError:
             return _unavailable_response()
@@ -577,6 +646,8 @@ def register_auth_routes(app) -> None:
         user = get_current_user()
         if user is None:
             return _unauthenticated_response()
+        if not user_has_completed_onboarding(user):
+            return redirect(url_for("onboarding"))
         if current_user_has_legacy_environment_managed_account():
             return _auth_ui_text("Instagram connection is not available for this account."), 403
         try:
@@ -664,16 +735,19 @@ def register_auth_routes(app) -> None:
         except SQLAlchemyError:
             current_app.logger.warning(OAUTH_CALLBACK_STAGE_FINAL_TRANSACTION_FAILED)
             return _auth_ui_text("Instagram connection could not be completed."), 502
-        account_ref = action_reference_for_account(
-            user.id,
-            account.id,
-            "tenant-dashboard-select",
-            secret_key=current_app.secret_key,
-        )
-        if "tenant_dashboard.app_overview" in current_app.view_functions:
-            target = url_for("tenant_dashboard.app_overview", account=account_ref)
+        if not user_has_completed_onboarding(user):
+            target = url_for("onboarding")
         else:
-            target = f"/app?account={account_ref}"
+            account_ref = action_reference_for_account(
+                user.id,
+                account.id,
+                "tenant-dashboard-select",
+                secret_key=current_app.secret_key,
+            )
+            if "tenant_dashboard.app_overview" in current_app.view_functions:
+                target = url_for("tenant_dashboard.app_overview", account=account_ref)
+            else:
+                target = f"/app?account={account_ref}"
         if redirect_uri == f"{PUBLIC_BASE_URL}/connect/instagram/callback":
             target = f"{PUBLIC_BASE_URL}{target}"
         return redirect(target)
@@ -714,21 +788,83 @@ def register_auth_routes(app) -> None:
             return _auth_ui_text("Instagram connection could not be completed."), 400
         return redirect(url_for("onboarding"))
 
-    @app.get("/onboarding")
+    @app.route("/onboarding", methods=["GET", "POST"])
     @login_required
     def onboarding():
         user = get_current_user()
         state = _auth_state()
         if user is None or state.session_factory is None:
             return _unavailable_response()
+        submitted: dict[str, str] = {}
+        error: str | None = None
+        status = 200
+        if request.method == "POST":
+            submitted = {
+                key: str(request.form.get(key) or "").strip()[:128]
+                for key in (
+                    "use_case",
+                    "main_goal",
+                    "onboarding_source",
+                    "selected_plan",
+                )
+            }
+            if not validate_csrf_token(request_csrf_token()):
+                error = "Invalid form token. Refresh and try again."
+                status = 400
+            else:
+                try:
+                    with state.session_factory.begin() as db_session:
+                        profile = onboarding_profile_for_user(db_session, user.id)
+                        if profile is None:
+                            raise OnboardingValidationError(
+                                "Legacy users have no questionnaire step to update."
+                            )
+                        apply_onboarding_step(
+                            profile,
+                            request.form.get("step"),
+                            submitted,
+                        )
+                        completed = profile.completed_at is not None
+                except OnboardingValidationError:
+                    error = "Choose one option for each question."
+                    status = 400
+                except SQLAlchemyError:
+                    return _unavailable_response()
+                else:
+                    destination = (
+                        post_login_destination(user)
+                        if completed
+                        else url_for("onboarding")
+                    )
+                    return redirect(destination, code=303)
+
         try:
             with state.session_factory() as db_session:
-                accounts = list_owned_instagram_accounts(db_session, user_id=user.id)
+                profile = onboarding_profile_for_user(db_session, user.id)
+                step = "instagram" if profile is None else expected_onboarding_step(profile)
+                accounts = (
+                    list_owned_instagram_accounts(db_session, user_id=user.id)
+                    if step == "instagram"
+                    else []
+                )
         except SQLAlchemyError:
             return _unavailable_response()
         return render_template(
             "onboarding.html",
             current_user=user,
+            onboarding_step=step,
+            onboarding_step_number={
+                "profile": 1,
+                "source": 2,
+                "plan": 3,
+                "instagram": 4,
+            }[step],
+            use_case_options=ONBOARDING_USE_CASE_OPTIONS,
+            main_goal_options=ONBOARDING_MAIN_GOAL_OPTIONS,
+            source_options=ONBOARDING_SOURCE_OPTIONS,
+            plan_options=ONBOARDING_PLAN_OPTIONS,
+            submitted=submitted,
+            error=error,
             account_statuses=build_onboarding_account_statuses(
                 accounts,
                 legacy_instagram_user_id=state.legacy_instagram_user_id,
@@ -736,7 +872,7 @@ def register_auth_routes(app) -> None:
                 action_secret=current_app.secret_key,
             ),
             **_auth_shell_context(),
-        )
+        ), status
 
 
 def install_auth_route_guard(app) -> None:
