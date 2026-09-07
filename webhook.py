@@ -3931,17 +3931,95 @@ def _oauth_complete(session_factory, account_id, provider_event_id, event_type, 
         complete_oauth_event(db_session, account_id, provider_event_id, event_type, failed=failed)
 
 
+def _oauth_provider_https_url(value):
+    """Return a provider media URL only when it is safe for public image markup."""
+    if not isinstance(value, str):
+        return ""
+    candidate = value.strip()
+    if not candidate or any(character.isspace() for character in candidate):
+        return ""
+    try:
+        parsed = urlsplit(candidate)
+        if (
+            parsed.scheme.lower() != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            return ""
+        parsed.port
+    except (TypeError, ValueError):
+        return ""
+    return candidate
+
+
+def _oauth_prompt_cover_url(media):
+    """Select a usable image cover from provider-returned media metadata."""
+    if not isinstance(media, dict):
+        return ""
+
+    media_type = str(media.get("media_type") or "").strip().upper()
+    if media_type == "IMAGE":
+        return _oauth_provider_https_url(media.get("media_url"))
+    if media_type in {"VIDEO", "REEL", "REELS"}:
+        return _oauth_provider_https_url(media.get("thumbnail_url"))
+    if media_type == "CAROUSEL_ALBUM":
+        cover_url = _oauth_provider_https_url(media.get("media_url"))
+        if cover_url:
+            return cover_url
+
+    children = media.get("children")
+    child_items = children.get("data") if isinstance(children, dict) else []
+    if not isinstance(child_items, list):
+        return ""
+    for child in child_items:
+        if not isinstance(child, dict):
+            continue
+        child_type = str(child.get("media_type") or "").strip().upper()
+        if child_type == "IMAGE":
+            cover_url = _oauth_provider_https_url(child.get("media_url"))
+        elif child_type in {"VIDEO", "REEL", "REELS"}:
+            cover_url = _oauth_provider_https_url(child.get("thumbnail_url"))
+        else:
+            continue
+        if cover_url:
+            return cover_url
+    return ""
+
+
 def _oauth_prompt_post_for_comment(session_factory, account_id, external_id, media_id):
+    cached_public_id = None
     with session_factory() as db_session:
         cached = get_oauth_prompt_post(db_session, account_id, media_id)
         if cached is not None:
-            return cached.public_id
-    media = lookup_oauth_media(
-        session_factory,
-        instagram_account_id=account_id,
-        instagram_user_id=external_id,
-        media_id=media_id,
-    )
+            if str(cached.cover_url or "").strip():
+                return cached.public_id
+            cached_public_id = cached.public_id
+    try:
+        media = lookup_oauth_media(
+            session_factory,
+            instagram_account_id=account_id,
+            instagram_user_id=external_id,
+            media_id=media_id,
+        )
+    except Exception:
+        if cached_public_id is not None:
+            return cached_public_id
+        raise
+    cover_url = _oauth_prompt_cover_url(media)
+    permalink = str(media.get("permalink") or "")
+    if cached_public_id is not None:
+        try:
+            with session_factory.begin() as db_session:
+                cached = get_oauth_prompt_post(db_session, account_id, media_id)
+                if cached is not None:
+                    if not str(cached.cover_url or "").strip() and cover_url:
+                        cached.cover_url = cover_url
+                    if not str(cached.permalink or "").strip() and permalink:
+                        cached.permalink = permalink
+                    return cached.public_id
+        except Exception:
+            return cached_public_id
     prompts = extract_oauth_prompts(media)
     if not prompts:
         return None
@@ -3951,8 +4029,8 @@ def _oauth_prompt_post_for_comment(session_factory, account_id, external_id, med
             account_id,
             media_id,
             prompts,
-            permalink=str(media.get("permalink") or ""),
-            cover_url=str(media.get("media_url") or media.get("thumbnail_url") or ""),
+            permalink=permalink,
+            cover_url=cover_url,
         )
         return record.public_id
 

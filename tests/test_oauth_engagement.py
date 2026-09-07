@@ -431,6 +431,278 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
         from database.account_runtime import InstagramAccountRoute
         return InstagramAccountRoute(account_id, "oauth")
 
+    def test_prompt_cover_selector_uses_top_level_image_media(self):
+        cover = self.module._oauth_prompt_cover_url({
+            "media_type": "IMAGE",
+            "media_url": "https://cdn.example.test/image.jpg",
+            "thumbnail_url": "https://cdn.example.test/unused-thumbnail.jpg",
+        })
+
+        self.assertEqual(cover, "https://cdn.example.test/image.jpg")
+
+    def test_prompt_cover_selector_uses_video_thumbnail_not_video_media(self):
+        for media_type in ("VIDEO", "REEL"):
+            with self.subTest(media_type=media_type):
+                cover = self.module._oauth_prompt_cover_url({
+                    "media_type": media_type,
+                    "media_url": "https://cdn.example.test/video.mp4",
+                    "thumbnail_url": "https://cdn.example.test/video-cover.jpg",
+                })
+
+                self.assertEqual(cover, "https://cdn.example.test/video-cover.jpg")
+                self.assertNotEqual(cover, "https://cdn.example.test/video.mp4")
+
+    def test_prompt_cover_selector_uses_first_usable_carousel_child(self):
+        top_level_cover = self.module._oauth_prompt_cover_url({
+            "media_type": "CAROUSEL_ALBUM",
+            "media_url": "https://cdn.example.test/top-level.jpg",
+            "children": {"data": [{
+                "media_type": "IMAGE",
+                "media_url": "https://cdn.example.test/unused-child.jpg",
+            }]},
+        })
+        image_cover = self.module._oauth_prompt_cover_url({
+            "media_type": "CAROUSEL_ALBUM",
+            "children": {"data": [
+                {"media_type": "IMAGE", "media_url": "http://unsafe.example/image.jpg"},
+                {"media_type": "IMAGE", "media_url": "https://cdn.example.test/first.jpg"},
+                {"media_type": "IMAGE", "media_url": "https://cdn.example.test/second.jpg"},
+            ]},
+        })
+        video_cover = self.module._oauth_prompt_cover_url({
+            "media_type": "CAROUSEL_ALBUM",
+            "children": {"data": [{
+                "media_type": "VIDEO",
+                "media_url": "https://cdn.example.test/child-video.mp4",
+                "thumbnail_url": "https://cdn.example.test/child-video-cover.jpg",
+            }]},
+        })
+
+        self.assertEqual(top_level_cover, "https://cdn.example.test/top-level.jpg")
+        self.assertEqual(image_cover, "https://cdn.example.test/first.jpg")
+        self.assertEqual(video_cover, "https://cdn.example.test/child-video-cover.jpg")
+
+    def test_prompt_cover_selector_rejects_invalid_or_non_https_values(self):
+        cases = (
+            {},
+            {"media_type": "IMAGE", "media_url": "http://cdn.example.test/image.jpg"},
+            {"media_type": "IMAGE", "media_url": "javascript:alert(1)"},
+            {"media_type": "IMAGE", "media_url": "https:///missing-host.jpg"},
+            {
+                "media_type": "CAROUSEL_ALBUM",
+                "children": {"data": [{"media_type": "VIDEO", "media_url": "https://cdn.example.test/video.mp4"}]},
+            },
+        )
+
+        for media in cases:
+            with self.subTest(media=media):
+                self.assertEqual(self.module._oauth_prompt_cover_url(media), "")
+
+    def test_new_prompt_post_persists_selected_carousel_cover(self):
+        from database.oauth_engagement import get_oauth_prompt_post
+
+        prompts = [{"text": "safe extracted prompt"}]
+        media = {
+            "id": "media-new-cover",
+            "media_type": "CAROUSEL_ALBUM",
+            "permalink": "https://www.instagram.com/p/new-cover/",
+            "children": {"data": [{
+                "media_type": "IMAGE",
+                "media_url": "https://cdn.example.test/carousel-cover.jpg",
+            }]},
+        }
+        with patch.object(
+            self.module, "lookup_oauth_media", return_value=media
+        ), patch.object(
+            self.module, "extract_oauth_prompts", return_value=prompts
+        ):
+            public_id = self.module._oauth_prompt_post_for_comment(
+                self.Session,
+                self.account_a_id,
+                "17841438617458101",
+                "media-new-cover",
+            )
+
+        with self.Session() as session:
+            post = get_oauth_prompt_post(session, self.account_a_id, "media-new-cover")
+            self.assertEqual(post.public_id, public_id)
+            self.assertEqual(post.prompts, prompts)
+            self.assertEqual(post.cover_url, "https://cdn.example.test/carousel-cover.jpg")
+            self.assertEqual(post.permalink, "https://www.instagram.com/p/new-cover/")
+
+    def test_cached_prompt_with_cover_keeps_fast_path_without_refresh(self):
+        from database.oauth_engagement import oauth_prompt_post
+
+        with self.Session.begin() as session:
+            post = oauth_prompt_post(
+                session,
+                self.account_a_id,
+                "media-cached-cover",
+                [{"text": "preserved prompt"}],
+                cover_url="https://cdn.example.test/existing-cover.jpg",
+                permalink="https://www.instagram.com/p/existing-cover/",
+            )
+            public_id = post.public_id
+
+        with patch.object(
+            self.module,
+            "lookup_oauth_media",
+            side_effect=AssertionError("complete cached presentation must not refresh"),
+        ):
+            result = self.module._oauth_prompt_post_for_comment(
+                self.Session,
+                self.account_a_id,
+                "17841438617458101",
+                "media-cached-cover",
+            )
+
+        self.assertEqual(result, public_id)
+
+    def test_cached_prompt_missing_cover_is_backfilled_only_for_its_account(self):
+        from database.oauth_engagement import get_oauth_prompt_post, oauth_prompt_post
+
+        prompts = [{"text": "preserved prompt"}]
+        with self.Session.begin() as session:
+            target = oauth_prompt_post(
+                session,
+                self.account_a_id,
+                "shared-media",
+                prompts,
+            )
+            foreign = oauth_prompt_post(
+                session,
+                self.account_b_id,
+                "shared-media",
+                [{"text": "foreign prompt"}],
+                cover_url="https://cdn.example.test/foreign-cover.jpg",
+                permalink="https://www.instagram.com/p/foreign/",
+            )
+            target_identity = (
+                target.id,
+                target.public_id,
+                target.instagram_account_id,
+                target.media_id,
+            )
+            foreign_identity = (foreign.id, foreign.public_id)
+
+        media = {
+            "id": "shared-media",
+            "media_type": "CAROUSEL_ALBUM",
+            "permalink": "https://www.instagram.com/p/backfilled/",
+            "children": {"data": [{
+                "media_type": "IMAGE",
+                "media_url": "https://cdn.example.test/backfilled-cover.jpg",
+            }]},
+        }
+        with patch.object(
+            self.module, "lookup_oauth_media", return_value=media
+        ) as lookup, patch.object(
+            self.module,
+            "extract_oauth_prompts",
+            side_effect=AssertionError("cached prompts must not be regenerated"),
+        ):
+            result = self.module._oauth_prompt_post_for_comment(
+                self.Session,
+                self.account_a_id,
+                "17841438617458101",
+                "shared-media",
+            )
+
+        lookup.assert_called_once_with(
+            self.Session,
+            instagram_account_id=self.account_a_id,
+            instagram_user_id="17841438617458101",
+            media_id="shared-media",
+        )
+        with self.Session() as session:
+            target = get_oauth_prompt_post(session, self.account_a_id, "shared-media")
+            foreign = get_oauth_prompt_post(session, self.account_b_id, "shared-media")
+            self.assertEqual(result, target_identity[1])
+            self.assertEqual(
+                (target.id, target.public_id, target.instagram_account_id, target.media_id),
+                target_identity,
+            )
+            self.assertEqual(target.prompts, prompts)
+            self.assertEqual(target.cover_url, "https://cdn.example.test/backfilled-cover.jpg")
+            self.assertEqual(target.permalink, "https://www.instagram.com/p/backfilled/")
+            self.assertEqual((foreign.id, foreign.public_id), foreign_identity)
+            self.assertEqual(foreign.prompts, [{"text": "foreign prompt"}])
+            self.assertEqual(foreign.cover_url, "https://cdn.example.test/foreign-cover.jpg")
+            self.assertEqual(foreign.permalink, "https://www.instagram.com/p/foreign/")
+
+    def test_cached_prompt_cover_backfill_preserves_existing_permalink(self):
+        from database.oauth_engagement import get_oauth_prompt_post, oauth_prompt_post
+
+        existing_permalink = "https://www.instagram.com/p/existing/"
+        with self.Session.begin() as session:
+            post = oauth_prompt_post(
+                session,
+                self.account_a_id,
+                "media-existing-permalink",
+                [{"text": "preserved prompt"}],
+                permalink=existing_permalink,
+            )
+            public_id = post.public_id
+
+        with patch.object(self.module, "lookup_oauth_media", return_value={
+            "id": "media-existing-permalink",
+            "media_type": "IMAGE",
+            "media_url": "https://cdn.example.test/backfilled-cover.jpg",
+            "permalink": "https://www.instagram.com/p/replacement/",
+        }), patch.object(
+            self.module,
+            "extract_oauth_prompts",
+            side_effect=AssertionError("cached prompts must not be regenerated"),
+        ):
+            result = self.module._oauth_prompt_post_for_comment(
+                self.Session,
+                self.account_a_id,
+                "17841438617458101",
+                "media-existing-permalink",
+            )
+
+        with self.Session() as session:
+            post = get_oauth_prompt_post(
+                session, self.account_a_id, "media-existing-permalink"
+            )
+            self.assertEqual(result, public_id)
+            self.assertEqual(post.cover_url, "https://cdn.example.test/backfilled-cover.jpg")
+            self.assertEqual(post.permalink, existing_permalink)
+
+    def test_cached_prompt_remains_available_when_cover_refresh_fails(self):
+        from database.oauth_engagement import get_oauth_prompt_post, oauth_prompt_post
+
+        prompts = [{"text": "preserved prompt"}]
+        with self.Session.begin() as session:
+            post = oauth_prompt_post(
+                session,
+                self.account_a_id,
+                "media-refresh-unavailable",
+                prompts,
+            )
+            public_id = post.public_id
+
+        with patch.object(
+            self.module,
+            "lookup_oauth_media",
+            side_effect=RuntimeError("metadata unavailable"),
+        ):
+            result = self.module._oauth_prompt_post_for_comment(
+                self.Session,
+                self.account_a_id,
+                "17841438617458101",
+                "media-refresh-unavailable",
+            )
+
+        with self.Session() as session:
+            post = get_oauth_prompt_post(
+                session, self.account_a_id, "media-refresh-unavailable"
+            )
+            self.assertEqual(result, public_id)
+            self.assertEqual(post.prompts, prompts)
+            self.assertIsNone(post.cover_url)
+            self.assertIsNone(post.permalink)
+
     def test_comment_replay_is_claimed_once_and_never_calls_legacy_json_or_graph_fallback(self):
         comment = {"id": "comment-a", "text": "hello", "from": {"id": "customer"}}
         with self.Session.begin() as session:
@@ -594,7 +866,7 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
                 self.account_a_id,
                 "media-a",
                 [{"text": "safe prompt one\nwith formatting"}, {"text": "safe prompt two"}],
-                cover_url="https://cdn.example.test/preview.jpg",
+                cover_url="https://cdn.example.test/preview.jpg?asset=1&size=large",
                 permalink="https://www.instagram.com/p/safe-post/",
             )
         with self.Session() as session:
@@ -610,7 +882,10 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
         self.assertIn("navigator.clipboard", body)
         self.assertIn("document.execCommand", body)
         self.assertIn("Prompt copied", body)
-        self.assertIn("https://cdn.example.test/preview.jpg", body)
+        self.assertIn(
+            'src="https://cdn.example.test/preview.jpg?asset=1&amp;size=large"',
+            body,
+        )
         self.assertIn("View Instagram Post", body)
         self.assertIn("https://www.instagram.com/p/safe-post/", body)
         self.assertNotIn(str(self.account_a_id), body)
@@ -629,6 +904,8 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
         body = self.module.app.test_client().get(f"/p/o/{public_id}").get_data(as_text=True)
 
         self.assertNotIn("View Instagram Post", body)
+        self.assertNotIn('class="post-preview"', body)
+        self.assertNotIn("<img", body)
 
     def test_legacy_prompt_page_remains_legacy_viewer(self):
         with patch.object(self.module, "get_saved_post", return_value={
