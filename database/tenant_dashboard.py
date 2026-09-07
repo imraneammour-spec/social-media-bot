@@ -396,6 +396,7 @@ def list_tenant_accounts(
             credentials.get(account.id),
             label,
         )
+        can_reconnect = can_reconnect or activation_label == "Reconnect required"
         result.append(
             TenantAccount(
                 instagram_account_id=account.id,
@@ -1317,6 +1318,17 @@ class TenantAnalytics:
     lead_breakdown: dict[str, int]
     engagement_breakdown: dict[str, int]
     recent_failures: list[dict[str, str]]
+
+
+def analytics_has_activity(
+    metrics: dict[str, int],
+    followup_breakdown: dict[str, int],
+) -> bool:
+    """Return whether any persisted metric rendered by Analytics is non-zero."""
+
+    return any(value > 0 for value in metrics.values()) or any(
+        value > 0 for value in followup_breakdown.values()
+    )
 
 
 def analytics(

@@ -170,7 +170,7 @@ def _validated_redirect_uri(value: str, *, production: bool) -> str:
     return value
 
 
-def _validated_public_origin(value: object) -> str | None:
+def validated_public_origin(value: object) -> str | None:
     """Accept only the exact canonical public origin, without forwarded-host trust."""
 
     try:
@@ -201,7 +201,7 @@ def resolve_instagram_oauth_redirect_uri(
     """Use the canonical callback only for the exact configured public host."""
 
     source = os.environ if environ is None else environ
-    configured_origin = _validated_public_origin(source.get(PUBLIC_BASE_URL_ENV))
+    configured_origin = validated_public_origin(source.get(PUBLIC_BASE_URL_ENV))
     if configured_origin is not None:
         configured = urlsplit(configured_origin)
         raw_host = str(request_host or "").strip()

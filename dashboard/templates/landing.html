@@ -7,10 +7,10 @@
     <title>{{ t('landing_title') }}</title>
     <meta name="description" content="{{ t('landing_description') }}">
     <meta name="google-site-verification" content="DLtPOJlpIzjjlfxZ45fOISi0hD3JhPcp9L4D3f6LD4I" />
-    <link rel="canonical" href="{{ url_for('home', _external=True) }}">
+    <link rel="canonical" href="{{ canonical_url }}">
     <meta property="og:title" content="{{ t('landing_title') }}">
     <meta property="og:description" content="{{ t('landing_description') }}">
-    <meta property="og:image" content="{{ url_for('static', filename='brand/postenza-logo-light.png', _external=True) }}">
+    <meta property="og:image" content="{{ og_image_url }}">
     <meta property="og:type" content="website">
     <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='brand/postenza-favicon-32.png') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='landing.css') }}">

@@ -22,6 +22,7 @@
 {% endmacro %}
 {% block content %}
 {% if automation_saved %}<p class="alert" role="status">{{ t('Automation settings saved.') }}</p>{% endif %}
+{% if automation_error %}<p class="alert alert-error" role="alert">{{ t(automation_error) }}</p>{% endif %}
 <section class="page-intro"><p class="eyebrow">{{ t('Automation') }}</p><h2>{{ t('Choose how your account responds to people.') }}</h2><p class="muted">{{ t('Public replies appear on your Instagram post. Private messages go to the person who commented.') }}</p></section>
 <form method="post" class="settings-form">
 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

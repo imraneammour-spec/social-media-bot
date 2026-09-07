@@ -766,6 +766,56 @@ class SchedulerAnalyticsDashboardTest(unittest.TestCase):
 
         self.assertIn('class="empty-state">No activity in this time range.</p>', page)
 
+    def test_analytics_activity_predicate_includes_leads_and_other_metrics(self):
+        """Lead-only and other persisted activity must suppress the empty state."""
+
+        zero_metrics = {
+            "comments_handled": 0,
+            "messages_handled": 0,
+            "direct_private_replies": 0,
+            "smart_replies_sent": 0,
+            "followups_scheduled": 0,
+            "followups_sent": 0,
+            "followups_failed": 0,
+            "qualifying_recipient_replies": 0,
+            "failed_events": 0,
+            "completed_events": 0,
+            "prompt_requests": 0,
+            "prompt_enabled_content": 0,
+            "leads_total": 0,
+            "leads_active": 0,
+            "leads_archived": 0,
+        }
+        zero_followups = {
+            "scheduled": 0,
+            "processing": 0,
+            "sent": 0,
+            "cancelled": 0,
+            "failed": 0,
+        }
+
+        self.assertFalse(
+            tenant_data.analytics_has_activity(zero_metrics, zero_followups)
+        )
+        self.assertTrue(
+            tenant_data.analytics_has_activity(
+                {**zero_metrics, "leads_archived": 1},
+                zero_followups,
+            )
+        )
+        self.assertTrue(
+            tenant_data.analytics_has_activity(
+                {**zero_metrics, "messages_handled": 1},
+                zero_followups,
+            )
+        )
+        self.assertTrue(
+            tenant_data.analytics_has_activity(
+                zero_metrics,
+                {**zero_followups, "cancelled": 1},
+            )
+        )
+
     def test_scheduler_status_filter_upcoming(self):
         """Scheduler 'upcoming' filter shows only pending/processing jobs."""
         self._login_as(self.owner_a)

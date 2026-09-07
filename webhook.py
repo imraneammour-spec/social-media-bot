@@ -83,6 +83,7 @@ from auth import (
 )
 from dashboard.i18n import LOCALE_META, LOCALE_SESSION_KEY, locale_context, normalize_locale, translate, session_locale
 from tenant_dashboard import register_tenant_dashboard
+from instagram_oauth import validated_public_origin
 
 from google import genai
 from google.genai import types
@@ -287,11 +288,28 @@ else:
 @app.route("/", methods=["GET"])
 def home():
     locale = locale_context(session_locale(session))
+    public_origin = validated_public_origin(PUBLIC_BASE_URL)
+    canonical_url = (
+        f"{public_origin}/"
+        if public_origin is not None
+        else url_for("home", _external=True)
+    )
+    og_image_url = (
+        f"{public_origin}/static/brand/postenza-logo-light.png"
+        if public_origin is not None
+        else url_for(
+            "static",
+            filename="brand/postenza-logo-light.png",
+            _external=True,
+        )
+    )
     return render_template(
         "landing.html",
+        canonical_url=canonical_url,
         csrf_token=csrf_token(),
         locale=locale,
         locale_options=LOCALE_META,
+        og_image_url=og_image_url,
         t=lambda key: translate(locale["code"], key),
     )
 

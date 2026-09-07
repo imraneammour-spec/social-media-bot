@@ -663,6 +663,26 @@ def _lead_payload(
     return payload
 
 
+_INTERNAL_PROMPT_CONTENT_FIELDS = frozenset({
+    "prompt_url",
+    "public_id",
+    "prompt_count",
+})
+
+
+def _content_payload(rows, *, internal_prompt_access):
+    if internal_prompt_access:
+        return rows
+    return [
+        {
+            key: value
+            for key, value in row.items()
+            if key not in _INTERNAL_PROMPT_CONTENT_FIELDS
+        }
+        for row in rows
+    ]
+
+
 def _lead_redirect():
     view, stage, search, sort, page = _lead_filters()
 
@@ -903,6 +923,59 @@ def _submitted_mode_values(mode, selected_mode, current_values):
             normalize_destination_url(destination) if destination else ""
         )
     return values
+
+
+def _submitted_automation_presentation(automation):
+    """Return unsaved browser values without applying persistence validation."""
+
+    presentation = dict(automation)
+    modes = {
+        mode: dict(values)
+        for mode, values in automation["modes"].items()
+    }
+    requested_mode = str(request.form.get("delivery_mode") or "").strip()
+    selected_mode = (
+        requested_mode
+        if requested_mode in modes
+        else automation["delivery_mode"]
+    )
+
+    for mode, values in modes.items():
+        raw_keywords, present = _mode_form_value(
+            mode, "trigger_keywords", selected_mode
+        )
+        if present:
+            values["trigger_keywords"] = [
+                item.strip()
+                for item in str(raw_keywords or "").split(",")
+                if item.strip()
+            ]
+        for field in ("public_reply_enabled", "followup_enabled"):
+            raw_value, present = _mode_form_value(mode, field, selected_mode)
+            if present:
+                values[field] = raw_value == "on"
+        for field in (
+            "public_reply_text",
+            "private_message_text",
+            "followup_delay_minutes",
+            "followup_message_text",
+            "destination_url",
+        ):
+            raw_value, present = _mode_form_value(mode, field, selected_mode)
+            if present:
+                values[field] = str(raw_value or "").strip()
+
+    presentation["modes"] = modes
+    presentation["delivery_mode"] = selected_mode
+    presentation["enabled"] = request.form.get("enabled") == "on"
+    if "smart_reply_enabled" in request.form:
+        presentation["smart_reply_enabled"] = (
+            request.form.get("smart_reply_enabled") == "on"
+        )
+    for field in ("smart_reply_tone", "smart_reply_max_per_hour"):
+        if field in request.form:
+            presentation[field] = str(request.form.get(field) or "").strip()
+    return presentation
 
 
 def _update_automation_config(selected, *, internal_prompt_access=False):
@@ -1232,13 +1305,17 @@ def register_tenant_dashboard(app) -> None:
             selected_filter=selected_filter,
         )
 
-    @dashboard.get("/content")
-    @_require_tenant
-    def app_content(
+    def _render_content_page(
         user,
         accounts,
         selected,
+        *,
+        content_error=None,
+        content_form=None,
+        content_edit_form=None,
+        status=200,
     ):
+        internal_prompt_access = current_user_has_legacy_workspace_access()
         selected_filter = tenant_data.content_filter(request.args.get("filter"))
         page = request.args.get("page")
         content_page = _query(
@@ -1256,6 +1333,15 @@ def register_tenant_dashboard(app) -> None:
         if session_factory is not None:
             try:
                 with session_factory() as session:
+                    submitted_edit_draft = None
+                    if content_edit_form:
+                        submitted_edit_draft = _resolve_owned_content_draft(
+                            session,
+                            user_id=user.id,
+                            selected_account_id=selected.instagram_account_id,
+                            reference=content_edit_form.get("draft_ref"),
+                            purpose="content-draft-edit",
+                        )
                     raw_drafts = tenant_data.content_drafts(
                         session,
                         instagram_account_id=selected.instagram_account_id,
@@ -1263,7 +1349,7 @@ def register_tenant_dashboard(app) -> None:
                     drafts = [
                         {
                             **draft,
-                            "draft_ref": _content_draft_reference(
+                            "edit_ref": _content_draft_reference(
                                 user.id,
                                 draft["id"],
                                 purpose="content-draft-edit",
@@ -1280,24 +1366,47 @@ def register_tenant_dashboard(app) -> None:
                             ) if draft.get("id") else None,
                             "schedule_ref": _content_draft_reference(user.id, draft["id"], purpose="content-schedule") if draft.get("id") else None,
                             "unschedule_ref": _content_draft_reference(user.id, draft["id"], purpose="content-unschedule") if draft.get("id") else None,
+                            "edit_form": (
+                                content_edit_form
+                                if submitted_edit_draft is not None
+                                and str(draft.get("id")) == str(submitted_edit_draft.id)
+                                else None
+                            ),
                         }
                         for draft in raw_drafts
                     ]
             except SQLAlchemyError:
                 return _workspace_unavailable()
 
-        return _render_page(
+        response = _render_page(
             "app_content.html",
             user=user,
             accounts=accounts,
             selected=selected,
-            content_items=content_page.content,
+            content_items=_content_payload(
+                content_page.content,
+                internal_prompt_access=internal_prompt_access,
+            ),
             content_page=content_page,
             content_filters=tenant_data.CONTENT_FILTER_LABELS,
             selected_filter=selected_filter,
             drafts=drafts,
             content_types=CONTENT_TYPES,
+            internal_prompt_access=internal_prompt_access,
+            content_error=content_error,
+            content_form=content_form or {},
         )
+        response.status_code = status
+        return response
+
+    @dashboard.get("/content")
+    @_require_tenant
+    def app_content(
+        user,
+        accounts,
+        selected,
+    ):
+        return _render_content_page(user, accounts, selected)
 
     @dashboard.post("/content/drafts/create")
     @_require_tenant
@@ -1312,7 +1421,17 @@ def register_tenant_dashboard(app) -> None:
         try:
             media_value = public_image_url(request.form.get("media_url") or request.form.get("media_reference"))
         except ValueError:
-            return _cache_control(jsonify(error=_ui_text("Enter a public HTTPS image link without embedded credentials."))), 400
+            return _render_content_page(
+                user,
+                accounts,
+                selected,
+                content_error="Enter a public HTTPS image link without embedded credentials.",
+                content_form={
+                    "media_url": str(request.form.get("media_url") or ""),
+                    "caption": str(request.form.get("caption") or ""),
+                },
+                status=400,
+            )
         try:
             with session_factory.begin() as session:
                 create_content_draft(
@@ -1360,7 +1479,18 @@ def register_tenant_dashboard(app) -> None:
             try:
                 media_url_value = public_image_url(media_url_value)
             except ValueError:
-                return _cache_control(jsonify(error=_ui_text("Enter a public HTTPS image link without embedded credentials."))), 400
+                return _render_content_page(
+                    user,
+                    accounts,
+                    selected,
+                    content_error="Enter a public HTTPS image link without embedded credentials.",
+                    content_edit_form={
+                        "draft_ref": draft_ref,
+                        "media_url": str(request.form.get("media_url") or ""),
+                        "caption": str(request.form.get("caption") or ""),
+                    },
+                    status=400,
+                )
 
         try:
             with session_factory.begin() as session:
@@ -1632,6 +1762,10 @@ def register_tenant_dashboard(app) -> None:
             accounts=accounts,
             selected=selected,
             analytics=data,
+            analytics_has_activity=tenant_data.analytics_has_activity(
+                data.metrics,
+                data.followup_breakdown,
+            ),
             range_filters=tenant_data.ANALYTICS_RANGE_LABELS,
             selected_range=selected_range,
         )
@@ -1657,6 +1791,7 @@ def register_tenant_dashboard(app) -> None:
         selected,
     ):
         internal_prompt_access = current_user_has_legacy_workspace_access()
+        automation_error = None
         if request.method == "POST":
             if not validate_csrf_token(
                 request_csrf_token()
@@ -1675,10 +1810,10 @@ def register_tenant_dashboard(app) -> None:
                 return _safe_account_unavailable()
 
             if updated is _INVALID_DESTINATION_URL:
-                return _safe_automation_destination_url_error()
+                automation_error = AUTOMATION_DESTINATION_URL_ERROR_MESSAGE
 
             if updated is False:
-                return _safe_automation_update_error()
+                automation_error = AUTOMATION_UPDATE_ERROR_MESSAGE
 
         automation = _automation_config(
             selected,
@@ -1691,16 +1826,23 @@ def register_tenant_dashboard(app) -> None:
         if automation is None:
             return _safe_account_unavailable()
 
-        return _render_page(
+        if automation_error is not None:
+            automation = _submitted_automation_presentation(automation)
+
+        response = _render_page(
             "app_automations.html",
             user=user,
             accounts=accounts,
             selected=selected,
             automation=automation,
-            automation_saved=request.method == "POST",
+            automation_saved=request.method == "POST" and automation_error is None,
+            automation_error=automation_error,
             smart_reply_tones=SMART_REPLY_TONES,
             internal_prompt_access=internal_prompt_access,
         )
+        if automation_error is not None:
+            response.status_code = 400
+        return response
 
     @dashboard.get("/api/accounts")
     @_require_tenant
@@ -1875,6 +2017,7 @@ def register_tenant_dashboard(app) -> None:
         accounts,
         selected,
     ):
+        internal_prompt_access = current_user_has_legacy_workspace_access()
         selected_filter = tenant_data.content_filter(request.args.get("filter"))
         page = request.args.get("page")
         content_page = _query(
@@ -1888,7 +2031,10 @@ def register_tenant_dashboard(app) -> None:
             return _workspace_unavailable()
 
         return jsonify(
-            content=content_page.content,
+            content=_content_payload(
+                content_page.content,
+                internal_prompt_access=internal_prompt_access,
+            ),
             pagination={
                 "page": content_page.page,
                 "has_previous": content_page.has_previous,

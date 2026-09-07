@@ -21,3 +21,4 @@ html[dir="rtl"] .tenant-dashboard .workspace-nav a,html[dir="rtl"] .tenant-dashb
 @media(max-width:900px){.mobile-nav-backdrop:not([hidden]){display:block}.mobile-nav-open{overflow:hidden}.app-sidebar{padding-top:70px;max-width:calc(100vw - 64px)}.composer-form>.helper-text{grid-column:auto}}
 @media(max-width:620px){.account-grid{grid-template-columns:minmax(0,1fr)}.list-row{flex-wrap:wrap}.activity-filters label,.lead-filters label{min-width:0;width:100%}}
 @media(prefers-reduced-motion:reduce){.app-sidebar{transition:none}}
+.alert-error{border:1px solid #FECDCA;background:#FFFBFA;color:#B42318}

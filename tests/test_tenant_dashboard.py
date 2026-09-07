@@ -478,6 +478,16 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertEqual(page.count(">Reconnect Instagram</button>"), 1)
         self.assertIn('action="/connect/instagram"', page)
 
+    def test_connected_account_missing_required_scopes_can_reconnect(self):
+        """Capability-required reconnect must remain actionable for a connected row."""
+
+        self._login_as(self.owner_a)
+        page = self.client.get("/app/accounts").get_data(as_text=True)
+
+        self.assertIn("Reconnect required", page)
+        self.assertEqual(page.count(">Reconnect Instagram</button>"), 1)
+        self.assertIn('action="/connect/instagram"', page)
+
     def test_connected_account_with_error_shows_reconnect(self):
         with self.Session.begin() as session:
             account = session.get(InstagramAccount, self.account_a1.id)
@@ -1372,6 +1382,46 @@ class TenantDashboardTest(unittest.TestCase):
             self.assertNotIn("Prompt", page, path)
             self.assertNotIn("Internal only copy", page, path)
 
+    def test_customer_content_omits_internal_prompt_detail_fields_and_links(self):
+        """Normal tenants must not receive owner-facing Prompt detail access."""
+
+        self._login_as(self.owner_a)
+        selected = self._reference(self.owner_a, self.account_a1)
+
+        response = self.client.get(f"/app/api/content?account={selected}")
+        self.assertEqual(response.status_code, 200)
+        content = response.get_json()["content"]
+        self.assertTrue(content)
+        for item in content:
+            self.assertNotIn("prompt_url", item)
+            self.assertNotIn("public_id", item)
+            self.assertNotIn("prompt_count", item)
+
+        page = self.client.get(f"/app/content?account={selected}").get_data(as_text=True)
+        self.assertNotIn("View interaction details", page)
+        self.assertNotIn("/p/o/", page)
+
+    def test_internal_owner_content_retains_prompt_detail_fields_and_links(self):
+        """The established internal owner keeps existing Prompt detail access."""
+
+        with self.Session.begin() as session:
+            legacy = session.get(InstagramAccount, self.legacy_account.id)
+            legacy.user_id = self.owner_a.id
+        self._login_as(self.owner_a)
+        selected = self._reference(self.owner_a, self.account_a1)
+
+        response = self.client.get(f"/app/api/content?account={selected}")
+        self.assertEqual(response.status_code, 200)
+        content = response.get_json()["content"]
+        self.assertTrue(content)
+        self.assertEqual(content[0]["prompt_url"], "/p/o/opaque-prompt-a")
+        self.assertEqual(content[0]["public_id"], "opaque-prompt-a")
+        self.assertEqual(content[0]["prompt_count"], "1")
+
+        page = self.client.get(f"/app/content?account={selected}").get_data(as_text=True)
+        self.assertIn('href="/p/o/opaque-prompt-a"', page)
+        self.assertIn("View interaction details", page)
+
     def test_internal_prompt_capability_uses_legacy_account_ownership_boundary(self):
         """Only the established legacy-account owner may view and save Prompt settings."""
 
@@ -1624,10 +1674,13 @@ class TenantDashboardTest(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(
-            response.get_json(),
-            {"error": "Enter a valid http:// or https:// destination URL."},
-        )
+        self.assertEqual(response.content_type, "text/html; charset=utf-8")
+        error_page = response.get_data(as_text=True)
+        self.assertIn('class="alert alert-error" role="alert"', error_page)
+        self.assertIn("Enter a valid http:// or https:// destination URL.", error_page)
+        self.assertIn('value="link" selected', error_page)
+        self.assertIn("Unsafe link", error_page)
+        self.assertIn('value="javascript:alert(1)"', error_page)
         with self.Session() as session:
             config = session.scalar(select(InstagramAutomationConfig).where(
                 InstagramAutomationConfig.instagram_account_id == self.account_a1.id

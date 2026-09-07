@@ -196,7 +196,12 @@ class ProductPolishTest(unittest.TestCase):
                                     data={"csrf_token": csrf, "content_type": "image", "caption": "My caption",
                                           "media_url": "http://example.com/a.jpg"})
         self.assertEqual(response.status_code, 400)
-        self.assertNotIn("could not", response.get_data(as_text=True))
+        self.assertEqual(response.content_type, "text/html; charset=utf-8")
+        error_page = response.get_data(as_text=True)
+        self.assertIn('class="alert alert-error" role="alert"', error_page)
+        self.assertIn("Saisissez un lien HTTPS public vers une image", error_page)
+        self.assertIn('value="http://example.com/a.jpg"', error_page)
+        self.assertIn("My caption", error_page)
         with self.Session() as session:
             self.assertIsNone(session.scalar(select(InstagramContentItem).where(
                 InstagramContentItem.instagram_account_id == self.account_a1.id)))

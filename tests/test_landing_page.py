@@ -150,6 +150,45 @@ class LandingPageTest(unittest.TestCase):
         self.assertIn('property="og:title"', page)
         self.assertIn('rel="canonical"', page)
 
+    def test_landing_metadata_uses_configured_https_origin_behind_proxy(self):
+        with patch.object(
+            self.module,
+            "PUBLIC_BASE_URL",
+            "https://postenza.app",
+        ):
+            page = self.client.get(
+                "/",
+                base_url="http://postenza.app",
+            ).get_data(as_text=True)
+
+        self.assertIn(
+            '<link rel="canonical" href="https://postenza.app/">',
+            page,
+        )
+        self.assertIn(
+            '<meta property="og:image" content="https://postenza.app/static/brand/postenza-logo-light.png">',
+            page,
+        )
+        self.assertNotIn('content="http://postenza.app/', page)
+
+    def test_landing_metadata_rejects_untrusted_public_origin_and_keeps_local_fallback(self):
+        with patch.object(
+            self.module,
+            "PUBLIC_BASE_URL",
+            "https://postenza.app.evil.example",
+        ):
+            page = self.client.get(
+                "/",
+                base_url="http://localhost",
+            ).get_data(as_text=True)
+
+        self.assertIn('<link rel="canonical" href="http://localhost/">', page)
+        self.assertIn(
+            '<meta property="og:image" content="http://localhost/static/brand/postenza-logo-light.png">',
+            page,
+        )
+        self.assertNotIn("postenza.app.evil.example", page)
+
     def test_landing_contains_google_site_verification_tag_once(self):
         page = self.client.get("/").get_data(as_text=True)
         verification_tag = (
@@ -203,6 +242,19 @@ class LandingPageTest(unittest.TestCase):
         self.assertIn('lang="fr" dir="ltr"', page)
         self.assertIn("Mettez votre Instagram en pilote automatique.", page)
         self.assertIn("Postenza", page)
+
+    def test_landing_describes_message_activity_without_claiming_an_inbox(self):
+        expected = {
+            "en": "manage message activity",
+            "fr": "suivez l’activité des messages",
+            "ar": "وتابع نشاط الرسائل",
+        }
+        for locale, wording in expected.items():
+            with self.subTest(locale=locale):
+                page = self._page_for_locale(locale)
+                self.assertIn(wording, page)
+                self.assertNotIn("conversation", page.lower())
+                self.assertNotIn("المحادثات", page)
 
 
 if __name__ == "__main__":

@@ -255,6 +255,11 @@ class MessagesContentDashboardTest(unittest.TestCase):
             secret_key=self.app.secret_key,
         )
 
+    def _enable_internal_prompt_for(self, account):
+        self.app.extensions[
+            "phase3a_auth"
+        ].legacy_instagram_user_id = account.instagram_user_id
+
     # ==================================================================
     # MESSAGES TESTS
     # ==================================================================
@@ -362,6 +367,7 @@ class MessagesContentDashboardTest(unittest.TestCase):
 
     def test_content_selected_account_only_sees_own_content(self):
         """8. Selected account only sees its own content."""
+        self._enable_internal_prompt_for(self.account_a)
         self._login_as(self.owner_a)
         ref = self._reference(self.owner_a, self.account_a)
         response = self.client.get(f"/app/api/content?account={ref}")
@@ -382,6 +388,7 @@ class MessagesContentDashboardTest(unittest.TestCase):
 
     def test_content_prompt_posts_correctly_associated(self):
         """10. Prompt posts are correctly associated with their account."""
+        self._enable_internal_prompt_for(self.account_b)
         self._login_as(self.owner_b)
         ref = self._reference(self.owner_b, self.account_b)
         response = self.client.get(f"/app/api/content?account={ref}")
@@ -392,6 +399,7 @@ class MessagesContentDashboardTest(unittest.TestCase):
 
     def test_content_viewer_links_use_opaque_public_ids(self):
         """11. Interaction-detail links retain opaque public IDs."""
+        self._enable_internal_prompt_for(self.account_a)
         self._login_as(self.owner_a)
         ref = self._reference(self.owner_a, self.account_a)
         page = self.client.get(f"/app/content?account={ref}").get_data(as_text=True)
@@ -619,6 +627,51 @@ class MessagesContentDashboardTest(unittest.TestCase):
             self.assertEqual(persisted.caption, "Locked caption")
             self.assertEqual(persisted.content_type, "image")
             self.assertEqual(persisted.media_url, "https://cdn.example.com/locked.jpg")
+
+    def test_content_draft_edit_invalid_url_rerenders_form_without_mutation(self):
+        """An invalid edit URL stays in the owned browser form for correction."""
+
+        self._login_as(self.owner_a)
+        ref = self._reference(self.owner_a, self.account_a)
+        with self.app.app_context():
+            with self.Session.begin() as session:
+                draft = create_content_draft(
+                    session,
+                    instagram_account_id=self.account_a.id,
+                    caption="Original edit caption",
+                    content_type="image",
+                    media_url="https://cdn.example.com/original-edit.jpg",
+                )
+                draft_ref = _content_draft_reference(
+                    self.owner_a.id,
+                    draft.id,
+                    purpose="content-draft-edit",
+                )
+
+        response = self.client.post(
+            f"/app/content/drafts/edit?account={ref}",
+            data={
+                "csrf_token": "csrf-test-token",
+                "draft_ref": draft_ref,
+                "content_type": "image",
+                "caption": "Correct this edited caption",
+                "media_url": "http://example.com/not-public.jpg",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.content_type, "text/html; charset=utf-8")
+        page = response.get_data(as_text=True)
+        self.assertIn('class="alert alert-error" role="alert"', page)
+        self.assertIn('value="http://example.com/not-public.jpg"', page)
+        self.assertIn("Correct this edited caption", page)
+        with self.Session() as session:
+            persisted = session.get(InstagramContentItem, draft.id)
+            self.assertEqual(persisted.caption, "Original edit caption")
+            self.assertEqual(
+                persisted.media_url,
+                "https://cdn.example.com/original-edit.jpg",
+            )
 
     def test_content_draft_status_route_transitions_owned_item(self):
         """Status changes use the page-generated reference for both supported transitions."""
