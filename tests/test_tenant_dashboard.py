@@ -1228,7 +1228,8 @@ class TenantDashboardTest(unittest.TestCase):
         page = self.client.get("/app").get_data(as_text=True)
 
         self.assertIn("Postenza", page)
-        self.assertIn("postenza-sidebar-logo-dark.png", page)
+        self.assertIn("postenza-logo-dark.png", page)
+        self.assertNotIn("postenza-sidebar-logo-dark.png", page)
         self.assertIn("postenza-favicon.png", page)
         self.assertIn('sizes="16x16" href="/static/brand/postenza-favicon-16.png"', page)
         self.assertIn('sizes="32x32" href="/static/brand/postenza-favicon-32.png"', page)
