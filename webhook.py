@@ -4501,10 +4501,14 @@ def process_webhook_background(
         if entry_external_id is None:
             print("WEBHOOK ROUTING: entry skipped (invalid envelope).")
             continue
+        print(f"WEBHOOK ROUTING: resolving entry_external_id={entry_external_id}")
         try:
             route = _resolve_webhook_entry_route(entry_external_id)
-        except Exception:
-            print("WEBHOOK ROUTING: entry skipped (route unavailable).")
+        except RuntimeAccountRouteUnavailableError:
+            print(f"WEBHOOK ROUTING: unavailable entry_external_id={entry_external_id} reason=account_route_unavailable")
+            continue
+        except Exception as exc:
+            print(f"WEBHOOK ROUTING: unexpected failure entry_external_id={entry_external_id} exception={type(exc).__name__}")
             continue
 
         if route.connection_mode == "oauth":

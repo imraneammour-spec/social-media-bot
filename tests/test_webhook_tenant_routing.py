@@ -195,8 +195,11 @@ class WebhookTenantRoutingTest(unittest.TestCase):
         legacy_handler.assert_not_called()
         messages = [call.args[0] for call in log.call_args_list]
         self.assertEqual(messages.count("WEBHOOK ROUTING: oauth_route_selected=True"), 1)
+        self.assertIn(
+            "WEBHOOK ROUTING: resolving entry_external_id=17841438617458902",
+            messages,
+        )
         rendered = " ".join(messages)
-        self.assertNotIn("17841438617458902", rendered)
         self.assertNotIn(self.environment["INSTAGRAM_ACCESS_TOKEN"], rendered)
 
     def test_legacy_route_does_not_log_oauth_route_confirmation(self):
@@ -229,7 +232,7 @@ class WebhookTenantRoutingTest(unittest.TestCase):
 
         messages = [call.args[0] for call in log.call_args_list]
         self.assertNotIn("WEBHOOK ROUTING: oauth_route_selected=True", messages)
-        self.assertIn("WEBHOOK ROUTING: entry skipped (route unavailable).", messages)
+        self.assertIn("WEBHOOK ROUTING: unavailable entry_external_id=17841438617458999 reason=account_route_unavailable", messages)
 
     def test_signed_oauth_webhook_acknowledgment_remains_200(self):
         payload = {"entry": [{"id": "17841438617458902", "changes": []}]}
@@ -430,17 +433,26 @@ class WebhookTenantRoutingTest(unittest.TestCase):
             }]
         }
         with patch.object(
-            self.module, "_resolve_webhook_entry_route", side_effect=RuntimeError("route failed")
+            self.module,
+            "_resolve_webhook_entry_route",
+            side_effect=RuntimeError(
+                f"route failed token={self.environment['INSTAGRAM_ACCESS_TOKEN']}"
+            ),
         ), patch.object(self.module.requests, "get") as graph_get, patch(
             "builtins.print"
         ) as log:
             self.module.process_webhook_background(payload, "http://localhost")
 
         graph_get.assert_not_called()
+        messages = [call.args[0] for call in log.call_args_list]
         self.assertIn(
-            "WEBHOOK ROUTING: entry skipped (route unavailable).",
-            [call.args[0] for call in log.call_args_list],
+            "WEBHOOK ROUTING: unexpected failure entry_external_id=17841438617458999 exception=RuntimeError",
+            messages,
         )
+        rendered = " ".join(messages)
+        self.assertNotIn("route failed", rendered)
+        self.assertNotIn(self.environment["INSTAGRAM_ACCESS_TOKEN"], rendered)
+
     def test_route_failure_does_not_change_webhook_acknowledgment(self):
         payload = {"entry": [{"id": "17841438617458999", "changes": []}]}
         with patch.object(self.module.threading, "Thread", _NoopThread):
