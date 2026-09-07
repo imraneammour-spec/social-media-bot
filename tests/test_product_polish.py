@@ -238,9 +238,65 @@ class ProductPolishTest(unittest.TestCase):
         page = self.get("/app/followups").get_data(as_text=True)
         for state in ("Scheduled", "Processing", "Sent", "Failed", "Cancelled"):
             self.assertIn(state, page)
+        for status, css_class in (
+            ("Scheduled", "status-warning"),
+            ("Processing", "status-primary"),
+            ("Sent", "status-success"),
+            ("Failed", "status-error"),
+            ("Cancelled", "status-neutral"),
+        ):
+            self.assertIn(f'class="status-pill {css_class}">{status}</span>', page)
+        self.assertNotRegex(page, r"status-(?:pending|danger|info)")
+        self.assertIn("Only pending jobs can be cancelled.", page)
         self.assertEqual(page.count('name="scheduler_action"'), pending_before + 1)
         for private in ("private-source-", "private-recipient-", "private-body", "untrusted error", "credential=secret"):
             self.assertNotIn(private, page)
+
+    def test_engagement_page_copy_is_specific_without_inventing_activity(self):
+        from auth import action_reference_for_account
+
+        self.login()
+        activity = self.get("/app/activity").get_data(as_text=True)
+        self.assertIn(
+            "Comments, messages, smart replies, and follow-up events for the selected Instagram account.",
+            activity,
+        )
+        self.assertNotRegex(activity, r"status-(?:pending|danger|info)")
+
+        leads = self.get("/app/leads").get_data(as_text=True)
+        self.assertIn("Contacts who engaged with your account", leads)
+        self.assertIn(
+            "Contacts who requested prompts from your prompt-enabled Instagram posts.",
+            leads,
+        )
+
+        empty_account = action_reference_for_account(
+            self.owner_a.id,
+            self.account_a2.id,
+            "tenant-dashboard-select",
+            secret_key=self.app.secret_key,
+        )
+        empty_leads = self.client.get(
+            "/app/leads", query_string={"account": empty_account}
+        ).get_data(as_text=True)
+        self.assertIn(
+            "No leads yet. Contacts will appear here after a prompt request is recorded.",
+            empty_leads,
+        )
+        empty_messages = self.client.get(
+            "/app/messages", query_string={"account": empty_account}
+        ).get_data(as_text=True)
+        self.assertIn(
+            "No message activity yet. Recorded comment interactions, messages, smart replies, and follow-ups will appear here.",
+            empty_messages,
+        )
+        empty_followups = self.client.get(
+            "/app/followups", query_string={"account": empty_account}
+        ).get_data(as_text=True)
+        self.assertIn(
+            "No follow-ups yet. Scheduled and sent follow-ups will appear here.",
+            empty_followups,
+        )
 
     def test_rendered_scripts_compile_in_every_locale(self):
         node = shutil.which("node")

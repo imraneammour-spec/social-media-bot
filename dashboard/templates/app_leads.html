@@ -3,7 +3,7 @@
 {% block heading %}{{ t('Leads') }}{% endblock %}
 {% block content %}
 {% set engagement_section = 'leads' %}{% include "_engagement_tabs.html" %}
-<section class="page-intro"><p class="eyebrow">{{ t('Engagement') }}</p><h2>{{ t('People who engaged with your account') }}</h2><p class="muted">{{ t('Review interactions, keep notes, and update each lead when you are ready.') }}</p></section>
+<section class="page-intro"><p class="eyebrow">{{ t('Engagement') }}</p><h2>{{ t('Contacts who engaged with your account') }}</h2><p class="muted">{{ t('Contacts who requested prompts from your prompt-enabled Instagram posts.') }}</p></section>
 <form method="get" action="{{ url_for('tenant_dashboard.app_leads') }}" class="card lead-filters" aria-label="{{ t('Lead filters') }}">
     <input type="hidden" name="account" value="{{ selected_account.selection_ref }}">
     <label>{{ t('View') }}
@@ -72,7 +72,7 @@
         <button class="button button-destructive" type="submit" {% if not lead.archived %}data-confirm="{{ t('Archive this lead?') }}"{% endif %}>{{ t('Unarchive lead') if lead.archived else t('Archive lead') }}</button>
     </form>
 </article>
-{% else %}<p class="empty-state">{{ t('No leads yet.') }}</p>{% endfor %}
+{% else %}<p class="empty-state">{{ t('No leads yet. Contacts will appear here after a prompt request is recorded.') }}</p>{% endfor %}
 <nav aria-label="{{ t('Lead pagination') }}">
     {% if lead_page.has_previous %}<a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_leads', account=selected_account.selection_ref, view=selected_view, stage=selected_stage, q=selected_search or None, sort=selected_sort, page=lead_page.page - 1) }}">{{ t('Previous') }}</a>{% endif %}
     <span>{{ t('Page') }} {{ lead_page.page }}</span>

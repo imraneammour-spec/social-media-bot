@@ -16,7 +16,7 @@
 <section class="page-stack" aria-label="{{ t('Account messages') }}">
 {% for item in messages %}
 <article class="card activity-card activity-feed-item"><span class="activity-icon" aria-hidden="true">◆</span><div><h2>{{ t(item.type) }}</h2><p class="muted">{% if item.username %}{{ display_username(item.username) }} · {% endif %}{{ t(item.detail or item.status) }}</p><p class="muted">{{ display_time(item.occurred_at) }}</p></div></article>
-{% else %}<p class="empty-state">{{ t('No messages or interactions yet. New Instagram interactions will appear here when engagement automation is active.') }}</p>{% endfor %}
+{% else %}<p class="empty-state">{{ t('No message activity yet. Recorded comment interactions, messages, smart replies, and follow-ups will appear here.') }}</p>{% endfor %}
 </section>
 <nav aria-label="{{ t('Message pagination') }}">
     {% if message_page.has_previous %}<a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_messages', account=selected_account.selection_ref, filter=selected_filter, page=message_page.page - 1) }}">{{ t('Previous') }}</a>{% endif %}

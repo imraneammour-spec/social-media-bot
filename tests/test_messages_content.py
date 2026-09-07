@@ -334,7 +334,10 @@ class MessagesContentDashboardTest(unittest.TestCase):
             )
         response = self.client.get(f"/app/messages?account={empty_ref}")
         self.assertEqual(response.status_code, 200)
-        self.assertIn("No messages or interactions yet", response.get_data(as_text=True))
+        self.assertIn(
+            "No message activity yet. Recorded comment interactions, messages, smart replies, and follow-ups will appear here.",
+            response.get_data(as_text=True),
+        )
 
     def test_messages_invalid_account_fails_safely(self):
         """6. Invalid/stale selected account fails safely."""
