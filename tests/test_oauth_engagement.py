@@ -498,6 +498,29 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
             with self.subTest(media=media):
                 self.assertEqual(self.module._oauth_prompt_cover_url(media), "")
 
+    def test_prompt_cover_refresh_due_handles_aware_and_naive_timestamps(self):
+        from datetime import datetime, timedelta, timezone
+        from types import SimpleNamespace
+
+        now = datetime(2026, 9, 7, 18, 0, tzinfo=timezone.utc)
+        aware_fresh = SimpleNamespace(
+            cover_url="https://cdn.example.test/fresh.jpg",
+            created_at=now - timedelta(hours=1),
+            updated_at=now - timedelta(hours=1),
+        )
+        naive_stale = SimpleNamespace(
+            cover_url="https://cdn.example.test/stale.jpg",
+            created_at=(now - timedelta(hours=8)).replace(tzinfo=None),
+            updated_at=(now - timedelta(hours=7)).replace(tzinfo=None),
+        )
+
+        self.assertFalse(
+            self.module._oauth_prompt_cover_refresh_due(aware_fresh, now=now)
+        )
+        self.assertTrue(
+            self.module._oauth_prompt_cover_refresh_due(naive_stale, now=now)
+        )
+
     def test_new_prompt_post_persists_selected_carousel_cover(self):
         from database.oauth_engagement import get_oauth_prompt_post
 
@@ -703,6 +726,54 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
             self.assertIsNone(post.cover_url)
             self.assertIsNone(post.permalink)
 
+    def test_cached_stale_prompt_cover_refreshes_without_regenerating_prompts(self):
+        from datetime import datetime, timedelta, timezone
+        from database.oauth_engagement import get_oauth_prompt_post, oauth_prompt_post
+
+        prompts = [{"text": "preserved prompt"}]
+        with self.Session.begin() as session:
+            post = oauth_prompt_post(
+                session,
+                self.account_a_id,
+                "media-stale-comment-cover",
+                prompts,
+                cover_url="https://cdn.example.test/stale-comment-cover.jpg",
+            )
+            public_id = post.public_id
+            post.updated_at = datetime.now(timezone.utc) - timedelta(hours=7)
+
+        with patch.object(self.module, "lookup_oauth_media", return_value={
+            "id": "media-stale-comment-cover",
+            "media_type": "IMAGE",
+            "media_url": "https://cdn.example.test/fresh-comment-cover.jpg",
+        }) as lookup, patch.object(
+            self.module,
+            "extract_oauth_prompts",
+            side_effect=AssertionError("cached prompts must not be regenerated"),
+        ):
+            result = self.module._oauth_prompt_post_for_comment(
+                self.Session,
+                self.account_a_id,
+                "17841438617458101",
+                "media-stale-comment-cover",
+            )
+
+        lookup.assert_called_once_with(
+            self.Session,
+            instagram_account_id=self.account_a_id,
+            instagram_user_id="17841438617458101",
+            media_id="media-stale-comment-cover",
+        )
+        with self.Session() as session:
+            post = get_oauth_prompt_post(
+                session, self.account_a_id, "media-stale-comment-cover"
+            )
+            self.assertEqual(result, public_id)
+            self.assertEqual(post.prompts, prompts)
+            self.assertEqual(
+                post.cover_url, "https://cdn.example.test/fresh-comment-cover.jpg"
+            )
+
     def test_comment_replay_is_claimed_once_and_never_calls_legacy_json_or_graph_fallback(self):
         comment = {"id": "comment-a", "text": "hello", "from": {"id": "customer"}}
         with self.Session.begin() as session:
@@ -872,7 +943,12 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
         with self.Session() as session:
             from database.oauth_engagement import get_oauth_prompt_post
             public_id = get_oauth_prompt_post(session, self.account_a_id, "media-a").public_id
-        response = self.module.app.test_client().get(f"/p/o/{public_id}")
+        with patch.object(
+            self.module,
+            "lookup_oauth_media",
+            side_effect=AssertionError("recent cover metadata must stay on the fast path"),
+        ):
+            response = self.module.app.test_client().get(f"/p/o/{public_id}")
         body = response.get_data(as_text=True)
         self.assertEqual(response.status_code, 200)
         self.assertIn("#0b0b0d", body)
@@ -886,12 +962,160 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
             'src="https://cdn.example.test/preview.jpg?asset=1&amp;size=large"',
             body,
         )
+        self.assertIn('referrerpolicy="no-referrer"', body)
         self.assertIn("View Instagram Post", body)
         self.assertIn("https://www.instagram.com/p/safe-post/", body)
         self.assertNotIn(str(self.account_a_id), body)
         self.assertNotIn("17841438617458101", body)
         self.assertNotIn("media-a", body)
         self.assertNotIn("@imran.prompts", body)
+
+    def test_oauth_prompt_page_refreshes_stale_cover_for_exact_account_and_media(self):
+        from datetime import datetime, timedelta, timezone
+        from database.oauth_engagement import get_oauth_prompt_post, oauth_prompt_post
+
+        prompts = [{"text": "tenant-safe prompt"}]
+        existing_permalink = "https://www.instagram.com/p/existing/"
+        with self.Session.begin() as session:
+            target = oauth_prompt_post(
+                session,
+                self.account_a_id,
+                "shared-stale-media",
+                prompts,
+                cover_url="https://cdn.example.test/stale.jpg",
+                permalink=existing_permalink,
+            )
+            foreign = oauth_prompt_post(
+                session,
+                self.account_b_id,
+                "shared-stale-media",
+                [{"text": "foreign prompt"}],
+                cover_url="https://cdn.example.test/foreign.jpg",
+            )
+            target_identity = (
+                target.public_id,
+                target.instagram_account_id,
+                target.media_id,
+            )
+            foreign_identity = (foreign.public_id, foreign.updated_at)
+            target.updated_at = datetime.now(timezone.utc) - timedelta(hours=7)
+
+        with patch.object(self.module, "lookup_oauth_media", return_value={
+            "id": "shared-stale-media",
+            "media_type": "IMAGE",
+            "media_url": "https://cdn.example.test/fresh.jpg?asset=1&size=large",
+            "permalink": "https://www.instagram.com/p/replacement/",
+        }) as lookup:
+            response = self.module.app.test_client().get(
+                f"/p/o/{target_identity[0]}"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn(
+            'src="https://cdn.example.test/fresh.jpg?asset=1&amp;size=large"',
+            body,
+        )
+        lookup.assert_called_once_with(
+            self.Session,
+            instagram_account_id=self.account_a_id,
+            instagram_user_id="17841438617458101",
+            media_id="shared-stale-media",
+        )
+        with self.Session() as session:
+            target = get_oauth_prompt_post(
+                session, self.account_a_id, "shared-stale-media"
+            )
+            foreign = get_oauth_prompt_post(
+                session, self.account_b_id, "shared-stale-media"
+            )
+            self.assertEqual(
+                (target.public_id, target.instagram_account_id, target.media_id),
+                target_identity,
+            )
+            self.assertEqual(target.prompts, prompts)
+            self.assertEqual(target.permalink, existing_permalink)
+            self.assertEqual(
+                target.cover_url,
+                "https://cdn.example.test/fresh.jpg?asset=1&size=large",
+            )
+            self.assertEqual((foreign.public_id, foreign.updated_at), foreign_identity)
+            self.assertEqual(foreign.cover_url, "https://cdn.example.test/foreign.jpg")
+
+    def test_oauth_prompt_page_throttles_failed_stale_cover_refresh(self):
+        from datetime import datetime, timedelta, timezone
+        from database.oauth_engagement import get_oauth_prompt_post, oauth_prompt_post
+
+        prompts = [{"text": "prompt remains public"}]
+        stale_url = "https://cdn.example.test/stale-but-preserved.jpg"
+        with self.Session.begin() as session:
+            post = oauth_prompt_post(
+                session,
+                self.account_a_id,
+                "media-refresh-failure",
+                prompts,
+                cover_url=stale_url,
+            )
+            public_id = post.public_id
+            post.updated_at = datetime.now(timezone.utc) - timedelta(hours=7)
+            stale_timestamp = post.updated_at
+
+        with patch.object(
+            self.module,
+            "lookup_oauth_media",
+            side_effect=RuntimeError("raw provider secret must not leak"),
+        ) as lookup:
+            first = self.module.app.test_client().get(f"/p/o/{public_id}")
+            second = self.module.app.test_client().get(f"/p/o/{public_id}")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(lookup.call_count, 1)
+        for response in (first, second):
+            body = response.get_data(as_text=True)
+            self.assertIn("prompt remains public", body)
+            self.assertIn(stale_url, body)
+            self.assertNotIn("raw provider secret", body)
+            self.assertNotIn(str(self.account_a_id), body)
+            self.assertNotIn("media-refresh-failure", body)
+        with self.Session() as session:
+            post = get_oauth_prompt_post(
+                session, self.account_a_id, "media-refresh-failure"
+            )
+            self.assertEqual(post.prompts, prompts)
+            self.assertEqual(post.cover_url, stale_url)
+            self.assertGreater(post.updated_at.replace(tzinfo=timezone.utc), stale_timestamp)
+
+    def test_oauth_prompt_page_disconnected_account_never_reaches_provider(self):
+        from datetime import datetime, timedelta, timezone
+        from database.oauth_engagement import oauth_prompt_post
+        from database.models import InstagramPromptPost
+
+        with self.Session.begin() as session:
+            account = session.get(InstagramAccount, self.account_a_id)
+            account.connection_status = "disconnected"
+            post = oauth_prompt_post(
+                session,
+                self.account_a_id,
+                "media-disconnected-refresh",
+                [{"text": "still available"}],
+                cover_url="https://cdn.example.test/stale-disconnected.jpg",
+            )
+            public_id = post.public_id
+            post.updated_at = datetime.now(timezone.utc) - timedelta(hours=7)
+            stale_timestamp = post.updated_at
+
+        with patch.dict(
+            os.environ, {"INSTAGRAM_OAUTH_ENGAGEMENT_ENABLED": "true"}, clear=False
+        ), patch("database.oauth_graph.requests.request") as provider_request:
+            response = self.module.app.test_client().get(f"/p/o/{public_id}")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("still available", response.get_data(as_text=True))
+        provider_request.assert_not_called()
+        with self.Session() as session:
+            post = session.query(InstagramPromptPost).filter_by(public_id=public_id).one()
+            self.assertGreater(post.updated_at.replace(tzinfo=timezone.utc), stale_timestamp)
 
     def test_oauth_prompt_page_omits_instagram_link_without_permalink(self):
         from database.oauth_engagement import oauth_prompt_post
@@ -901,8 +1125,21 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
             from database.oauth_engagement import get_oauth_prompt_post
             public_id = get_oauth_prompt_post(session, self.account_a_id, "media-without-link").public_id
 
-        body = self.module.app.test_client().get(f"/p/o/{public_id}").get_data(as_text=True)
+        with patch.object(
+            self.module,
+            "lookup_oauth_media",
+            return_value={"id": "media-without-link", "media_type": "IMAGE"},
+        ) as lookup:
+            body = self.module.app.test_client().get(
+                f"/p/o/{public_id}"
+            ).get_data(as_text=True)
 
+        lookup.assert_called_once_with(
+            self.Session,
+            instagram_account_id=self.account_a_id,
+            instagram_user_id="17841438617458101",
+            media_id="media-without-link",
+        )
         self.assertNotIn("View Instagram Post", body)
         self.assertNotIn('class="post-preview"', body)
         self.assertNotIn("<img", body)

@@ -208,6 +208,9 @@ API_VERSION = "v25.0"
 
 TRIGGER_WORDS = {"ai", "prompt", "prompts", "send", "access"}
 REQUEST_COOLDOWN_MINUTES = 10
+# Provider CDN cover URLs are presentation metadata rather than durable media.
+# Refresh them at most once every six hours instead of on every public request.
+OAUTH_PROMPT_COVER_METADATA_TTL = timedelta(hours=6)
 SMART_REPLY_MIN_INTERVAL_SECONDS = 15
 SMART_REPLY_MAX_PER_HOUR = 20
 SMART_REPLY_MAX_LENGTH = 180
@@ -2310,6 +2313,23 @@ def oauth_prompt_page(public_id):
         return Response("Prompt page is unavailable.", status=404, mimetype="text/plain")
     if post is None:
         return Response("Prompt page is unavailable.", status=404, mimetype="text/plain")
+    if _oauth_prompt_cover_refresh_due(post):
+        _oauth_refresh_prompt_post_metadata(
+            session_factory,
+            post.instagram_account_id,
+            post.media_id,
+            post.public_id,
+        )
+        try:
+            with session_factory() as db_session:
+                refreshed = get_oauth_prompt_post_by_public_id(db_session, public_id)
+                if refreshed is not None:
+                    post = refreshed
+                    prompts = (
+                        list(post.prompts) if isinstance(post.prompts, list) else []
+                    )
+        except Exception:
+            pass
     cards = []
     prompt_ids = []
     for number, prompt in enumerate(prompts, start=1):
@@ -2323,7 +2343,7 @@ def oauth_prompt_page(public_id):
     permalink = str(post.permalink or "").strip()
     cover_html = ""
     if cover_url:
-        cover_html = f'''<div class="post-preview" id="post-preview"><img src="{html.escape(cover_url, quote=True)}" alt="Instagram post preview" loading="eager" onerror="document.getElementById('post-preview').style.display='none'"></div>'''
+        cover_html = f'''<div class="post-preview" id="post-preview"><img src="{html.escape(cover_url, quote=True)}" alt="Instagram post preview" loading="eager" referrerpolicy="no-referrer" onerror="document.getElementById('post-preview').style.display='none'"></div>'''
     instagram_button = ""
     if permalink:
         instagram_button = f'''<a class="secondary-button" href="{html.escape(permalink, quote=True)}" target="_blank" rel="noopener noreferrer">View Instagram Post</a>'''
@@ -3987,14 +4007,52 @@ def _oauth_prompt_cover_url(media):
     return ""
 
 
-def _oauth_prompt_post_for_comment(session_factory, account_id, external_id, media_id):
-    cached_public_id = None
-    with session_factory() as db_session:
-        cached = get_oauth_prompt_post(db_session, account_id, media_id)
-        if cached is not None:
-            if str(cached.cover_url or "").strip():
-                return cached.public_id
-            cached_public_id = cached.public_id
+def _oauth_utc_timestamp(value):
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _oauth_prompt_cover_refresh_due(post, *, now=None):
+    """Return whether cached provider cover metadata is due for refresh.
+
+    ``updated_at`` doubles as the last refresh-attempt timestamp in this
+    migration-free cache. A missing cover gets one immediate attempt when the
+    row has never been updated, then observes the same TTL after that attempt.
+    """
+    current_time = _oauth_utc_timestamp(now) or datetime.now(timezone.utc)
+    updated_at = _oauth_utc_timestamp(getattr(post, "updated_at", None))
+    if updated_at is None or updated_at <= current_time - OAUTH_PROMPT_COVER_METADATA_TTL:
+        return True
+    if str(getattr(post, "cover_url", "") or "").strip():
+        return False
+    created_at = _oauth_utc_timestamp(getattr(post, "created_at", None))
+    return created_at is None or updated_at <= created_at
+
+
+def _oauth_refresh_prompt_post_metadata(
+    session_factory, account_id, media_id, public_id, *, now=None
+):
+    """Best-effort account-scoped refresh of cached prompt presentation data."""
+    current_time = _oauth_utc_timestamp(now) or datetime.now(timezone.utc)
+    try:
+        with session_factory.begin() as db_session:
+            post = get_oauth_prompt_post(db_session, account_id, media_id)
+            if post is None or str(post.public_id) != str(public_id):
+                return False
+            if not _oauth_prompt_cover_refresh_due(post, now=current_time):
+                return True
+            external_id = oauth_followup_account_external_id(db_session, account_id)
+            # ``updated_at`` is also the attempt timestamp so a failed provider
+            # lookup cannot be retriggered by every public page request.
+            post.updated_at = current_time
+    except Exception:
+        return False
+
+    if not external_id:
+        return True
     try:
         media = lookup_oauth_media(
             session_factory,
@@ -4003,23 +4061,49 @@ def _oauth_prompt_post_for_comment(session_factory, account_id, external_id, med
             media_id=media_id,
         )
     except Exception:
-        if cached_public_id is not None:
-            return cached_public_id
-        raise
+        return True
+
     cover_url = _oauth_prompt_cover_url(media)
     permalink = str(media.get("permalink") or "")
+    try:
+        with session_factory.begin() as db_session:
+            post = get_oauth_prompt_post(db_session, account_id, media_id)
+            if post is None or str(post.public_id) != str(public_id):
+                return False
+            if cover_url:
+                post.cover_url = cover_url
+            if not str(post.permalink or "").strip() and permalink:
+                post.permalink = permalink
+        return True
+    except Exception:
+        return False
+
+
+def _oauth_prompt_post_for_comment(session_factory, account_id, external_id, media_id):
+    cached_public_id = None
+    refresh_cached_metadata = False
+    with session_factory() as db_session:
+        cached = get_oauth_prompt_post(db_session, account_id, media_id)
+        if cached is not None:
+            cached_public_id = cached.public_id
+            refresh_cached_metadata = _oauth_prompt_cover_refresh_due(cached)
     if cached_public_id is not None:
-        try:
-            with session_factory.begin() as db_session:
-                cached = get_oauth_prompt_post(db_session, account_id, media_id)
-                if cached is not None:
-                    if not str(cached.cover_url or "").strip() and cover_url:
-                        cached.cover_url = cover_url
-                    if not str(cached.permalink or "").strip() and permalink:
-                        cached.permalink = permalink
-                    return cached.public_id
-        except Exception:
-            return cached_public_id
+        if refresh_cached_metadata:
+            _oauth_refresh_prompt_post_metadata(
+                session_factory,
+                account_id,
+                media_id,
+                cached_public_id,
+            )
+        return cached_public_id
+    media = lookup_oauth_media(
+        session_factory,
+        instagram_account_id=account_id,
+        instagram_user_id=external_id,
+        media_id=media_id,
+    )
+    cover_url = _oauth_prompt_cover_url(media)
+    permalink = str(media.get("permalink") or "")
     prompts = extract_oauth_prompts(media)
     if not prompts:
         return None
