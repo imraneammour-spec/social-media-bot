@@ -8,6 +8,7 @@ Legacy short message IDs remain in ``dashboard.i18n``.
 _MESSAGES = (
     ("By creating an account, you agree to the <a href=\"{terms_url}\">Terms</a> and acknowledge the <a href=\"{privacy_url}\">Privacy Policy</a>.", "En créant un compte, vous acceptez les <a href=\"{terms_url}\">Conditions</a> et reconnaissez la <a href=\"{privacy_url}\">Politique de confidentialité</a>.", "بإنشاء حساب، فإنك توافق على <a href=\"{terms_url}\">الشروط</a> وتقرّ <a href=\"{privacy_url}\">بسياسة الخصوصية</a>."),
     ("Need help accessing your account? Contact support at {email}.", "Besoin d’aide pour accéder à votre compte ? Contactez l’assistance à {email}.", "هل تحتاج إلى مساعدة للوصول إلى حسابك؟ تواصل مع الدعم على {email}."),
+    ("Data Deletion", "Suppression des données", "حذف البيانات"),
     ("Privacy Policy", "Politique de confidentialité", "سياسة الخصوصية"),
     ("Sign in to continue to your Postenza workspace.", "Connectez-vous pour accéder à votre espace Postenza.", "سجّل الدخول للوصول إلى مساحة عملك على Postenza."),
     ("Terms of Service", "Conditions d’utilisation", "شروط الخدمة"),
@@ -421,6 +422,7 @@ _MESSAGES = (
     ("This account is ready for the next connection phase.", "Ce compte est prêt pour la prochaine étape de connexion.", "هذا الحساب جاهز لمرحلة الاتصال التالية."),
     ("Enter a valid http:// or https:// destination URL.", "Saisissez une URL de destination http:// ou https:// valide.", "أدخل رابط وجهة صالحًا يبدأ بـ http:// أو https://."),
     ("Message", "Message", "رسالة"),
+    ("Legal", "Informations légales", "معلومات قانونية"),
     ("Link", "Lien", "رابط"),
     ("Send the prompt connected to this post.", "Envoyer le prompt associé à cette publication.", "أرسل البرومبت المرتبط بهذا المنشور."),
     ("Send a custom private message.", "Envoyer un message privé personnalisé.", "أرسل رسالة خاصة مخصصة."),
