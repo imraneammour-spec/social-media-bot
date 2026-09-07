@@ -1,0 +1,12 @@
+{% extends "app_base.html" %}
+{% block title %}{{ t('Support') }}{% endblock %}
+{% block heading %}{{ t('Support') }}{% endblock %}
+{% block content %}
+<section class="card" aria-labelledby="support-contact-heading">
+  <p class="eyebrow">{{ t('Support') }}</p>
+  <h2 id="support-contact-heading">{{ t('Contact Postenza') }}</h2>
+  <p class="muted">{{ t('Contact Postenza support for help with your account or access, Instagram connections, publishing, automation, billing questions, or general product questions.') }}</p>
+  <p><strong>{{ t('Email') }}:</strong> <a class="text-link" href="mailto:{{ support_email }}">{{ support_email }}</a></p>
+  <a class="button button-primary" href="mailto:{{ support_email }}">{{ t('Email support') }}</a>
+</section>
+{% endblock %}

@@ -14,6 +14,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 
 from auth import (
+    SUPPORT_EMAIL,
     action_reference_for_account,
     configure_auth,
     install_auth_route_guard,
@@ -927,6 +928,81 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertNotIn("Imran Prompts", page)
         self.assertNotIn('href="/dashboard', page)
         self.assertNotIn('href="/api/', page)
+
+    def test_support_route_requires_authentication_and_rejects_foreign_account_context(self):
+        response = self.client.get("/app/support")
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login", response.headers["Location"])
+
+        self._login_as(self.owner_a)
+        foreign = self._reference(self.owner_b, self.account_b)
+        response = self.client.get(f"/app/support?account={foreign}")
+        self.assertEqual(response.status_code, 404)
+
+    def test_support_page_preserves_selected_account_navigation_and_real_contact(self):
+        self._login_as(self.owner_a)
+        selected = self._reference(self.owner_a, self.account_a2)
+        other = self._reference(self.owner_a, self.account_a1)
+
+        response = self.client.get(f"/app/support?account={selected}")
+        page = response.get_data(as_text=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("<title>Support | Postenza</title>", page)
+        self.assertIn("<h1>Support</h1>", page)
+        self.assertIn("Contact Postenza", page)
+        for topic in (
+            "account or access",
+            "Instagram connections",
+            "publishing",
+            "automation",
+            "billing questions",
+            "general product questions",
+        ):
+            self.assertIn(topic, page)
+        self.assertIn(SUPPORT_EMAIL, page)
+        self.assertIn(f'href="mailto:{SUPPORT_EMAIL}"', page)
+        self.assertIn(
+            f'href="/app/support?account={selected}" aria-current="page"',
+            page,
+        )
+        self.assertIn(f'href="/app/support?account={other}"', page)
+        self.assertIn("Manage posts and automation for alpha_second.", page)
+        primary_navigation = page.split('aria-label="Primary navigation">', 1)[1].split(
+            "</nav>", 1
+        )[0]
+        self.assertTrue(primary_navigation.strip().endswith("</svg>Support</a>"))
+        self.assertLess(
+            primary_navigation.index("</svg>Instagram</a>"),
+            primary_navigation.index("</svg>Support</a>"),
+        )
+        for internal_value in (
+            "Internal administration",
+            "Postenza Admin",
+            self.owner_b.email,
+            self.account_b.username,
+            str(self.account_b.id),
+        ):
+            self.assertNotIn(internal_value, page)
+
+    def test_support_page_is_localized_in_every_supported_locale(self):
+        self._login_as(self.owner_a)
+        expected = {
+            "en": ("ltr", "Support", "Contact Postenza", "Email support"),
+            "fr": ("ltr", "Assistance", "Contacter Postenza", "Contacter l’assistance par e-mail"),
+            "ar": ("rtl", "الدعم", "تواصل مع Postenza", "مراسلة الدعم عبر البريد الإلكتروني"),
+        }
+
+        for locale, (direction, title, contact, action) in expected.items():
+            with self.subTest(locale=locale):
+                with self.client.session_transaction() as browser_session:
+                    browser_session["postenza_locale"] = locale
+                page = self.client.get("/app/support").get_data(as_text=True)
+                self.assertIn(f'<html lang="{locale}" dir="{direction}">', page)
+                self.assertIn(f"<h1>{title}</h1>", page)
+                self.assertIn(contact, page)
+                self.assertIn(f">{action}</a>", page)
+                self.assertIn(SUPPORT_EMAIL, page)
 
     def test_overview_prioritizes_connection_and_content_actions(self):
         self._login_as(self.owner_a)

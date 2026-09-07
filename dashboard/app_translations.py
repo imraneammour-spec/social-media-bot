@@ -8,6 +8,10 @@ Legacy short message IDs remain in ``dashboard.i18n``.
 _MESSAGES = (
     ("By creating an account, you agree to the <a href=\"{terms_url}\">Terms</a> and acknowledge the <a href=\"{privacy_url}\">Privacy Policy</a>.", "En créant un compte, vous acceptez les <a href=\"{terms_url}\">Conditions</a> et reconnaissez la <a href=\"{privacy_url}\">Politique de confidentialité</a>.", "بإنشاء حساب، فإنك توافق على <a href=\"{terms_url}\">الشروط</a> وتقرّ <a href=\"{privacy_url}\">بسياسة الخصوصية</a>."),
     ("Need help accessing your account? Contact support at {email}.", "Besoin d’aide pour accéder à votre compte ? Contactez l’assistance à {email}.", "هل تحتاج إلى مساعدة للوصول إلى حسابك؟ تواصل مع الدعم على {email}."),
+    ("Support", "Assistance", "الدعم"),
+    ("Contact Postenza", "Contacter Postenza", "تواصل مع Postenza"),
+    ("Email support", "Contacter l’assistance par e-mail", "مراسلة الدعم عبر البريد الإلكتروني"),
+    ("Contact Postenza support for help with your account or access, Instagram connections, publishing, automation, billing questions, or general product questions.", "Contactez l’assistance Postenza pour obtenir de l’aide concernant votre compte ou votre accès, les connexions Instagram, la publication, l’automatisation, les questions de facturation ou les questions générales sur le produit.", "تواصل مع دعم Postenza للحصول على مساعدة بشأن حسابك أو الوصول إليه، أو اتصالات إنستغرام، أو النشر، أو الأتمتة، أو أسئلة الفوترة، أو الأسئلة العامة حول المنتج."),
     ("Data Deletion", "Suppression des données", "حذف البيانات"),
     ("Privacy Policy", "Politique de confidentialité", "سياسة الخصوصية"),
     ("Sign in to continue to your Postenza workspace.", "Connectez-vous pour accéder à votre espace Postenza.", "سجّل الدخول للوصول إلى مساحة عملك على Postenza."),

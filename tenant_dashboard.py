@@ -23,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from auth import (
+    SUPPORT_EMAIL,
     action_reference_for_account,
     authentication_available,
     csrf_token,
@@ -444,6 +445,7 @@ def _render_page(
         "tenant_dashboard.app_content": "content",
         "tenant_dashboard.app_scheduler": "calendar",
         "tenant_dashboard.app_analytics": "analytics",
+        "tenant_dashboard.app_support": "support",
     }
 
     selected_account = next(
@@ -1192,6 +1194,21 @@ def register_tenant_dashboard(app) -> None:
             accounts=accounts,
             selected=selected,
             overview=data,
+        )
+
+    @dashboard.get("/support")
+    @_require_tenant
+    def app_support(
+        user,
+        accounts,
+        selected,
+    ):
+        return _render_page(
+            "app_support.html",
+            user=user,
+            accounts=accounts,
+            selected=selected,
+            support_email=SUPPORT_EMAIL,
         )
 
     @dashboard.get("/accounts")
