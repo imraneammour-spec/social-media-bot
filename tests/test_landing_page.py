@@ -87,6 +87,19 @@ class LandingPageTest(unittest.TestCase):
         self.assertIn('href="/register"', page)
         self.assertIn('href="/login"', page)
 
+    def test_landing_header_keeps_official_logo_without_duplicate_hero_tagline(self):
+        page = self.client.get("/").get_data(as_text=True)
+
+        self.assertIn(
+            '<a class="site-brand" href="#top"><img src="/static/brand/postenza-logo-light.png" alt="Postenza"></a>',
+            page,
+        )
+        self.assertEqual(page.count("Social media, on autopilot."), 1)
+        hero = page.split('<div class="hero-copy">', 1)[1].split(
+            '<div class="product-stage"', 1
+        )[0]
+        self.assertNotIn("Social media, on autopilot.", hero)
+
     def test_health_is_a_safe_liveness_response(self):
         response = self.client.get("/health")
 
