@@ -34,7 +34,7 @@
         </aside>
         <main class="app-main" id="main-content" tabindex="-1">
             <header class="app-header"><div class="page-heading"><p class="eyebrow">{{ t('instagram_workspace') }}</p><h1>{% block heading %}{{ t('instagram_workspace') }}{% endblock %}</h1><p class="muted">{{ t("Manage posts and automation for {account}.", account=display_username(selected_account.username)) }}</p></div><nav class="account-switcher" aria-label="{{ t('Choose an Instagram account') }}"><span class="account-switcher-label">{{ t('account') }}</span>{% for account in accounts %}<a href="{{ url_for(account_switch_endpoint, account=account.selection_ref) }}" {% if account.is_selected %}aria-current="true"{% endif %}>{{ display_username(account.username) }}</a>{% endfor %}</nav></header>
-            <p class="helper-text">{{ t('Times shown in Africa/Casablanca.') }}</p>
+            {% block timezone_helper %}<p class="helper-text">{{ t('Times shown in Africa/Casablanca.') }}</p>{% endblock %}
             {% block content %}{% endblock %}
         </main>
     </div>

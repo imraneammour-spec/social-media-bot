@@ -1016,6 +1016,55 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertIn("Automation is off", page)
         self.assertNotIn("Deployment readiness", page)
 
+    def test_overview_uses_clear_all_time_engagement_copy_without_timezone_helper(self):
+        """Overview copy stays factual while preserving the account-scoped metric values."""
+        self._login_as(self.owner_a)
+
+        overview = self.client.get("/app").get_data(as_text=True)
+        activity = self.client.get("/app/activity").get_data(as_text=True)
+
+        self.assertNotIn("Times shown in Africa/Casablanca.", overview)
+        self.assertIn("Times shown in Africa/Casablanca.", activity)
+        engagement = overview.split("<h2>Engagement at a glance</h2>", 1)[1].split(
+            "</section>", 1
+        )[0]
+        self.assertIn('<p class="helper-text">All time</p>', engagement)
+        self.assertIn("<dt>Message interactions</dt><dd>0</dd>", engagement)
+        self.assertIn("<dt>Eligible replies</dt><dd>0</dd>", engagement)
+        self.assertIn("<dt>Follow-ups</dt><dd>1</dd>", engagement)
+        self.assertIn("<dt>Lead records</dt><dd>1</dd>", engagement)
+        self.assertNotIn("Custom-message interactions", engagement)
+        self.assertNotIn("Qualifying recipient replies", engagement)
+        self.assertNotIn("Managed lead records", engagement)
+        for unchanged_section in (
+            "Your Instagram connection",
+            "Create image post",
+            "View calendar",
+            "Next scheduled post",
+            "Automation",
+            "Content at a glance",
+            "Recent activity",
+            "View analytics",
+        ):
+            self.assertIn(unchanged_section, overview)
+
+    def test_overview_engagement_copy_is_localized_in_every_supported_locale(self):
+        self._login_as(self.owner_a)
+        expected = {
+            "en": ("Message interactions", "Eligible replies", "Lead records", "All time"),
+            "fr": ("Interactions par message", "Réponses admissibles", "Fiches prospects", "Depuis le début"),
+            "ar": ("تفاعلات الرسائل", "الردود المؤهلة", "سجلات العملاء المحتملين", "كل الفترات"),
+        }
+
+        for locale, labels in expected.items():
+            with self.subTest(locale=locale):
+                with self.client.session_transaction() as browser_session:
+                    browser_session["postenza_locale"] = locale
+                page = self.client.get("/app").get_data(as_text=True)
+                self.assertIn(f'<html lang="{locale}"', page)
+                for label in labels:
+                    self.assertIn(label, page)
+
     def test_shell_active_navigation_remains_page_specific_and_opaque(self):
         self._login_as(self.owner_a)
         selected = self._reference(self.owner_a, self.account_a2)
