@@ -1564,7 +1564,7 @@ class TenantDashboardTest(unittest.TestCase):
 
         page = self.client.get(f"/app/content?account={selected}").get_data(as_text=True)
         self.assertIn('href="/p/o/opaque-prompt-a"', page)
-        self.assertIn("View interaction details", page)
+        self.assertIn("View prompt library", page)
 
     def test_internal_prompt_capability_uses_legacy_account_ownership_boundary(self):
         """Only the established legacy-account owner may view and save Prompt settings."""

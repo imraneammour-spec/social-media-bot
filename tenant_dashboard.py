@@ -54,6 +54,14 @@ from database.content import (
     unschedule_content_draft,
     update_content_draft,
 )
+from database.content_media import (
+    ContentMediaProviderError,
+    ContentMediaUnavailableError,
+    ContentMediaValidationError,
+    content_media_is_configured,
+    delete_content_image,
+    upload_content_image,
+)
 from database.models import InstagramAutomationConfig, InstagramContentItem
 from database.tenant_automation import (
     AUTOMATION_DELIVERY_MODES,
@@ -87,6 +95,11 @@ AUTOMATION_DESTINATION_URL_ERROR_MESSAGE = (
     "Enter a valid http:// or https:// destination URL."
 )
 CONTENT_UPDATE_ERROR_MESSAGE = "Draft update could not be completed."
+CONTENT_IMAGE_TOO_LARGE_MESSAGE = "Choose a JPEG or JPG image that is 8 MB or smaller."
+CONTENT_IMAGE_INVALID_MESSAGE = "Choose a valid JPEG or JPG image."
+CONTENT_UPLOAD_UNAVAILABLE_MESSAGE = "Image upload is temporarily unavailable. You can use a public HTTPS image link instead."
+CONTENT_UPLOAD_FAILED_MESSAGE = "Image upload could not be completed. Try again or use a public HTTPS image link."
+CONTENT_SCHEDULE_INVALID_MESSAGE = "Choose a future date and time."
 
 MAX_INTERNAL_NOTE_LENGTH = 2000
 
@@ -407,6 +420,15 @@ def _resolve_owned_content_draft(session, *, user_id, selected_account_id, refer
         if hmac.compare_digest(expected, reference):
             return draft
     return None
+
+
+def _content_storage_asset_id(item) -> str | None:
+    metadata = getattr(item, "metadata_json", None)
+    storage = metadata.get("storage") if isinstance(metadata, dict) else None
+    if not isinstance(storage, dict) or storage.get("provider") != "cloudinary":
+        return None
+    asset_id = str(storage.get("asset_id") or "").strip()
+    return asset_id or None
 
 
 def _safe_scheduler_action_error():
@@ -1447,6 +1469,7 @@ def register_tenant_dashboard(app) -> None:
             drafts=drafts,
             content_types=CONTENT_TYPES,
             internal_prompt_access=internal_prompt_access,
+            content_upload_available=content_media_is_configured(),
             content_error=content_error,
             content_form=content_form or {},
         )
@@ -1472,30 +1495,124 @@ def register_tenant_dashboard(app) -> None:
         if session_factory is None:
             return _workspace_unavailable()
 
-        try:
-            media_value = public_image_url(request.form.get("media_url") or request.form.get("media_reference"))
-        except ValueError:
-            return _render_content_page(
-                user,
-                accounts,
-                selected,
-                content_error="Enter a public HTTPS image link without embedded credentials.",
-                content_form={
-                    "media_url": str(request.form.get("media_url") or ""),
-                    "caption": str(request.form.get("caption") or ""),
-                },
-                status=400,
-            )
+        caption_value = str(request.form.get("caption") or "")
+        submit_action = str(request.form.get("submit_action") or "save").strip().lower()
+        content_form = {
+            "media_url": str(request.form.get("media_url") or ""),
+            "caption": caption_value,
+            "date": str(request.form.get("date") or ""),
+            "time": str(request.form.get("time") or ""),
+        }
+        if submit_action not in {"save", "schedule"}:
+            return _safe_content_update_error()
+        if not caption_value.strip() or len(caption_value.strip()) > MAX_CAPTION_LENGTH:
+            return _safe_content_update_error()
+
+        scheduled_for = None
+        if submit_action == "schedule":
+            try:
+                local_time = datetime.fromisoformat(
+                    f"{content_form['date']}T{content_form['time']}"
+                )
+                scheduled_for = local_time.replace(
+                    tzinfo=ZoneInfo("Africa/Casablanca")
+                )
+                if scheduled_for.astimezone(timezone.utc) <= datetime.now(timezone.utc):
+                    raise ValueError
+            except (TypeError, ValueError):
+                return _render_content_page(
+                    user,
+                    accounts,
+                    selected,
+                    content_error=CONTENT_SCHEDULE_INVALID_MESSAGE,
+                    content_form=content_form,
+                    status=400,
+                )
+
+        uploaded_asset = None
+        image_file = request.files.get("image_file")
+        if image_file is not None and str(image_file.filename or "").strip():
+            try:
+                uploaded_asset = upload_content_image(
+                    image_file,
+                    instagram_account_id=selected.instagram_account_id,
+                )
+                media_value = uploaded_asset.url
+            except ContentMediaValidationError as exc:
+                message = (
+                    CONTENT_IMAGE_TOO_LARGE_MESSAGE
+                    if exc.code == "image_too_large"
+                    else CONTENT_IMAGE_INVALID_MESSAGE
+                )
+                return _render_content_page(
+                    user,
+                    accounts,
+                    selected,
+                    content_error=message,
+                    content_form=content_form,
+                    status=400,
+                )
+            except ContentMediaUnavailableError:
+                return _render_content_page(
+                    user,
+                    accounts,
+                    selected,
+                    content_error=CONTENT_UPLOAD_UNAVAILABLE_MESSAGE,
+                    content_form=content_form,
+                    status=503,
+                )
+            except ContentMediaProviderError:
+                return _render_content_page(
+                    user,
+                    accounts,
+                    selected,
+                    content_error=CONTENT_UPLOAD_FAILED_MESSAGE,
+                    content_form=content_form,
+                    status=502,
+                )
+        else:
+            try:
+                media_value = public_image_url(
+                    request.form.get("media_url")
+                    or request.form.get("media_reference")
+                )
+            except ValueError:
+                return _render_content_page(
+                    user,
+                    accounts,
+                    selected,
+                    content_error="Enter a public HTTPS image link without embedded credentials.",
+                    content_form=content_form,
+                    status=400,
+                )
+
+        metadata = {"content_type": "image"}
+        if uploaded_asset is not None:
+            metadata["storage"] = {
+                "provider": "cloudinary",
+                "asset_id": uploaded_asset.asset_id,
+            }
         try:
             with session_factory.begin() as session:
-                create_content_draft(
+                item = create_content_draft(
                     session,
                     instagram_account_id=selected.instagram_account_id,
-                    content_type=request.form.get("content_type") or "image",
-                    caption=request.form.get("caption") or "",
+                    content_type="image",
+                    caption=caption_value,
                     media_url=media_value,
+                    status="ready" if submit_action == "schedule" else "draft",
+                    metadata_json=metadata,
                 )
+                if scheduled_for is not None:
+                    schedule_content_draft(
+                        session,
+                        selected.instagram_account_id,
+                        item.id,
+                        scheduled_for,
+                    )
         except (SQLAlchemyError, ValueError):
+            if uploaded_asset is not None:
+                delete_content_image(uploaded_asset.asset_id)
             return _safe_content_update_error()
 
         return _cache_control(
@@ -1655,6 +1772,7 @@ def register_tenant_dashboard(app) -> None:
         if not draft_ref:
             return _safe_content_update_error()
 
+        asset_id = None
         try:
             with session_factory.begin() as session:
                 draft = _resolve_owned_content_draft(
@@ -1666,6 +1784,9 @@ def register_tenant_dashboard(app) -> None:
                 )
                 if draft is None:
                     raise PermissionError("Draft not found for this account.")
+                if draft.status not in {"draft", "ready"}:
+                    raise ValueError("Only unpublished drafts can be deleted.")
+                asset_id = _content_storage_asset_id(draft)
                 delete_content_draft(
                     session,
                     selected.instagram_account_id,
@@ -1673,6 +1794,9 @@ def register_tenant_dashboard(app) -> None:
                 )
         except (PermissionError, SQLAlchemyError, ValueError):
             return _safe_content_update_error()
+
+        if asset_id:
+            delete_content_image(asset_id)
 
         return _cache_control(
             redirect(

@@ -136,12 +136,29 @@ test('mode disclosure switches Message and Link panels without erasing either mo
   assert.equal(linkOpening.value, 'Saved Link opening');
 });
 
-test('preview rejects unsafe syntax and reports loading/success/failure without fetching in the test', () => {
-  const document = {}, ids = Object.fromEntries(['image-source', 'image-preview', 'image-preview-empty', 'image-preview-status'].map(id => [id, element(document)]));
+test('content preview supports local JPEGs, rejects other files, and keeps the URL fallback safe', () => {
+  const document = {}, ids = Object.fromEntries(['image-upload', 'image-source', 'image-preview', 'image-preview-empty', 'image-preview-status', 'content-caption', 'caption-count'].map(id => [id, element(document)]));
   document.getElementById = id => ids[id];
+  document.querySelectorAll = () => [];
   let pending;
-  vm.runInNewContext(script('app_content.html'), { document, URL, setTimeout: fn => { pending = fn; }, clearTimeout: () => { pending = null; } });
-  const source = ids['image-source'], preview = ids['image-preview'], status = ids['image-preview-status'];
+  let revoked;
+  const BrowserURL = class extends URL {};
+  BrowserURL.createObjectURL = () => 'blob:local-preview';
+  BrowserURL.revokeObjectURL = value => { revoked = value; };
+  vm.runInNewContext(script('app_content.html'), { document, URL: BrowserURL, setTimeout: fn => { pending = fn; }, clearTimeout: () => { pending = null; } });
+  const upload = ids['image-upload'], source = ids['image-source'], preview = ids['image-preview'], status = ids['image-preview-status'];
+  upload.files = [{ name: 'not-jpeg.png', type: 'image/png', size: 20 }];
+  upload.listeners.change();
+  assert.match(upload.validityMessage, /JPEG/);
+  upload.files = [{ name: 'photo.jpg', type: 'image/jpeg', size: 1024 }];
+  upload.listeners.change();
+  assert.equal(upload.validityMessage, '');
+  assert.equal(preview.src, 'blob:local-preview');
+  assert.equal(source.value, '');
+  upload.files = [{ name: 'too-large.jpg', type: 'image/jpeg', size: 8 * 1024 * 1024 + 1 }];
+  upload.listeners.change();
+  assert.match(upload.validityMessage, /8 MB/);
+  assert.equal(revoked, 'blob:local-preview');
   for (const url of ['http://example.com/a.jpg', 'https://user:pass@example.com/a.jpg', 'https://127.0.0.1/a.jpg', 'https://localhost/a.jpg']) {
     source.value = url; source.listeners.input();
     assert.ok(source.validityMessage);
@@ -157,6 +174,19 @@ test('preview rejects unsafe syntax and reports loading/success/failure without 
   preview.listeners.error();
   assert.equal(preview.hidden, true);
   assert.match(status.textContent, /could not load/);
+});
+
+test('tracked-post thumbnail errors reveal a clean fallback', () => {
+  const document = {}, ids = Object.fromEntries(['image-upload', 'image-source', 'image-preview', 'image-preview-empty', 'image-preview-status', 'content-caption', 'caption-count'].map(id => [id, element(document)]));
+  document.getElementById = id => ids[id];
+  const thumbnail = element(document), fallback = element(document);
+  fallback.hidden = true;
+  thumbnail.parentElement = { querySelector: () => fallback };
+  document.querySelectorAll = selector => selector === '[data-thumbnail-preview]' ? [thumbnail] : [];
+  vm.runInNewContext(script('app_content.html'), { document, URL, setTimeout: () => 1, clearTimeout: () => {} });
+  thumbnail.listeners.error();
+  assert.equal(thumbnail.hidden, true);
+  assert.equal(fallback.hidden, false);
 });
 
 test('narrow account layouts and long identity labels cannot force horizontal overflow', () => {

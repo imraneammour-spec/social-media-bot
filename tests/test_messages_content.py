@@ -9,7 +9,10 @@ import tempfile
 import unittest
 import uuid
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
+from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from flask import Flask
 from cryptography.fernet import Fernet
@@ -23,6 +26,12 @@ from auth import (
     register_auth_routes,
 )
 from database.content import create_content_draft
+from database.content_media import (
+    ContentMediaAsset,
+    ContentMediaProviderError,
+    ContentMediaUnavailableError,
+    ContentMediaValidationError,
+)
 from database.models import (
     Base,
     InstagramAccount,
@@ -368,6 +377,12 @@ class MessagesContentDashboardTest(unittest.TestCase):
     # CONTENT TESTS
     # ==================================================================
 
+    def test_content_requires_authentication(self):
+        """The new upload surface must never become publicly accessible."""
+        response = self.client.get("/app/content", follow_redirects=False)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login", response.location)
+
     def test_content_selected_account_only_sees_own_content(self):
         """8. Selected account only sees its own content."""
         self._enable_internal_prompt_for(self.account_a)
@@ -400,15 +415,21 @@ class MessagesContentDashboardTest(unittest.TestCase):
         self.assertIn("opaque-prompt-b1", public_ids)
         self.assertNotIn("opaque-prompt-a1", public_ids)
 
-    def test_content_viewer_links_use_opaque_public_ids(self):
-        """11. Interaction-detail links retain opaque public IDs."""
+    def test_content_prompt_library_links_use_opaque_ids_and_separate_actions(self):
+        """Prompt-library wording and action layout must stay accurate and distinct."""
         self._enable_internal_prompt_for(self.account_a)
         self._login_as(self.owner_a)
         ref = self._reference(self.owner_a, self.account_a)
         page = self.client.get(f"/app/content?account={ref}").get_data(as_text=True)
         self.assertIn('href="/p/o/opaque-prompt-a1"', page)
         self.assertIn('href="/p/o/opaque-prompt-a2"', page)
-        self.assertIn("View interaction details", page)
+        self.assertIn("Tracked Instagram posts", page)
+        self.assertIn("Tracked post", page)
+        self.assertIn("Prompts available: 2", page)
+        self.assertIn("View prompt library", page)
+        self.assertIn('class="content-row-actions tracked-post-actions"', page)
+        self.assertNotIn("View prompt libraryView on Instagram", page)
+        self.assertNotIn("Recorded interaction", page)
         # Internal media IDs must not appear
         self.assertNotIn("media-a-1-secret", page)
         self.assertNotIn("media-a-2-secret", page)
@@ -464,7 +485,7 @@ class MessagesContentDashboardTest(unittest.TestCase):
             )
         response = self.client.get(f"/app/content?account={empty_ref}")
         self.assertEqual(response.status_code, 200)
-        self.assertIn("No Instagram posts have been recorded for this account yet", response.get_data(as_text=True))
+        self.assertIn("No tracked Instagram posts yet", response.get_data(as_text=True))
 
     def test_content_renders_image_only_workflow_and_safe_lifecycle_labels(self):
         """A publishing UI mutation cannot re-enable unsupported formats or expose provider errors."""
@@ -511,7 +532,14 @@ class MessagesContentDashboardTest(unittest.TestCase):
 
         self.assertIn('name="content_type" value="image"', page)
         self.assertIn("Create image post", page)
-        self.assertIn("Image source", page)
+        self.assertIn('type="file" name="image_file"', page)
+        self.assertIn('accept="image/jpeg,.jpg,.jpeg"', page)
+        self.assertIn("Use a public image URL instead", page)
+        self.assertIn('name="submit_action" value="save"', page)
+        self.assertIn('name="submit_action" value="schedule"', page)
+        self.assertIn("Scheduling uses Africa/Casablanca time.", page)
+        self.assertEqual(page.count("Africa/Casablanca"), 1)
+        self.assertIn("Scheduled posts", page)
         self.assertIn("Drafts", page)
         self.assertIn("Scheduled", page)
         self.assertIn("Published", page)
@@ -520,6 +548,309 @@ class MessagesContentDashboardTest(unittest.TestCase):
         for unsupported in ("video", "carousel", "reel"):
             self.assertNotIn(f'<option value="{unsupported}">', page)
         self.assertNotIn("provider_rejected", page)
+
+    def test_content_upload_availability_is_clear_without_disabling_url_fallback(self):
+        """Missing Cloudinary configuration must leave a real URL fallback and no fake upload promise."""
+        self._login_as(self.owner_a)
+        ref = self._reference(self.owner_a, self.account_a)
+        with patch("tenant_dashboard.content_media_is_configured", return_value=False):
+            page = self.client.get(f"/app/content?account={ref}").get_data(as_text=True)
+        self.assertIn("Image upload is temporarily unavailable", page)
+        self.assertIn('type="file" name="image_file"', page)
+        self.assertIn("disabled", page)
+        self.assertIn('type="url" name="media_url"', page)
+
+    def test_content_single_page_hides_pagination_and_multiple_pages_preserve_context(self):
+        """Pagination must be absent when redundant and retain account/filter context when needed."""
+        self._login_as(self.owner_a)
+        ref = self._reference(self.owner_a, self.account_a)
+        single = self.client.get(f"/app/content?account={ref}").get_data(as_text=True)
+        self.assertNotIn('class="content-pagination"', single)
+
+        with self.Session.begin() as session:
+            for index in range(24):
+                session.add(InstagramPromptPost(
+                    instagram_account_id=self.account_a.id,
+                    media_id=f"pagination-media-{index}",
+                    public_id=f"pagination-public-{index}",
+                    prompts=[{"text": "Prompt"}],
+                ))
+        multiple = self.client.get(
+            f"/app/content?account={ref}&filter=prompt_enabled&page=1"
+        ).get_data(as_text=True)
+        self.assertIn('class="content-pagination"', multiple)
+        self.assertRegex(multiple, rf'href="/app/content\?account=[^&"]+&amp;filter=prompt_enabled&amp;page=2"')
+
+    def test_content_thumbnail_has_clean_localized_failure_fallback(self):
+        """A stale provider cover must not leave the browser's broken-image presentation visible."""
+        self._login_as(self.owner_a)
+        ref = self._reference(self.owner_a, self.account_a)
+        page = self.client.get(f"/app/content?account={ref}").get_data(as_text=True)
+        self.assertIn('data-thumbnail-preview', page)
+        self.assertIn('data-thumbnail-fallback hidden', page)
+        self.assertIn("Image unavailable", page)
+
+    def test_content_polish_copy_renders_in_english_french_and_arabic(self):
+        """Missing locale entries must be visible through the real rendered Content page."""
+        expected = {
+            "en": ("Upload an image", "Tracked Instagram posts", "Scheduled posts"),
+            "fr": ("Importer une image", "Publications Instagram suivies", "Publications planifiées"),
+            "ar": ("تحميل صورة", "منشورات Instagram المتتبعة", "المنشورات المجدولة"),
+        }
+        self._login_as(self.owner_a)
+        ref = self._reference(self.owner_a, self.account_a)
+        for locale, phrases in expected.items():
+            with self.subTest(locale=locale):
+                with self.client.session_transaction() as session:
+                    session["postenza_locale"] = locale
+                page = self.client.get(f"/app/content?account={ref}").get_data(as_text=True)
+                for phrase in phrases:
+                    self.assertIn(phrase, page)
+
+    def test_content_upload_save_creates_only_an_owned_draft_with_storage_metadata(self):
+        """Removing account binding or storage metadata from uploaded drafts breaks this behavior."""
+        self._login_as(self.owner_a)
+        ref = self._reference(self.owner_a, self.account_a)
+        page = self.client.get(f"/app/content?account={ref}").get_data(as_text=True)
+        csrf = re.search(r'name="csrf_token" value="([^"]+)"', page).group(1)
+        asset = ContentMediaAsset(
+            url="https://res.cloudinary.com/postenza/image/upload/owned.jpg",
+            asset_id=f"postenza/content/{self.account_a.id.hex}/0123456789abcdef0123456789abcdef",
+        )
+
+        with patch("tenant_dashboard.upload_content_image", return_value=asset) as upload_image:
+            response = self.client.post(
+                f"/app/content/drafts/create?account={ref}",
+                data={
+                    "csrf_token": csrf,
+                    "content_type": "image",
+                    "caption": "First line\n\n#Postenza #Launch",
+                    "submit_action": "save",
+                    "image_file": (BytesIO(b"bounded-jpeg"), "launch.jpg", "image/jpeg"),
+                },
+                content_type="multipart/form-data",
+                follow_redirects=False,
+            )
+
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(upload_image.call_args.kwargs["instagram_account_id"], self.account_a.id)
+        with self.Session() as session:
+            owned = session.scalars(select(InstagramContentItem).where(
+                InstagramContentItem.instagram_account_id == self.account_a.id
+            )).all()
+            foreign = session.scalars(select(InstagramContentItem).where(
+                InstagramContentItem.instagram_account_id == self.account_b.id
+            )).all()
+        self.assertEqual(len(owned), 1)
+        self.assertEqual(foreign, [])
+        self.assertEqual(owned[0].status, "draft")
+        self.assertEqual(owned[0].caption, "First line\n\n#Postenza #Launch")
+        self.assertEqual(owned[0].media_url, asset.url)
+        self.assertEqual(owned[0].cover_url, asset.url)
+        self.assertEqual(owned[0].metadata_json, {
+            "content_type": "image",
+            "storage": {"provider": "cloudinary", "asset_id": asset.asset_id},
+        })
+
+    def test_content_upload_schedule_creates_and_schedules_in_one_transaction(self):
+        """A Schedule post submit must not leave an intermediate draft or bypass UTC scheduling."""
+        self._login_as(self.owner_a)
+        ref = self._reference(self.owner_a, self.account_a)
+        page = self.client.get(f"/app/content?account={ref}").get_data(as_text=True)
+        csrf = re.search(r'name="csrf_token" value="([^"]+)"', page).group(1)
+        local_future = datetime.now(ZoneInfo("Africa/Casablanca")) + timedelta(days=2)
+        asset = ContentMediaAsset(
+            url="https://res.cloudinary.com/postenza/image/upload/scheduled.jpg",
+            asset_id=f"postenza/content/{self.account_a.id.hex}/abcdef0123456789abcdef0123456789",
+        )
+
+        with patch("tenant_dashboard.upload_content_image", return_value=asset):
+            response = self.client.post(
+                f"/app/content/drafts/create?account={ref}",
+                data={
+                    "csrf_token": csrf,
+                    "content_type": "image",
+                    "caption": "Schedule from Content",
+                    "submit_action": "schedule",
+                    "date": local_future.strftime("%Y-%m-%d"),
+                    "time": local_future.strftime("%H:%M"),
+                    "image_file": (BytesIO(b"bounded-jpeg"), "scheduled.jpeg", "image/jpeg"),
+                },
+                content_type="multipart/form-data",
+                follow_redirects=False,
+            )
+
+        self.assertEqual(response.status_code, 303)
+        with self.Session() as session:
+            item = session.scalar(select(InstagramContentItem).where(
+                InstagramContentItem.instagram_account_id == self.account_a.id
+            ))
+        self.assertIsNotNone(item)
+        self.assertEqual(item.status, "scheduled")
+        expected = local_future.replace(second=0, microsecond=0).astimezone(timezone.utc)
+        actual = item.scheduled_for.replace(tzinfo=timezone.utc)
+        self.assertEqual(actual, expected)
+
+    def test_content_create_preserves_direct_https_fallback_without_upload(self):
+        """Removing the secondary URL workflow would break existing customers."""
+        self._login_as(self.owner_a)
+        ref = self._reference(self.owner_a, self.account_a)
+        page = self.client.get(f"/app/content?account={ref}").get_data(as_text=True)
+        csrf = re.search(r'name="csrf_token" value="([^"]+)"', page).group(1)
+
+        with patch("tenant_dashboard.upload_content_image", side_effect=AssertionError("upload used")):
+            response = self.client.post(
+                f"/app/content/drafts/create?account={ref}",
+                data={
+                    "csrf_token": csrf,
+                    "content_type": "image",
+                    "caption": "Existing URL flow",
+                    "submit_action": "save",
+                    "media_url": "https://images.example.com/fallback.jpg",
+                },
+                follow_redirects=False,
+            )
+        self.assertEqual(response.status_code, 303)
+        with self.Session() as session:
+            item = session.scalar(select(InstagramContentItem).where(
+                InstagramContentItem.instagram_account_id == self.account_a.id
+            ))
+        self.assertEqual(item.media_url, "https://images.example.com/fallback.jpg")
+        self.assertEqual(item.metadata_json, {"content_type": "image"})
+
+    def test_content_upload_errors_are_safe_and_do_not_create_rows(self):
+        """Validation, configuration, and provider failures must remain user-facing and secret-free."""
+        self._login_as(self.owner_a)
+        ref = self._reference(self.owner_a, self.account_a)
+        page = self.client.get(f"/app/content?account={ref}").get_data(as_text=True)
+        csrf = re.search(r'name="csrf_token" value="([^"]+)"', page).group(1)
+        cases = (
+            (ContentMediaValidationError("image_too_large"), 400, "8 MB or smaller"),
+            (ContentMediaValidationError("invalid_jpeg"), 400, "valid JPEG or JPG image"),
+            (ContentMediaUnavailableError("upload_unavailable"), 503, "Image upload is temporarily unavailable"),
+            (ContentMediaProviderError("upload_failed"), 502, "Image upload could not be completed"),
+        )
+        for error, expected_status, expected_copy in cases:
+            with self.subTest(code=error.code), patch(
+                "tenant_dashboard.upload_content_image", side_effect=error
+            ):
+                response = self.client.post(
+                    f"/app/content/drafts/create?account={ref}",
+                    data={
+                        "csrf_token": csrf,
+                        "caption": "Keep this caption",
+                        "submit_action": "save",
+                        "image_file": (BytesIO(b"bad"), "bad.jpg", "image/jpeg"),
+                    },
+                    content_type="multipart/form-data",
+                )
+                rendered = response.get_data(as_text=True)
+                self.assertEqual(response.status_code, expected_status)
+                self.assertIn(expected_copy, rendered)
+                self.assertIn("Keep this caption", rendered)
+                self.assertNotIn("CLOUDINARY_API_SECRET", rendered)
+                self.assertNotIn("private-api-secret", rendered)
+        with self.Session() as session:
+            self.assertIsNone(session.scalar(select(InstagramContentItem)))
+
+    def test_deleting_owned_uploaded_draft_removes_row_then_best_effort_asset(self):
+        """A deletable uploaded draft should not leave its known Cloudinary asset behind."""
+        self._login_as(self.owner_a)
+        ref = self._reference(self.owner_a, self.account_a)
+        asset_id = f"postenza/content/{self.account_a.id.hex}/fedcba9876543210fedcba9876543210"
+        with self.Session.begin() as session:
+            draft = create_content_draft(
+                session,
+                instagram_account_id=self.account_a.id,
+                caption="Uploaded draft",
+                content_type="image",
+                media_url="https://res.cloudinary.com/postenza/image/upload/delete.jpg",
+                metadata_json={
+                    "content_type": "image",
+                    "storage": {"provider": "cloudinary", "asset_id": asset_id},
+                },
+            )
+        page = self.client.get(f"/app/content?account={ref}").get_data(as_text=True)
+        csrf = re.search(r'name="csrf_token" value="([^"]+)"', page).group(1)
+        delete_ref = re.search(
+            r'action="/app/content/drafts/delete\?account=[^"]+".*?name="draft_ref" value="([^"]+)"',
+            page,
+            re.DOTALL,
+        ).group(1)
+
+        with patch("tenant_dashboard.delete_content_image", return_value=False) as delete_asset:
+            response = self.client.post(
+                f"/app/content/drafts/delete?account={ref}",
+                data={"csrf_token": csrf, "draft_ref": delete_ref},
+                follow_redirects=False,
+            )
+        self.assertEqual(response.status_code, 303)
+        delete_asset.assert_called_once_with(asset_id)
+        with self.Session() as session:
+            self.assertIsNone(session.get(InstagramContentItem, draft.id))
+
+    def test_uploaded_asset_cleanup_is_attempted_when_database_creation_fails(self):
+        """A database rollback after upload must trigger bounded best-effort cleanup."""
+        self._login_as(self.owner_a)
+        ref = self._reference(self.owner_a, self.account_a)
+        page = self.client.get(f"/app/content?account={ref}").get_data(as_text=True)
+        csrf = re.search(r'name="csrf_token" value="([^"]+)"', page).group(1)
+        asset = ContentMediaAsset(
+            url="https://res.cloudinary.com/postenza/image/upload/orphan.jpg",
+            asset_id=f"postenza/content/{self.account_a.id.hex}/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        with patch("tenant_dashboard.upload_content_image", return_value=asset), patch(
+            "tenant_dashboard.create_content_draft", side_effect=ValueError("database rejected row")
+        ), patch("tenant_dashboard.delete_content_image", return_value=False) as cleanup:
+            response = self.client.post(
+                f"/app/content/drafts/create?account={ref}",
+                data={
+                    "csrf_token": csrf,
+                    "caption": "Rollback upload",
+                    "submit_action": "save",
+                    "image_file": (BytesIO(b"bounded-jpeg"), "rollback.jpg", "image/jpeg"),
+                },
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(response.status_code, 400)
+        cleanup.assert_called_once_with(asset.asset_id)
+        with self.Session() as session:
+            self.assertIsNone(session.scalar(select(InstagramContentItem)))
+
+    def test_published_content_cannot_be_deleted_or_remove_its_stored_preview(self):
+        """The unpublished-delete action must not remove published history or its media asset."""
+        self._login_as(self.owner_a)
+        ref = self._reference(self.owner_a, self.account_a)
+        asset_id = f"postenza/content/{self.account_a.id.hex}/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        with self.Session.begin() as session:
+            item = InstagramContentItem(
+                instagram_account_id=self.account_a.id,
+                status="published",
+                content_type="image",
+                caption="Published history",
+                media_url="https://res.cloudinary.com/postenza/image/upload/history.jpg",
+                metadata_json={"content_type": "image", "storage": {"provider": "cloudinary", "asset_id": asset_id}},
+            )
+            session.add(item)
+            session.flush()
+            item_id = item.id
+        with self.app.app_context():
+            delete_ref = _content_draft_reference(
+                self.owner_a.id,
+                item_id,
+                purpose="content-draft-delete",
+            )
+        page = self.client.get(f"/app/content?account={ref}").get_data(as_text=True)
+        csrf = re.search(r'name="csrf_token" value="([^"]+)"', page).group(1)
+        with patch("tenant_dashboard.delete_content_image") as cleanup:
+            response = self.client.post(
+                f"/app/content/drafts/delete?account={ref}",
+                data={"csrf_token": csrf, "draft_ref": delete_ref},
+            )
+        self.assertEqual(response.status_code, 400)
+        cleanup.assert_not_called()
+        with self.Session() as session:
+            self.assertIsNotNone(session.get(InstagramContentItem, item_id))
 
     def test_content_draft_edit_route_updates_owned_item(self):
         """Draft edit succeeds only when the page-generated opaque reference is used under the selected account."""
