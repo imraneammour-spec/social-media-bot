@@ -27,6 +27,8 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r requirements-dev.txt
+      - name: Install standard backup encryption tools
+        run: sudo apt-get update -qq && sudo apt-get install -y age
       - run: python -m compileall -q auth.py webhook.py billing.py operations.py seo.py worker.py wsgi.py database
       - name: Apply the full migration chain on PostgreSQL
         env:
