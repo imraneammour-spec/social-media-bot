@@ -10,7 +10,11 @@ from sqlalchemy.orm import sessionmaker
 def create_database_engine(database_url: str) -> Engine:
     """Construct an engine without opening a connection or creating tables."""
 
-    return create_engine(database_url, pool_pre_ping=not database_url.startswith("sqlite"))
+    options = {"pool_pre_ping": not database_url.startswith("sqlite")}
+    if database_url.startswith(("postgresql", "postgres:")):
+        options.update(pool_size=5, max_overflow=5, pool_timeout=10, pool_recycle=300,
+                       connect_args={"connect_timeout": 10})
+    return create_engine(database_url, **options)
 
 
 def create_session_factory(database_url: str) -> sessionmaker:

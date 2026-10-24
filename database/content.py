@@ -9,7 +9,8 @@ from urllib.parse import urlsplit
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import InstagramContentItem
+from .models import InstagramAccount, InstagramContentItem
+from .billing import consume_usage
 
 CONTENT_TYPES = ("image", "video", "carousel", "reel")
 VALID_STATUSES = {"draft", "ready", "scheduled"}
@@ -91,6 +92,10 @@ def create_content_draft(
     if len(trimmed_caption) > MAX_CAPTION_LENGTH:
         raise ValueError("Caption is too long.")
 
+    account = session.get(InstagramAccount, account_id)
+    if account is None:
+        raise PermissionError("Account is unavailable.")
+    consume_usage(session, account.user_id, "content")
     item = InstagramContentItem(
         instagram_account_id=account_id,
         status=normalized_status,

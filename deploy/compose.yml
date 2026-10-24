@@ -1,0 +1,71 @@
+name: postenza
+x-app: &app
+  image: ${POSTENZA_IMAGE:-postenza:local}
+  build:
+    context: ..
+  env_file: ../.env.production
+  restart: unless-stopped
+  volumes:
+    - app_data:/app/data
+  depends_on:
+    postgres:
+      condition: service_healthy
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: '3'
+services:
+  web:
+    <<: *app
+    ports:
+      - 127.0.0.1:8000:8000
+  worker:
+    <<: *app
+    command: [python, worker.py]
+    healthcheck:
+      test: [CMD, python, -c, "import os,time; assert time.time()-os.stat('/app/data/worker-heartbeat').st_mtime < 300"]
+      start_period: 60s
+      interval: 60s
+      timeout: 10s
+      retries: 3
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: postenza
+      POSTGRES_USER: postenza
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a strong database password}
+    volumes:
+      - pg_data:/var/lib/postgresql
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U postenza -d postenza']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+  proxy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      POSTENZA_HOST: ${POSTENZA_HOST:?Set the validated destination hostname}
+      ACME_EMAIL: ${ACME_EMAIL:?Set your certificate contact}
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+volumes:
+  app_data:
+  pg_data:
+  caddy_data:
+  caddy_config:
