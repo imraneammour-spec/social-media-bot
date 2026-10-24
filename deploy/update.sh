@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd /srv/postenza
+exec 9>backups/maintenance.lock
+flock -x 9
+touch backups/maintenance.lock
 : "${POSTENZA_IMAGE:?Set an immutable validated image tag or digest}"
 test -f .env.production
 # A successful recovery drill is a hard deployment gate; never create a blank replacement.

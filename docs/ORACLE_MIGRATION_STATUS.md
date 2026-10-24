@@ -10,6 +10,14 @@ confirmed enabling access and the browser connection was reset. This is a tool
 access blocker, not evidence that the user's Chrome extension is disconnected.
 No Oracle resource, account upgrade or billable service has been created.
 
+Read-only Browser-plugin diagnostics subsequently confirmed Chrome running and
+its extension enabled. The expected Windows native-host registration is missing;
+this persisted after the extension was installed/pinned and its sidebar opened.
+The separate Work access gate still rejects this conversation. See
+`BROWSER_ACCESS_DIAGNOSTIC.md` for observations and the required plugin-UI repair.
+A fresh message/session did not fix access. No cookies, registry changes,
+permission bypass or unsupported browser control was attempted.
+
 Oracle's [current official allowance](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)
 lists A1 1,500 OCPU-hours/9,000 GB-hours monthly (2 OCPU/12 GB equivalent),
 200 GB total boot/block storage and five volume backups. These published limits
@@ -58,7 +66,15 @@ Decryption success does not establish database integrity: subsequently use the
 fingerprint restore workflow in `deploy/RUNBOOK.md`, verify application files and
 test credential decryption. No backup scheduler, off-host copy, monitoring timer,
 staging host, firewall change, GitHub deployment secret, or publishing worker has
-been activated. Those tasks remain pending verified destination access.
+been activated. Inactive daily backup and five-minute monitor units are now
+implemented; see `deploy/OPERATIONS.md`. The 62-test local suite passed, including
+ten host-operation cases (Docker boundary simulated; age is real). Capture
+failures release scratch space before restoring only previously running app
+services. Scratch-capacity and stale-image capture defects were fixed after an
+independent scoped review. Linux CI and its new real Docker named-volume,
+stopped-container and age drill are pending on this revision. The exact Railway
+Gmail thread was read: it contains only the approved sent request, dated
+18:26:58 UTC, with no support reply or export.
 
 ## Acceptance status
 

@@ -1,0 +1,17 @@
+[Unit]
+Description=Postenza encrypted backup (requires verified production recovery)
+Requires=docker.service
+After=docker.service
+ConditionPathExists=/srv/postenza/backups/PRODUCTION_RECOVERY_APPROVED
+ConditionPathExists=/etc/postenza-operations.env
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+SupplementaryGroups=docker
+WorkingDirectory=/srv/postenza
+EnvironmentFile=/etc/postenza-operations.env
+ExecStart=/usr/bin/bash /srv/postenza/deploy/backup.sh
+UMask=0077
+TimeoutStartSec=30min

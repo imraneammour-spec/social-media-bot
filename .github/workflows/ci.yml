@@ -29,7 +29,8 @@ jobs:
       - run: python -m pip install -r requirements-dev.txt
       - name: Install standard backup encryption tools
         run: sudo apt-get update -qq && sudo apt-get install -y age
-      - run: python -m compileall -q auth.py webhook.py billing.py operations.py seo.py worker.py wsgi.py database
+      - run: python -m compileall -q auth.py webhook.py billing.py operations.py seo.py worker.py wsgi.py database scripts
+      - run: bash -n deploy/update.sh deploy/backup.sh deploy/monitor.sh
       - name: Apply the full migration chain on PostgreSQL
         env:
           DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
@@ -40,14 +41,16 @@ jobs:
       - name: Start the production entry point and verify readiness
         run: |
           docker run --detach --name postenza-smoke --network host \
+            --volume postenza-smoke-data:/app/data \
             -e APP_ENV=production -e PORT=18000 -e DATABASE_URL="$TEST_DATABASE_URL" \
             -e FLASK_SECRET_KEY=ci-only-smoke-test-secret \
             -e BILLING_MODE=disabled -e SEARCH_INDEXING_ENABLED=false \
             postenza:check
-          trap 'docker rm -f postenza-smoke >/dev/null' EXIT
+          trap 'docker rm -f postenza-smoke >/dev/null; docker volume rm postenza-smoke-data >/dev/null' EXIT
           for attempt in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:18000/ready; then
               curl --fail --silent http://127.0.0.1:18000/health
+              python recovery_tests/docker_volume_backup_drill.py
               exit 0
             fi
             sleep 2

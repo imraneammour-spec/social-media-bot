@@ -31,6 +31,15 @@
 - [x] Check Railway support response and preserve source resources. No response as of this check.
 - [x] Add real age round-trip, tamper, wrong-key and overwrite-refusal tests in `recovery_tests/test_encrypted_backup.py`; run them failing before implementation.
 - [x] Implement `scripts/encrypted_backup.py`: `encrypt_file(source, output, recipient)` and `decrypt_file(source, output, identity)`, using age subprocesses, protected temporary files and exclusive final publication.
-- [ ] Add `deploy/backup.sh`, `deploy/monitor.sh` and inactive systemd templates. Capture database, app files and config during a short graceful app stop, retain encrypted archives without automatic deletion, and document restore verification/off-host requirements.
+- [x] Add `deploy/backup.sh`, `deploy/monitor.sh` and inactive systemd templates. Capture database, app files and config during a short graceful app stop, retain encrypted archives without automatic deletion, and document restore verification/off-host requirements.
 - [x] Run local recovery tests and Linux CI including actual age encryption/decryption; update draft PR #1 without merging.
 - [x] Record exact Oracle/production/billing/SEO acceptance status and remaining external actions in `docs/ORACLE_MIGRATION_STATUS.md`.
+
+## Continuation ledger
+
+- Ruling: keep the existing checkout/branch; pre-existing working-tree UI edits/deletions remain excluded from commits.
+- Ruling: implement host orchestration in standard-library Python behind the shell entry points so failure paths can be tested on Windows and Linux.
+- Added ten host-operation tests, observed failures before corresponding implementations/fixes, then 62 local recovery tests passed.
+- Independent scoped review found scratch-capacity underestimation and a stale-image capture path; both were verified, fixed and regression-tested. Monitoring no longer starts or socket-activates Docker.
+- Host units remain inactive; no account/resource/DNS changes. Real Linux named-volume drill is pending before claiming Docker capture verification.
+- Browser checks confirmed enabled Chrome extension but missing native-host registration and a separate Work denial. A new turn did not fix access; Oracle capacity/cost remain unverified.

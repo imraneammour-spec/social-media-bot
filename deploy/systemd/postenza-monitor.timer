@@ -1,0 +1,10 @@
+[Unit]
+Description=Check Postenza host health every five minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Unit=postenza-monitor.service
+
+[Install]
+WantedBy=timers.target
