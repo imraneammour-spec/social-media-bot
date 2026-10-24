@@ -66,7 +66,7 @@ been activated. Those tasks remain pending verified destination access.
 - Verified prospective Oracle monthly total: unknown until the console is inspected.
 - Railway production backup and restore: blocked; no export received.
 - Staging URL: none. Production URL remains https://postenza.app, previously provider 404.
-- Application CI: previous 46-test Linux/Docker run passed; follow-up encryption CI tracked in PR #1.
+- Application CI: [run 40135548878](https://github.com/imraneammour-spec/social-media-bot/actions/runs/40135548878) passed 52 tests, migrations, dependency audit, Docker build, Gunicorn startup and readiness/health checks on review revision `900fd0792bb06c0c36aefc20a556dd98a4385fd7` (same Git tree as local `ffa5db0`).
 - Billing: disabled; real merchant sandbox credentials/events still required.
 - SEO/Search Console: code prepared; ownership/indexing and live performance unverified.
 - Credential rotation: preserve originals for recovery; coordinate replacement after verified restore.

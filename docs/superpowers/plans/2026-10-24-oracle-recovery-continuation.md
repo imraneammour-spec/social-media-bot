@@ -32,5 +32,5 @@
 - [x] Add real age round-trip, tamper, wrong-key and overwrite-refusal tests in `recovery_tests/test_encrypted_backup.py`; run them failing before implementation.
 - [x] Implement `scripts/encrypted_backup.py`: `encrypt_file(source, output, recipient)` and `decrypt_file(source, output, identity)`, using age subprocesses, protected temporary files and exclusive final publication.
 - [ ] Add `deploy/backup.sh`, `deploy/monitor.sh` and inactive systemd templates. Capture database, app files and config during a short graceful app stop, retain encrypted archives without automatic deletion, and document restore verification/off-host requirements.
-- [ ] Run local recovery tests and Linux CI including actual age encryption/decryption; update draft PR #1 without merging.
-- [ ] Record exact Oracle/production/billing/SEO acceptance status and remaining external actions in `docs/ORACLE_MIGRATION_STATUS.md`.
+- [x] Run local recovery tests and Linux CI including actual age encryption/decryption; update draft PR #1 without merging.
+- [x] Record exact Oracle/production/billing/SEO acceptance status and remaining external actions in `docs/ORACLE_MIGRATION_STATUS.md`.

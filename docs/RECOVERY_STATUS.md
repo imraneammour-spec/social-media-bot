@@ -53,6 +53,9 @@ was verified for this account. [Railway trial terms](https://docs.railway.com/pr
 Four app/database variable exports and empty log captures were saved locally
 under ignored `backups/railway-20261024`. They contain sensitive secrets and must
 stay private. They are configuration exports, **not production database dumps**.
+An additional encrypted archive of these six configuration/log files has now
+been privately decrypted and byte-verified. The originals remain intact. See
+`docs/ORACLE_MIGRATION_STATUS.md` for the protected archive/key locations and limits.
 The two projects have different integration settings: precious-peace has Gemini
 and Cloudinary but lacks OAuth/encryption settings; devoted-imagination has
 OAuth/encryption settings but lacks Gemini/Cloudinary. Preserve both key sets
@@ -123,7 +126,7 @@ the benefit was not activated. Azure is excluded from this migration.
 | Option | Verified offer/limit | Fit and current decision |
 | --- | --- | --- |
 | Heroku Education | $13/month for 24 months, non-rolling; application approval required | Requires card; overages and post-credit resources are billed. Not activated under no-paid-services rule. |
-| Oracle Always Free | A1 allowance currently 2 OCPU/12 GB equivalent; 200 GB combined boot/block storage | Closest free architectural fit for a VM with durable files and jobs, but you have no account; regional capacity and eligibility unverified. |
+| Oracle Always Free | A1 allowance currently 2 OCPU/12 GB equivalent; 200 GB combined boot/block storage | User now reports registration and Casablanca selection; account activation, regional capacity and eligibility remain unverified. |
 | Appwrite Education | Two projects at Pro-equivalent allowance for six months | Useful BaaS benefit, not a drop-in Flask/PostgreSQL/legacy-disk host. No migration rewrite justified before recovery. |
 | MongoDB Education | $50 Atlas credit | Does not host the existing PostgreSQL schema. |
 | Sentry Education | Student observability offer | Useful optional monitoring after deployment; not hosting. No account activated. |
@@ -143,6 +146,14 @@ Sources: [current Education catalog](https://education.github.com/pack),
 
 No verified, provisionable, entirely free production destination is available in
 the connected accounts. OCI is a conditional candidate, not the chosen live host.
+
+Update: the user now reports completing Oracle registration/card verification
+and selecting Morocco West (Casablanca). The earlier "no Oracle account" finding
+is superseded. Activation, tenancy-specific Always Free limits, regional capacity
+and exact costs remain unverified because browser access is currently rejected
+by the tool despite the user's confirmation that Chrome is connected. No Oracle
+resources or account upgrades have been created. Current continuation status is
+in `docs/ORACLE_MIGRATION_STATUS.md`.
 It may reclaim idle VMs and may lack capacity. A small free VM would be
 self-managed with no high availability. Do not upgrade it to paid to obtain
 capacity. The prepared container package remains portable.
@@ -226,7 +237,7 @@ image/font/script costs; do not label these metrics passed from local HTML alone
 
 | Check | Actual result |
 | --- | --- |
-| Recovery suite | 46 passed, 4 warnings, including real PostgreSQL concurrent quota enforcement and subscription ordering with/without an already cached ORM row |
+| Recovery suite | 52 passed, 4 warnings, including PostgreSQL concurrency checks and six real age encryption cases |
 | Historical suite from ignored git snapshots | 657 passed, 4 failed, 124 subtests passed; unlimited free limits used to emulate grandfathered access |
 | Historical failure assessment | Old exact robots/sitemap expectations, old hard-coded migration head, and AST scheduler harness missing new jobs; current contracts have direct recovery tests |
 | PostgreSQL 18 migration chain | All revisions applied successfully to a disposable local database |
@@ -238,7 +249,7 @@ image/font/script costs; do not label these metrics passed from local HTML alone
 | Mobile emulation | Chrome viewport capability did not change actual viewport; subsequent browser use is disabled in Work settings. Responsive CSS present, genuine mobile verification pending |
 | Live social publish/DM/AI | NOT EXECUTED; controlled credentials/provider tests required |
 | Real payment sandbox | NOT EXECUTED; provider credentials missing |
-| Linux Docker build / CI | GitHub CI passed migrations, 46 tests, dependency audit, image build, Gunicorn container startup and /ready plus /health smoke checks on the subscription-race fix; cloud deployment and ARM build not executed |
+| Linux Docker build / CI | GitHub CI passed migrations, 52 tests, dependency audit, image build, Gunicorn startup and /ready plus /health smoke checks; cloud deployment and ARM build not executed |
 | Production URL / HTTPS | TLS valid; application endpoints still provider 404 |
 | Google indexing | NOT VERIFIED |
 
