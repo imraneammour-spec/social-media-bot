@@ -66,8 +66,8 @@ Hobby activation with $5 upfront; no plan was changed.
 
 You approved a public-safe support request and then approved email as the fallback
 when Central Station proved unavailable. The identical approved message was sent
-to support@railway.com from the signed-in Railway account email on 24 October,
-18:26 local time. Gmail confirmed Message sent and the message was verified in
+to support@railway.com from the signed-in Railway account email on 24 October
+2026. Gmail confirmed Message sent and the message was verified in
 Sent, including the exact recipient. No project IDs, secrets or files were sent.
 No export or support resolution has been received/verified.
 [Central Station outage notice](https://status.railway.com/incident/ZEO9X68O).
@@ -235,10 +235,10 @@ image/font/script costs; do not label these metrics passed from local HTML alone
 | Dependency audit | No known vulnerabilities in resolved requirements at audit time; not a complete security certification |
 | Browser, desktop | Login session persisted across workspace/billing/content; created draft, scheduled it, saw calendar entry, then unscheduled it locally |
 | Browser uploads | Correctly unavailable without Cloudinary; live upload not executed |
-| Mobile emulation | Chrome viewport capability did not change actual viewport; responsive CSS present, genuine mobile verification pending |
+| Mobile emulation | Chrome viewport capability did not change actual viewport; subsequent browser use is disabled in Work settings. Responsive CSS present, genuine mobile verification pending |
 | Live social publish/DM/AI | NOT EXECUTED; controlled credentials/provider tests required |
 | Real payment sandbox | NOT EXECUTED; provider credentials missing |
-| Linux Docker build / CI | GitHub CI passed migrations, 44 tests, dependency audit, image build, Gunicorn container startup and /ready plus /health smoke checks; cloud deployment and ARM build not executed |
+| Linux Docker build / CI | GitHub CI passed migrations, 46 tests, dependency audit, image build, Gunicorn container startup and /ready plus /health smoke checks on the subscription-race fix; cloud deployment and ARM build not executed |
 | Production URL / HTTPS | TLS valid; application endpoints still provider 404 |
 | Google indexing | NOT VERIFIED |
 
@@ -252,11 +252,12 @@ http://127.0.0.1:8765 while the recovery preview process is running; it is not a
 new production URL.
 
 Verified source references: draft [PR #1](https://github.com/imraneammour-spec/social-media-bot/pull/1),
-local application commit `54deb657bb1315eedbe14fa93fbb68af1835178e`, equivalent
-review application commit `dc7a05d044b46df3e5e01029625c7821f487b5bf` (identical Git
-tree), and [successful Linux CI run](https://github.com/imraneammour-spec/social-media-bot/actions/runs/40120267236).
-The draft PR has not been merged or deployed. A subsequent billing concurrency
-fix has passed the 46-test local suite; its Linux CI result is tracked separately.
+local application commit `9318374`, equivalent review application commit
+`ef46465f2adbbddd327b82d0eaba0cf6322e2e3a` (identical Git tree
+`d4fe993542f8563e6330eb30817b9b12c89c5fdf`), and
+[successful Linux CI run](https://github.com/imraneammour-spec/social-media-bot/actions/runs/40132454610).
+The draft PR has not been merged or deployed. Documentation-only updates after
+this revision do not change the validated application code.
 
 The completed Codex Security review covered the immutable recovery commit range
 through `4259aeea843c626fb0744c76afc27d02edd462f7`. It found one medium-severity
