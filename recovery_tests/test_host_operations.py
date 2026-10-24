@@ -49,7 +49,10 @@ class FakeCompose:
 
 
 @pytest.fixture
-def host_root(tmp_path):
+def host_root(tmp_path, monkeypatch):
+    # Tiny synthetic captures need a small test cap, not 7 GiB on a shared runner.
+    # Production's default remains 2 GiB/file + its conservative scratch reserve.
+    monkeypatch.setenv("POSTENZA_BACKUP_MAX_FILE_BYTES", str(4 * 1024 ** 2))
     root = tmp_path / "disposable-host"
     recovered = root / "backups" / "production-recovery"
     recovered.mkdir(parents=True)
@@ -145,6 +148,7 @@ def test_monitor_rejects_unready_database_unhealthy_containers_and_full_disk():
 def test_backup_reserves_capacity_for_captures_bundle_and_ciphertext(host_root, monkeypatch):
     from scripts import host_backup
     compose = FakeCompose()
+    monkeypatch.setenv("POSTENZA_BACKUP_MAX_FILE_BYTES", str(2 * 1024 ** 3))
     monkeypatch.setattr(host_backup.shutil, "disk_usage", lambda root: SimpleNamespace(free=5 * 1024 ** 3))
     monkeypatch.setattr(host_backup, "encrypt_file", lambda source, output, *a, **k: output.write_bytes(b"synthetic"))
     with pytest.raises(ValueError):
