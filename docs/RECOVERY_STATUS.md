@@ -226,7 +226,7 @@ image/font/script costs; do not label these metrics passed from local HTML alone
 
 | Check | Actual result |
 | --- | --- |
-| Recovery suite | 44 passed, 4 warnings, including real PostgreSQL concurrent quota enforcement |
+| Recovery suite | 46 passed, 4 warnings, including real PostgreSQL concurrent quota enforcement and subscription ordering with/without an already cached ORM row |
 | Historical suite from ignored git snapshots | 657 passed, 4 failed, 124 subtests passed; unlimited free limits used to emulate grandfathered access |
 | Historical failure assessment | Old exact robots/sitemap expectations, old hard-coded migration head, and AST scheduler harness missing new jobs; current contracts have direct recovery tests |
 | PostgreSQL 18 migration chain | All revisions applied successfully to a disposable local database |
@@ -255,8 +255,22 @@ Verified source references: draft [PR #1](https://github.com/imraneammour-spec/s
 local application commit `54deb657bb1315eedbe14fa93fbb68af1835178e`, equivalent
 review application commit `dc7a05d044b46df3e5e01029625c7821f487b5bf` (identical Git
 tree), and [successful Linux CI run](https://github.com/imraneammour-spec/social-media-bot/actions/runs/40120267236).
-The draft PR has not been merged or deployed. Later documentation-only updates
-do not change the validated application code.
+The draft PR has not been merged or deployed. A subsequent billing concurrency
+fix has passed the 46-test local suite; its Linux CI result is tracked separately.
+
+The completed Codex Security review covered the immutable recovery commit range
+through `4259aeea843c626fb0744c76afc27d02edd462f7`. It found one medium-severity
+subscription race: an older valid provider snapshot could overwrite a newer
+expiry because SQLAlchemy retained subscription state loaded before the owner
+lock. A deterministic two-transaction PostgreSQL test reproduced the failure,
+including a caller with a preloaded subscription. The fix resolves owner IDs
+without caching mutable subscription state, then locks and refreshes checkout
+and subscription rows before validating ownership/timestamps. Both regression
+cases failed before the fix and passed after it. This was a local reproduction;
+no production exploitation or live payment execution is claimed. Review ran
+sequentially without an independent reviewer and excluded pre-existing user
+working-tree edits. The sealed scan describes the earlier vulnerable revision;
+it has not been rewritten to imply that revision passed.
 
 ## Remaining actions and preservation
 

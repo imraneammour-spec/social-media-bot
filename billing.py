@@ -98,19 +98,28 @@ def synchronize(db, subscription_id, data, *, checkout_id=None, user_id=None):
     variant = str(attributes.get("variant_id"))
     if variant not in variants():
         raise BillingProviderError("Unrecognized subscription variant.")
-    existing = db.scalar(select(BillingSubscription).where(BillingSubscription.provider_id == subscription_id))
-    if existing is not None:
-        user_id = existing.user_id
+    # Resolve ownership without caching mutable subscription state before the lock.
+    existing_user_id = db.scalar(select(BillingSubscription.user_id).where(BillingSubscription.provider_id == subscription_id))
+    checkout_key = None
+    if existing_user_id is not None:
+        user_id = existing_user_id
     else:
-        checkout = db.get(BillingCheckout, uuid.UUID(str(checkout_id)))
+        checkout_key = uuid.UUID(str(checkout_id))
+        checkout_owner = db.scalar(select(BillingCheckout.user_id).where(BillingCheckout.id == checkout_key))
+        if checkout_owner is None or str(checkout_owner) != str(user_id):
+            raise BillingProviderError("Checkout ownership could not be verified.")
+        user_id = checkout_owner
+    lock_user(db, user_id)
+    if checkout_key is not None:
+        checkout = db.get(BillingCheckout, checkout_key, populate_existing=True, with_for_update=True)
         if not checkout or str(checkout.user_id) != str(user_id) or checkout.variant_id != variant or checkout.test_mode != attributes["test_mode"] or checkout.consumed_by not in {None, subscription_id}:
             raise BillingProviderError("Checkout ownership could not be verified.")
         if utc(checkout.created_at) < datetime.now(timezone.utc) - timedelta(hours=48):
             raise BillingProviderError("Checkout expired.")
         checkout.consumed_by = subscription_id
         user_id = checkout.user_id
-    lock_user(db, user_id)
-    subscription = db.get(BillingSubscription, user_id)
+    # Refresh even if the caller previously loaded this row into its identity map.
+    subscription = db.get(BillingSubscription, user_id, populate_existing=True, with_for_update=True)
     if subscription is None:
         subscription = BillingSubscription(user_id=user_id)
         db.add(subscription)
