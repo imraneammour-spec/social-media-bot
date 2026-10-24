@@ -41,5 +41,5 @@
 - Ruling: implement host orchestration in standard-library Python behind the shell entry points so failure paths can be tested on Windows and Linux.
 - Added ten host-operation tests, observed failures before corresponding implementations/fixes, then 62 local recovery tests passed.
 - Independent scoped review found scratch-capacity underestimation and a stale-image capture path; both were verified, fixed and regression-tested. Monitoring no longer starts or socket-activates Docker.
-- Host units remain inactive; no account/resource/DNS changes. Real Linux named-volume drill is pending before claiming Docker capture verification.
+- Host units remain inactive; no account/resource/DNS changes. Linux CI run 40137771535 passed all 62 tests and the real named-volume/stopped-container/age/restart drill. Initial CI's fixture-capacity failure was corrected using a small test-only file cap, retaining the production defaults and capacity regression.
 - Browser checks confirmed enabled Chrome extension but missing native-host registration and a separate Work denial. A new turn did not fix access; Oracle capacity/cost remain unverified.

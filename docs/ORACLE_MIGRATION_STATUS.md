@@ -41,7 +41,7 @@ release: round trip, restricted POSIX permissions (Linux check), encrypt/decrypt
 overwrite refusal, altered/truncated ciphertext, and wrong decryption identity.
 The POSIX permission assertion requires Linux CI; Windows permissions inherit
 the destination directory's NTFS ACL. The complete local recovery suite passed
-52 tests with four existing Alembic deprecation warnings.
+62 tests with four existing Alembic deprecation warnings.
 
 An encrypted archive of the six existing Railway configuration/log export files
 was actually created at ignored `backups/railway-configuration-20261024.zip.age`.
@@ -71,8 +71,10 @@ implemented; see `deploy/OPERATIONS.md`. The 62-test local suite passed, includi
 ten host-operation cases (Docker boundary simulated; age is real). Capture
 failures release scratch space before restoring only previously running app
 services. Scratch-capacity and stale-image capture defects were fixed after an
-independent scoped review. Linux CI and its new real Docker named-volume,
-stopped-container and age drill are pending on this revision. The exact Railway
+independent scoped review. Linux CI subsequently passed all 62 tests and a real
+Docker named-volume capture from a stopped container, age encryption/decryption,
+byte/content checks and restarted readiness. Docker service orchestration in the
+ten unit cases remains simulated; no actual cloud VM backup has run. The exact Railway
 Gmail thread was read: it contains only the approved sent request, dated
 18:26:58 UTC, with no support reply or export.
 
@@ -82,7 +84,7 @@ Gmail thread was read: it contains only the approved sent request, dated
 - Verified prospective Oracle monthly total: unknown until the console is inspected.
 - Railway production backup and restore: blocked; no export received.
 - Staging URL: none. Production URL remains https://postenza.app, previously provider 404.
-- Application CI: [run 40135548878](https://github.com/imraneammour-spec/social-media-bot/actions/runs/40135548878) passed 52 tests, migrations, dependency audit, Docker build, Gunicorn startup and readiness/health checks on review revision `900fd0792bb06c0c36aefc20a556dd98a4385fd7` (same Git tree as local `ffa5db0`).
+- Application CI: [run 40137771535](https://github.com/imraneammour-spec/social-media-bot/actions/runs/40137771535) passed 62 tests, migrations, dependency audit, shell syntax, Docker build, Gunicorn startup/readiness and the named-volume encryption drill on review revision `d1b8f83064f6f2a70eea1d4b6a53d8d2b72ea47f` (same Git tree as local `9790642`). Initial CI revealed the tiny backup fixtures unnecessarily using the production-sized scratch cap; fixtures now use a 4-MiB cap, while production's 2-GiB file limit/7-GiB scratch gate and the dedicated insufficient-space regression are unchanged.
 - Billing: disabled; real merchant sandbox credentials/events still required.
 - SEO/Search Console: code prepared; ownership/indexing and live performance unverified.
 - Credential rotation: preserve originals for recovery; coordinate replacement after verified restore.

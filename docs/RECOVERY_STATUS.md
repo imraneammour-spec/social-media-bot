@@ -237,7 +237,7 @@ image/font/script costs; do not label these metrics passed from local HTML alone
 
 | Check | Actual result |
 | --- | --- |
-| Recovery suite | 52 passed, 4 warnings, including PostgreSQL concurrency checks and six real age encryption cases |
+| Recovery suite | 62 passed, 4 warnings, including PostgreSQL concurrency, age encryption and ten host-operation cases |
 | Historical suite from ignored git snapshots | 657 passed, 4 failed, 124 subtests passed; unlimited free limits used to emulate grandfathered access |
 | Historical failure assessment | Old exact robots/sitemap expectations, old hard-coded migration head, and AST scheduler harness missing new jobs; current contracts have direct recovery tests |
 | PostgreSQL 18 migration chain | All revisions applied successfully to a disposable local database |
@@ -249,7 +249,7 @@ image/font/script costs; do not label these metrics passed from local HTML alone
 | Mobile emulation | Chrome viewport capability did not change actual viewport; subsequent browser use is disabled in Work settings. Responsive CSS present, genuine mobile verification pending |
 | Live social publish/DM/AI | NOT EXECUTED; controlled credentials/provider tests required |
 | Real payment sandbox | NOT EXECUTED; provider credentials missing |
-| Linux Docker build / CI | GitHub CI passed migrations, 52 tests, dependency audit, image build, Gunicorn startup and /ready plus /health smoke checks; cloud deployment and ARM build not executed |
+| Linux Docker build / CI | GitHub CI passed migrations, 62 tests, dependency audit, image build, Gunicorn startup and /ready plus /health, plus stopped-container named-volume capture, age round-trip and restarted readiness; cloud deployment and ARM build not executed |
 | Production URL / HTTPS | TLS valid; application endpoints still provider 404 |
 | Google indexing | NOT VERIFIED |
 
@@ -263,10 +263,10 @@ http://127.0.0.1:8765 while the recovery preview process is running; it is not a
 new production URL.
 
 Verified source references: draft [PR #1](https://github.com/imraneammour-spec/social-media-bot/pull/1),
-local application commit `9318374`, equivalent review application commit
-`ef46465f2adbbddd327b82d0eaba0cf6322e2e3a` (identical Git tree
-`d4fe993542f8563e6330eb30817b9b12c89c5fdf`), and
-[successful Linux CI run](https://github.com/imraneammour-spec/social-media-bot/actions/runs/40132454610).
+local application commit `9790642`, equivalent review application commit
+`d1b8f83064f6f2a70eea1d4b6a53d8d2b72ea47f` (identical Git tree
+`7468e68f22ee06b7f5d83b1395ad4534f5999115`), and
+[successful Linux CI run](https://github.com/imraneammour-spec/social-media-bot/actions/runs/40137771535).
 The draft PR has not been merged or deployed. Documentation-only updates after
 this revision do not change the validated application code.
 
