@@ -1,7 +1,7 @@
 import os
 
 bind = "0.0.0.0:" + os.getenv("PORT", "8000")
-# Legacy JSON uses process-local locks. Keep one web worker and one job worker.
+# Legacy JSON is shared on one local volume. Keep one web process and one job worker.
 workers = 1
 worker_class = "gthread"
 threads = 4

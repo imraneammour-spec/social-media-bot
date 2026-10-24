@@ -31,6 +31,8 @@ def test_public_pages_sitemap_and_canonical(app):
         response = client.get(path)
         assert response.status_code == 200
         assert "noindex" not in response.headers.get("X-Robots-Tag", "")
+        if path in {"/privacy", "/terms", "/deletion"}:
+            assert response.headers["Link"] == f'<{url}>; rel="canonical"'
     assert 'rel="canonical" href="https://postenza.app/"' in client.get("/").text
     assert "Sitemap: https://postenza.app/sitemap.xml" in client.get("/robots.txt").text
 

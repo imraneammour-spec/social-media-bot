@@ -176,7 +176,8 @@ no end-to-end Lemon Squeezy sandbox payment has occurred.
 Added server-rendered feature pages for Instagram image scheduling and comment/
 message automation plus a pricing/allowances page. Seven public routes are in
 the XML sitemap. Canonicals, social metadata, SoftwareApplication JSON-LD,
-internal links and private/staging noindex controls are implemented. Unsupported
+internal links and private/staging noindex controls are implemented. Legal
+documents use canonical HTTP Link headers; product pages use HTML tags. Unsupported
 cross-platform or video publishing claims and invented ratings/prices are absent
 from the new pages. Existing landing design and verification tag are preserved.
 
@@ -213,7 +214,7 @@ image/font/script costs; do not label these metrics passed from local HTML alone
 | Mobile emulation | Chrome viewport capability did not change actual viewport; responsive CSS present, genuine mobile verification pending |
 | Live social publish/DM/AI | NOT EXECUTED; controlled credentials/provider tests required |
 | Real payment sandbox | NOT EXECUTED; provider credentials missing |
-| Docker/cloud/CI deployment | Prepared; local Docker unavailable and destination absent; no deployed image claimed |
+| Linux Docker build / CI | Initial GitHub CI passed migrations, 44 tests, dependency audit and image build; cloud deployment and ARM build not executed |
 | Production URL / HTTPS | TLS valid; application endpoints still provider 404 |
 | Google indexing | NOT VERIFIED |
 

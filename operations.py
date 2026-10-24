@@ -38,6 +38,9 @@ def register_operations(app):
             response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
         public_paths = {"/", "/pricing", "/features/instagram-scheduling", "/features/instagram-automation", "/privacy", "/terms", "/deletion", "/robots.txt", "/sitemap.xml"}
         staging = os.getenv("SEARCH_INDEXING_ENABLED", "true").lower() != "true"
+        if request.path in {"/privacy", "/terms", "/deletion"} and response.status_code == 200:
+            from seo import origin
+            response.headers["Link"] = f'<{origin() + request.path}>; rel="canonical"'
         if staging or (request.path not in public_paths and not request.path.startswith("/static/")) or response.status_code >= 400:
             response.headers["X-Robots-Tag"] = "noindex, nofollow"
         if request.path not in public_paths and not request.path.startswith("/static/"):
