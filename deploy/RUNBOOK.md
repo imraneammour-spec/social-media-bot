@@ -17,7 +17,8 @@ services have no active deployment. The saved database addresses are private-onl
 The next external prerequisite is a Railway-provided export, or a provider-approved
 temporary recovery route that incurs no charge. Request database and `/app/data`
 exports for both projects where present, plus their PostgreSQL major versions.
-No support message has been sent on your behalf. Preserve the original files and
+The approved public-safe recovery request has been emailed to Railway support;
+no export has been received or verified. Preserve the original files and
 obtain their checksums. A raw PostgreSQL data directory must first be started in
 an isolated environment using its matching PostgreSQL major version; never attach
 it to an arbitrary newer server. Prefer a logical custom-format dump.
@@ -38,6 +39,30 @@ manifest and archive checksum. Keep at least two encrypted copies on independent
 storage. Preserve ALL credential encryption keys and the Flask signing secret.
 The ignored variable JSON files under `backups/railway-20261024` are sensitive
 configuration backups; they are not database backups and are not encrypted.
+NTFS permissions on their backup folder were restricted to the current account
+and SYSTEM. Keep an encrypted independent copy before relying on them long term.
+
+### October 2026 incident: coordinate credential rotation
+
+Railway's account-specific 23 October notice flags this workspace as potentially
+at risk, without confirming secret decryption. Read its
+[incident report](https://blog.railway.com/p/preliminary-report-october-security-incident).
+Preserve source access and original keys for recovery. Once the production backup
+and restore are verified, use fresh database credentials and a fresh Flask signing
+secret on the destination; this intentionally expires old login sessions. Revoke
+and replace potentially exposed Gemini/Cloudinary/Meta and other provider secrets,
+and validate their usage/audit history. Existing users/accounts/content remain in
+the restored database. Do not reintroduce compromised old secrets for convenience.
+
+Credential encryption needs special care: retain old Fernet keys in protected
+recovery storage so the original dumps remain decryptable. A new active key ID
+can encrypt new/refreshed tokens, but older rows still require their original keys
+until a verified transactional re-encryption or account reconnection is complete.
+Replacing PRIMARY in place, or deleting old keys first, makes retained ciphertext
+unreadable. Rotating an encryption key does not revoke an already exposed provider
+token; provider revocation/reconnection is also needed. Plan and test these changes
+on the recovered copy, never on the inaccessible source. No rotation was performed
+in this session. Account/credential actions requiring user entry remain a handoff.
 
 ## 2. Verify recovery in isolation
 

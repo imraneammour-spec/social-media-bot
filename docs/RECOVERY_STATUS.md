@@ -6,6 +6,17 @@ enabled, no live payment collected, no DNS changed, and no Railway volume delete
 The code repairs and local verification below are real; they do not constitute a
 successful production deployment. The original URL remains https://postenza.app.
 
+**New security dependency:** Railway's 23 October account-specific notice names
+this workspace as potentially at risk because its variable names match the
+attacker's search pattern. Railway cannot confirm whether its secrets were
+decrypted. Its [incident report](https://blog.railway.com/p/preliminary-report-october-security-incident)
+recommends rotating sensitive credentials stored before the incident. Preserve
+the original recovery evidence/keyring privately, then coordinate API/token,
+database-password and session-secret rotation before relaunch. No credential
+rotation has been executed. A successful key validation does not establish that
+the key was never exposed. Do not overwrite encryption keys or database access
+before verified recovery; see the runbook's incident section.
+
 ## Confirmed outage and recovery inventory
 
 Authenticated Railway inspection showed an expired trial, inactive Hobby
@@ -48,8 +59,21 @@ OAuth/encryption settings but lacks Gemini/Cloudinary. Preserve both key sets
 until the authoritative database and encrypted credentials are identified.
 
 The immediate external prerequisite is a no-cost Railway export/recovery route
-for both PostgreSQL volumes and the app data volume. No support message has been
-sent. Do not choose a blank replacement database or delete either project.
+for both PostgreSQL volumes and the app data volume. Railway's documented $0 Free
+plan includes $1/month, but this account's actual recovery screen offers only
+Hobby activation with $5 upfront; no plan was changed.
+[Plan documentation](https://docs.railway.com/pricing/plans).
+
+You approved a public-safe support request and then approved email as the fallback
+when Central Station proved unavailable. The identical approved message was sent
+to support@railway.com from the signed-in Railway account email on 24 October,
+18:26 local time. Gmail confirmed Message sent and the message was verified in
+Sent, including the exact recipient. No project IDs, secrets or files were sent.
+No export or support resolution has been received/verified.
+[Central Station outage notice](https://status.railway.com/incident/ZEO9X68O).
+The request text is in `docs/RAILWAY_RECOVERY_REQUEST.md`; its private inventory
+was excluded from the email. Do not choose a blank replacement database or delete
+either project.
 
 ## Architecture and repairs
 
@@ -214,7 +238,7 @@ image/font/script costs; do not label these metrics passed from local HTML alone
 | Mobile emulation | Chrome viewport capability did not change actual viewport; responsive CSS present, genuine mobile verification pending |
 | Live social publish/DM/AI | NOT EXECUTED; controlled credentials/provider tests required |
 | Real payment sandbox | NOT EXECUTED; provider credentials missing |
-| Linux Docker build / CI | Initial GitHub CI passed migrations, 44 tests, dependency audit and image build; cloud deployment and ARM build not executed |
+| Linux Docker build / CI | GitHub CI passed migrations, 44 tests, dependency audit, image build, Gunicorn container startup and /ready plus /health smoke checks; cloud deployment and ARM build not executed |
 | Production URL / HTTPS | TLS valid; application endpoints still provider 404 |
 | Google indexing | NOT VERIFIED |
 
@@ -227,6 +251,13 @@ and `.recovery/requirements-audit.json`. A localhost preview is available at
 http://127.0.0.1:8765 while the recovery preview process is running; it is not a
 new production URL.
 
+Verified source references: draft [PR #1](https://github.com/imraneammour-spec/social-media-bot/pull/1),
+local application commit `54deb657bb1315eedbe14fa93fbb68af1835178e`, equivalent
+review application commit `dc7a05d044b46df3e5e01029625c7821f487b5bf` (identical Git
+tree), and [successful Linux CI run](https://github.com/imraneammour-spec/social-media-bot/actions/runs/40120267236).
+The draft PR has not been merged or deployed. Later documentation-only updates
+do not change the validated application code.
+
 ## Remaining actions and preservation
 
 1. Obtain no-cost Railway source exports and verify production restore plus media
@@ -238,6 +269,8 @@ new production URL.
 4. Supply merchant sandbox credentials/variants and execute real provider tests;
    retain disabled live billing pending pricing/payment approval.
 5. Verify Search Console and submit the sitemap once production is working.
+6. Complete coordinated credential rotation and review provider/GitHub activity
+   in response to the workspace-specific Railway security notice before relaunch.
 
 All pre-existing project edits and deletions remain in place. Changes originally
 present in app_translations.py, tenant_dashboard.css and app_content.html are not
