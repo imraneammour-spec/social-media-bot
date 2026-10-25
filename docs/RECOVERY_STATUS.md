@@ -1,10 +1,19 @@
-# Postenza recovery status — 24 October 2026
+# Postenza recovery status — 25 October 2026
 
 **Production remains offline. Production data is not yet recovered or verified.**
 No service was upgraded/reactivated, no cloud resource created, no paid service
 enabled, no live payment collected, no DNS changed, and no Railway volume deleted.
 The code repairs and local verification below are real; they do not constitute a
 successful production deployment. The original URL remains https://postenza.app.
+
+**25 October continuation:** the owner has explicitly accepted a fresh database
+and recreating their own account/Instagram connection, with all old Railway
+volumes/backups preserved. A separate empty local staging database and verified
+encrypted snapshot are prepared; this is not a Railway restore. Authenticated OCI
+access now works, but the Casablanca capacity report rejects both suitable A1
+sizes. No VM was created. Serv00 is a new free staging candidate pending an actual
+account and runtime checks. See `CLEAN_DATABASE_ASSESSMENT.md` and
+`FREE_HOSTING_ASSESSMENT.md`. There is still no public deployment or DNS cutover.
 
 **New security dependency:** Railway's 23 October account-specific notice names
 this workspace as potentially at risk because its variable names match the
@@ -61,7 +70,7 @@ and Cloudinary but lacks OAuth/encryption settings; devoted-imagination has
 OAuth/encryption settings but lacks Gemini/Cloudinary. Preserve both key sets
 until the authoritative database and encrypted credentials are identified.
 
-The immediate external prerequisite is a no-cost Railway export/recovery route
+The original recovery prerequisite was a no-cost Railway export/recovery route
 for both PostgreSQL volumes and the app data volume. Railway's documented $0 Free
 plan includes $1/month, but this account's actual recovery screen offers only
 Hobby activation with $5 upfront; no plan was changed.
@@ -72,7 +81,25 @@ when Central Station proved unavailable. The identical approved message was sent
 to support@railway.com from the signed-in Railway account email on 24 October
 2026. Gmail confirmed Message sent and the message was verified in
 Sent, including the exact recipient. No project IDs, secrets or files were sent.
-No export or support resolution has been received/verified.
+Railway Support replied on 25 October 2026 at 07:40:56 UTC in the original
+Gmail thread (`1a16f2a59fd025a4`, reply `1a1720164d9d74c0`). Support says it cannot
+export volume data separately while the workspace is inactive: CLI/SFTP access
+requires an active deployment. It proposed a paid-plan reactivation so the user
+could export the data. No free export, retention extension, attachment or
+account-specific deletion deadline was supplied. No paid plan was activated.
+
+Support states Trial/Free volume data is retained for 30 days after trial credits
+expire, with a warning before deletion. Account emails say the trial would expire
+the next day on 21 September and had expired on 23 September 2026. Consequently,
+the ordinary 30-day interval would already have elapsed by this update if that
+policy applies from this trial expiry. This is an urgent retention uncertainty,
+**not proof that the production volumes were deleted**: the 24 October inventory
+still reported retained Ready volume records. No production dump is verified.
+The only scheduled-deletion email found concerns `phase7c-backup-volume` in
+`staging-phase5` on 2 September; it does not establish deletion of the two
+PostgreSQL volumes listed above. A provider confirmation of current recoverability
+and the exact retention deadline remains necessary before any infrastructure
+switch. No follow-up message was sent during the 25 October mailbox check.
 [Central Station outage notice](https://status.railway.com/incident/ZEO9X68O).
 The request text is in `docs/RAILWAY_RECOVERY_REQUEST.md`; its private inventory
 was excluded from the email. Do not choose a blank replacement database or delete
@@ -98,6 +125,9 @@ Implemented changes:
 - Added encrypted token refresh with expiry checks and guarded updates that
   preserve concurrent disconnect/reconnect decisions. Live Meta refresh remains
   untested without a controlled connected account.
+- Fixed registration legal links that displayed literal HTML; the fixed trusted
+  translation renders links while escaping URL substitutions. Checked EN/FR/AR
+  rendering and quoted-URL safety, then verified real browser registration.
 - Fixed login exceptions for existing users with no password hash, disabled-user
   sessions, Unicode CSRF/signature comparison failures, percent-containing
   Alembic URLs, and missing landing translation keys.
@@ -125,10 +155,13 @@ the benefit was not activated. Azure is excluded from this migration.
 
 | Option | Verified offer/limit | Fit and current decision |
 | --- | --- | --- |
-| Heroku Education | $13/month for 24 months, non-rolling; application approval required | Requires card; overages and post-credit resources are billed. Not activated under no-paid-services rule. |
-| Oracle Always Free | A1 allowance currently 2 OCPU/12 GB equivalent; 200 GB combined boot/block storage | User now reports registration and Casablanca selection; account activation, regional capacity and eligibility remain unverified. |
+| Heroku Education | $13/month for 24 months, non-rolling; application approval required | Current separate always-on Basic web + Basic worker + Essential-0 PostgreSQL estimate is $7 + $7 + $5 = $19/month, leaving $6/month uncovered before storage or other services. Requires card and bills excess usage. Ephemeral dyno filesystems also require a durable-state migration. Not activated under no-paid-services rule. |
+| Oracle Always Free | A1 allowance currently 2 OCPU/12 GB equivalent; 200 GB combined boot/block storage | Authenticated account/shape verified. Actual capacity report: A1 unavailable at 2/12 and 1/6; E2 Micro unsupported in Casablanca. No VM created. |
+| Serv00 | Free 3-GB disk, 512-MB RAM, Python/Flask, PostgreSQL, SSH and cron | New staging feasibility candidate. Manual account creation/sign-in requested; dependencies, worker operation, memory, backups and account-level limits must pass before deployment. |
 | Appwrite Education | Two projects at Pro-equivalent allowance for six months | Useful BaaS benefit, not a drop-in Flask/PostgreSQL/legacy-disk host. No migration rewrite justified before recovery. |
 | MongoDB Education | $50 Atlas credit | Does not host the existing PostgreSQL schema. |
+| Camber Education | 40 CPU-hours, 5 GPU-hours and 50 GB storage monthly while enrolled | Data-science/agent jobs; no verified allowance for the complete always-running Postenza production stack. |
+| LocalStack Education | AWS emulation license | Development/testing benefit; does not supply the required live production host. |
 | Sentry Education | Student observability offer | Useful optional monitoring after deployment; not hosting. No account activated. |
 | GitHub Pages / Codespaces | Static publishing / development environments | Neither supplies the required durable production Flask + worker + PostgreSQL system. |
 | DigitalOcean Education | Historical offer ended | Do not rely on obsolete $200 benefit claims. |
@@ -138,6 +171,9 @@ the benefit was not activated. Azure is excluded from this migration.
 
 Sources: [current Education catalog](https://education.github.com/pack),
 [Heroku offer and billing FAQ](https://www.heroku.com/github-students/),
+[Heroku runtime and PostgreSQL prices](https://www.heroku.com/pricing/),
+[Heroku ephemeral filesystem](https://devcenter.heroku.com/articles/dynos#ephemeral-filesystem),
+[Appwrite six-month Education terms](https://appwrite.io/education),
 [DigitalOcean benefit retirement](https://github.com/orgs/community/discussions/201240),
 [OCI limits and reclamation](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm),
 [Render service limits](https://render.com/docs/service-types),
@@ -147,13 +183,11 @@ Sources: [current Education catalog](https://education.github.com/pack),
 No verified, provisionable, entirely free production destination is available in
 the connected accounts. OCI is a conditional candidate, not the chosen live host.
 
-Update: the user now reports completing Oracle registration/card verification
-and selecting Morocco West (Casablanca). The earlier "no Oracle account" finding
-is superseded. Activation, tenancy-specific Always Free limits, regional capacity
-and exact costs remain unverified because browser access is currently rejected
-by the tool despite the user's confirmation that Chrome is connected. No Oracle
-resources or account upgrades have been created. Current continuation status is
-in `docs/ORACLE_MIGRATION_STATUS.md`.
+Update: Oracle activation and Casablanca home region are now verified through
+authenticated Chrome/Cloud Shell. Earlier registration/browser blockers are
+resolved. The remaining OCI blocker is actual host capacity, not sign-in.
+No VM, VCN or account upgrade was created. Current continuation status is in
+`docs/ORACLE_MIGRATION_STATUS.md`.
 It may reclaim idle VMs and may lack capacity. A small free VM would be
 self-managed with no high availability. Do not upgrade it to paid to obtain
 capacity. The prepared container package remains portable.

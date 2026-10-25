@@ -1,22 +1,20 @@
-# Oracle migration continuation — 24 October 2026
+# Oracle migration continuation — updated 25 October 2026
 
-The user reports completing Oracle registration/card verification and selecting
-Morocco West (Casablanca). This supersedes the previous "no Oracle account" status.
-Account activation, actual trial balance/expiration, Always Free eligibility,
-regional capacity, networking and total cost have **not yet been inspected**.
-The browser tool currently rejects both inventory and direct Chrome access with
-"Local browser use is disabled in Work settings", including after the user
-confirmed enabling access and the browser connection was reset. This is a tool
-access blocker, not evidence that the user's Chrome extension is disconnected.
-No Oracle resource, account upgrade or billable service has been created.
+Authenticated Chrome access now works. The console verifies tenancy
+`imraneammour`, a Free Tier account with an active Free Trial, and Morocco West
+(Casablanca). Cloud Shell confirms the same home region and one availability
+domain. Registration was not repeated. Earlier browser-blocker observations in
+`BROWSER_ACCESS_DIAGNOSTIC.md` are historical and superseded by this successful
+connection; no manual registry or browser-authentication changes were performed.
 
-Read-only Browser-plugin diagnostics subsequently confirmed Chrome running and
-its extension enabled. The expected Windows native-host registration is missing;
-this persisted after the extension was installed/pinned and its sidebar opened.
-The separate Work access gate still rejects this conversation. See
-`BROWSER_ACCESS_DIAGNOSTIC.md` for observations and the required plugin-UI repair.
-A fresh message/session did not fix access. No cookies, registry changes,
-permission bypass or unsupported browser control was attempted.
+The console lists Ubuntu 24.04 Minimal aarch64 as Free and A1 as Always Free-
+eligible. A draft 2-OCPU/12-GB instance with the default 46.6-GB boot volume was
+prepared, **not created**. The authenticated capacity report returns
+`OUT_OF_HOST_CAPACITY` for both 2 OCPU/12 GB and 1 OCPU/6 GB, and
+`HARDWARE_NOT_SUPPORTED` for E2.1.Micro. Root instance/storage/child-compartment
+list queries returned no entries. Trial quotas are not additional free allowance.
+No VM/VCN, account upgrade or billable service was created. Exact trial balance
+and expiration were not needed to justify spending and were not used.
 
 Oracle's [current official allowance](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)
 lists A1 1,500 OCPU-hours/9,000 GB-hours monthly (2 OCPU/12 GB equivalent),
@@ -26,8 +24,18 @@ Only resources explicitly verified within Always Free limits may be created;
 the [30-day trial credit](https://www.oracle.com/cloud/free/faq/) must not be used
 to justify a resource that becomes billable. Do not upgrade to Pay As You Go.
 
-The existing recovery branch and draft PR #1 are preserved. No new Railway
-support reply was returned by the Gmail search. Production export, restore,
+The owner explicitly approved fresh PostgreSQL preparation after accepting the
+unknown Railway-data implications, then requested investigation of other free
+hosts because Casablanca capacity is unavailable. See
+`CLEAN_DATABASE_ASSESSMENT.md` and `FREE_HOSTING_ASSESSMENT.md` for that decision,
+capacity evidence, verified limits, alternatives and the remaining account gate.
+
+The existing recovery branch and draft PR #1 are preserved. Railway Support
+replied on 25 October 2026 at 07:40:56 UTC: offline volume export is unavailable;
+it proposed paid-plan reactivation, which has not been performed. Its stated
+30-day post-trial retention interval and September expiry emails create an urgent
+retention uncertainty; see `RECOVERY_STATUS.md` for evidence and limits. No free
+export or exact deletion deadline was supplied. Production export, restore,
 media checks and original credential decryption remain unverified. All original
 Railway resources and keys must remain intact.
 
@@ -74,15 +82,31 @@ services. Scratch-capacity and stale-image capture defects were fixed after an
 independent scoped review. Linux CI subsequently passed all 62 tests and a real
 Docker named-volume capture from a stopped container, age encryption/decryption,
 byte/content checks and restarted readiness. Docker service orchestration in the
-ten unit cases remains simulated; no actual cloud VM backup has run. The exact Railway
-Gmail thread was read: it contains only the approved sent request, dated
-18:26:58 UTC, with no support reply or export.
+ten unit cases remains simulated; no actual cloud VM backup has run. The Railway
+Gmail thread now contains the approved request sent on 24 October at 18:26:58 UTC
+and the support reply received on 25 October. No production export was attached.
 
 ## Acceptance status
 
 - Infrastructure resources provisioned: none; new infrastructure spending: $0.
-- Verified prospective Oracle monthly total: unknown until the console is inspected.
-- Railway production backup and restore: blocked; no export received.
+- Verified prospective Oracle monthly total: no provisioned server; no new spend.
+  A1 is eligible within the published allowance but current capacity is unavailable.
+  The generic estimate was not a verified net bill and no trial-funded deployment ran.
+- Railway production backup and restore: no export received; no source modification
+  or deletion performed. Current source contents remain unverified.
+  Fresh initialization is now explicitly approved, not represented as recovery.
+- Fresh local PostgreSQL: `postenza_fresh_staging`, 20 tables at `20261024_01`,
+  zero business rows. Snapshot under ignored `backups/fresh-staging-20261025`
+  restored into `postenza_fresh_restore_test`; every row count/hash matched.
+  Dump encrypted/decrypted with age and bytes verified. No recovery approval marker
+  was created. Historical backups and original keys remain unchanged.
+- Current local checks: 62 recovery tests passed with four Alembic warnings after
+  the registration-link template fix. Separate synthetic browser database:
+  `postenza_oci_clean_test`. Login/logout, new registration/onboarding, draft save,
+  scheduling/calendar and cancellation were exercised; mobile width 390 px had no
+  horizontal overflow on overview/content/calendar/billing. Chrome's viewport
+  override did not apply, so actual mobile geometry was verified in the in-app
+  browser instead. No publishing worker or real integration calls were activated.
 - Staging URL: none. Production URL remains https://postenza.app, previously provider 404.
 - Application CI: [run 40137771535](https://github.com/imraneammour-spec/social-media-bot/actions/runs/40137771535) passed 62 tests, migrations, dependency audit, shell syntax, Docker build, Gunicorn startup/readiness and the named-volume encryption drill on review revision `d1b8f83064f6f2a70eea1d4b6a53d8d2b72ea47f` (same Git tree as local `9790642`). Initial CI revealed the tiny backup fixtures unnecessarily using the production-sized scratch cap; fixtures now use a 4-MiB cap, while production's 2-GiB file limit/7-GiB scratch gate and the dedicated insufficient-space regression are unchanged.
 - Billing: disabled; real merchant sandbox credentials/events still required.
