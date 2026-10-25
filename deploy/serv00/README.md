@@ -1,6 +1,12 @@
 # Serv00 staging deployment and acceptance
 
 Status: account activation pending, 25 October 2026 UTC. Nothing is deployed.
+Linux CI [40204460392](https://github.com/imraneammour-spec/social-media-bot/actions/runs/40204460392)
+passed all 79 tests, native shell syntax, dependency audit, migrations and the
+existing Docker recovery drill on `d9ac83b9df1c9765ca5cd7bd9f1df30770d986e2`
+(same application tree as local `a3506d0`). Concurrent native sampled RSS peaks:
+web 160.6 MiB, probe worker 127.5 MiB, sum of unrounded peaks **288.0 MiB**.
+This excludes Passenger, uploads and live integrations and is not Serv00 acceptance.
 This package prepares the existing application for shared hosting without Docker,
 root, systemd, a self-managed PostgreSQL server or a reserved application port.
 It is deliberately staging-only. Billing, indexing, OAuth app secrets, AI/media

@@ -93,3 +93,14 @@ Expected: validated local preparation, remote acceptance clearly outstanding.
   passed 78 tests with one Unix-only test skipped on Windows and five existing
   Alembic warnings (33.20 seconds). Linux CI will run the Unix ENOSYS path and
   concurrent RSS drill. No unchanged browser tests were repeated.
+- Task 3: complete. Scoped independent review's Important finding was fixed and
+  verified RED -> GREEN; minor environment hygiene is documented for promotion.
+  Linux CI run 40204460392 passed all 79 tests (including the Unix fault path),
+  native shell syntax, dependency audit, migrations and legacy Docker recovery
+  drill. The concurrent staging RSS drill measured 288.0 MiB of sampled peak sum,
+  excluding Passenger/uploads/live integrations. Application remote d9ac83b9 and
+  local a3506d0 share tree b8f6b2f839dc19723f0cb2ffcb30b8453646465d.
+  Existing draft PR #1 receives these validated changes; no merge/deployment.
+- Stop: all executable local preparation is complete. Remaining work requires
+  Serv00 activation and the remote acceptance checklist; no further speculative
+  changes or repeated browser tests are scheduled.

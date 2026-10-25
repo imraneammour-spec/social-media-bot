@@ -140,3 +140,13 @@ After the scoped review's native-lock fix, the complete local recovery suite
 passed 78 tests, with the Unix ENOSYS test skipped on Windows and five existing
 Alembic warnings. Independent review found no Critical issue; inherited OAuth
 engagement/keyring cleanup remains a documented minor before live promotion.
+
+Latest Linux validation: [run 40204460392](https://github.com/imraneammour-spec/social-media-bot/actions/runs/40204460392)
+passed **79 tests**, including Unix unsupported-flock failure, full migrations,
+dependency audit (no known vulnerabilities), native shell syntax, Docker build,
+health/readiness and the prior volume/encryption drill. Application revision
+`d9ac83b9df1c9765ca5cd7bd9f1df30770d986e2` matches local `a3506d0` tree
+`b8f6b2f839dc19723f0cb2ffcb30b8453646465d`. Concurrent Linux staging RSS:
+160.6 MiB web, 127.5 MiB probe worker, **288.0 MiB** sum of sampled unrounded peaks
+against the 384-MiB application budget. This excludes Passenger/uploads/live
+integrations; actual account-wide 512-MiB acceptance remains pending activation.

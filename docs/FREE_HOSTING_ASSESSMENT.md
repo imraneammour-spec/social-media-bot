@@ -102,3 +102,7 @@ still has 20 tables and zero business rows; its original dump checksum is unchan
 Actual native installation, free account limits, TLS, cron/Passenger recovery,
 account-wide RAM/process/disk use and independent backup restore remain gates.
 No Serv00 account activation, deployment or website/DNS changes are claimed.
+The final Linux [CI run 40204460392](https://github.com/imraneammour-spec/social-media-bot/actions/runs/40204460392)
+passed all 79 recovery tests and the concurrent native memory drill: 288.0 MiB
+sum of sampled web/probe-worker peaks, excluding Passenger and live workloads.
+The full local run passed 78 tests with the Unix-only test skipped on Windows.
