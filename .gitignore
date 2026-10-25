@@ -9,3 +9,13 @@ processed_comments.json
 
 .DS_Store
 Thumbs.db
+
+.recovery-venv/
+.recovery/
+backups/
+.pytest_cache/
+.idea/
+*.db
+*.sqlite*
+.env.*
+!.env.example

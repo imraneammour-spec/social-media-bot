@@ -357,6 +357,9 @@ def _stage_discovered_connection(
     ))
     if account is not None and account.user_id != user_id:
         raise _connection_error()
+    if account is None or account.connection_status == "disconnected":
+        from .billing import check_account_limit
+        check_account_limit(db_session, user_id)
     if account is None:
         account = InstagramAccount(user_id=user_id, instagram_user_id=instagram_user_id)
         db_session.add(account)

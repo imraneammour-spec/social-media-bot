@@ -1,0 +1,61 @@
+name: Verify Postenza
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: test-only-password
+          POSTGRES_DB: postenza_test
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      POSTENZA_EMBEDDED_SCHEDULER: 'false'
+      POSTENZA_DATA_DIR: /tmp/postenza-test-data
+      TEST_DATABASE_URL: postgresql+psycopg://postgres:test-only-password@localhost:5432/postenza_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements-dev.txt
+      - name: Install standard backup encryption tools
+        run: sudo apt-get update -qq && sudo apt-get install -y age
+      - run: python -m compileall -q auth.py webhook.py billing.py operations.py seo.py worker.py wsgi.py database scripts
+      - run: bash -n deploy/update.sh deploy/backup.sh deploy/monitor.sh && sh -n deploy/serv00/deploy.sh
+      - name: Apply the full migration chain on PostgreSQL
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+        run: python -m alembic upgrade head
+      - run: python -m pytest recovery_tests -q
+      - name: Measure concurrent native staging web and worker memory
+        run: python scripts/serv00_memory.py --ci
+      - run: python -m pip_audit -r requirements.txt
+      - run: docker build -t postenza:check .
+      - name: Start the production entry point and verify readiness
+        run: |
+          docker run --detach --name postenza-smoke --network host \
+            --volume postenza-smoke-data:/app/data \
+            -e APP_ENV=production -e PORT=18000 -e DATABASE_URL="$TEST_DATABASE_URL" \
+            -e FLASK_SECRET_KEY=ci-only-smoke-test-secret \
+            -e BILLING_MODE=disabled -e SEARCH_INDEXING_ENABLED=false \
+            postenza:check
+          trap 'docker rm -f postenza-smoke >/dev/null; docker volume rm postenza-smoke-data >/dev/null' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18000/ready; then
+              curl --fail --silent http://127.0.0.1:18000/health
+              python recovery_tests/docker_volume_backup_drill.py
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs postenza-smoke
+          exit 1

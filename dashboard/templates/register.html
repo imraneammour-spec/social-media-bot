@@ -14,7 +14,8 @@
     <label>{{ t('Email') }}<input type="email" name="email" autocomplete="email" required maxlength="320"></label>
     <label>{{ t('Password') }}<input type="password" name="password" autocomplete="new-password" required minlength="12"></label>
     <button class="button button-primary" type="submit">{{ t('Create account') }}</button>
-    <p class="auth-legal-note">{{ t('By creating an account, you agree to the <a href="{terms_url}">Terms</a> and acknowledge the <a href="{privacy_url}">Privacy Policy</a>.', terms_url=terms_url, privacy_url=privacy_url) }}</p>
+    {# This fixed translation contains links; escape its URL values before rendering the trusted markup. #}
+    <p class="auth-legal-note">{{ t('By creating an account, you agree to the <a href="{terms_url}">Terms</a> and acknowledge the <a href="{privacy_url}">Privacy Policy</a>.', terms_url=terms_url|forceescape, privacy_url=privacy_url|forceescape)|safe }}</p>
 </form>
 <p class="auth-note">{{ t('Already registered?') }} <a href="{{ url_for('login') }}">{{ t('Sign in') }}</a></p>
 {% endblock %}

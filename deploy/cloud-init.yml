@@ -1,0 +1,23 @@
+#cloud-config
+# Ubuntu on a separately verified OCI Always Free ARM instance.
+# This installs tools only; it does not provision cloud resources or run Postenza.
+package_update: true
+packages:
+  - python3
+  - docker.io
+  - docker-compose-v2
+  - postgresql-client
+  - unattended-upgrades
+  - age
+write_files:
+  - path: /etc/ssh/sshd_config.d/60-postenza.conf
+    permissions: '0644'
+    content: |
+      PasswordAuthentication no
+      PermitRootLogin no
+runcmd:
+  - [systemctl, enable, --now, docker]
+  - [usermod, -aG, docker, ubuntu]
+  - [install, -d, -o, ubuntu, -g, ubuntu, -m, '0750', /srv/postenza]
+  - [install, -d, -o, ubuntu, -g, ubuntu, -m, '0700', /srv/postenza/backups]
+  - [systemctl, reload, ssh]

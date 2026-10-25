@@ -180,7 +180,7 @@ def validate_csrf_token(provided_token: str | None) -> bool:
     return bool(
         isinstance(expected_token, str)
         and isinstance(provided_token, str)
-        and hmac.compare_digest(expected_token, provided_token)
+        and hmac.compare_digest(expected_token.encode("utf-8"), provided_token.encode("utf-8"))
     )
 
 
@@ -200,7 +200,7 @@ def verify_meta_signature() -> bool | None:
     expected_signature = "sha256=" + hmac.new(
         app_secret.encode("utf-8"), request.get_data(cache=True), hashlib.sha256
     ).hexdigest()
-    return hmac.compare_digest(expected_signature, supplied_signature)
+    return hmac.compare_digest(expected_signature.encode("utf-8"), supplied_signature.encode("utf-8"))
 
 
 def webhook_signature_verification_active() -> bool:
@@ -226,8 +226,9 @@ def get_current_user() -> User | None:
             user = db_session.get(User, user_id)
     except SQLAlchemyError:
         return None
-    if user is None:
+    if user is None or user.status != "active":
         session.clear()
+        return None
     return user
 
 
@@ -616,7 +617,12 @@ def register_auth_routes(app) -> None:
                 user = db_session.scalar(select(User).where(User.email == email))
         except SQLAlchemyError:
             return _unavailable_response()
-        if user is None or not check_password_hash(user.password_hash, password):
+        if (
+            user is None
+            or user.status != "active"
+            or not user.password_hash
+            or not check_password_hash(user.password_hash, password)
+        ):
             return _auth_template("login.html", status=401, error="Invalid email or password.")
         rotate_authenticated_session(user)
         return redirect(post_login_destination(user))

@@ -108,7 +108,9 @@ ENV_FILE = BASE_DIR / ".env"
 # - Locally, keep using the project's data folder.
 RAILWAY_DATA_DIR = Path("/app/data")
 DATA_DIR = (
-    RAILWAY_DATA_DIR
+    Path(os.environ["POSTENZA_DATA_DIR"])
+    if os.environ.get("POSTENZA_DATA_DIR")
+    else RAILWAY_DATA_DIR
     if RAILWAY_DATA_DIR.exists()
     else BASE_DIR / "data"
 )
@@ -134,6 +136,7 @@ SCHEDULER_LOCKS_DIR.mkdir(parents=True, exist_ok=True)
 load_dotenv(ENV_FILE)
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024
 
 # Optional Phase 2 configuration only.  No engine, session, table creation, or
 # JSON-to-SQL migration occurs during application startup.
@@ -141,13 +144,9 @@ DATABASE_URL = database_url_from_environment()
 
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "").strip()
 
-INSTAGRAM_ACCESS_TOKEN = os.getenv(
-    "INSTAGRAM_ACCESS_TOKEN"
-)
+INSTAGRAM_ACCESS_TOKEN = os.getenv("INSTAGRAM_ACCESS_TOKEN", "").strip()
 
-GEMINI_API_KEY = os.getenv(
-    "GEMINI_API_KEY"
-)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 
 CLOUDINARY_CLOUD_NAME = os.getenv(
     "CLOUDINARY_CLOUD_NAME",
@@ -199,6 +198,12 @@ app.config["WEBHOOK_UNSIGNED_COMPATIBILITY"] = WEBHOOK_UNSIGNED_COMPATIBILITY
 register_auth_routes(app)
 install_auth_route_guard(app)
 register_tenant_dashboard(app)
+from billing import register_billing
+register_billing(app)
+from operations import register_operations
+register_operations(app)
+from seo import register_seo
+register_seo(app)
 
 # The command is explicit (``flask --app webhook bootstrap-owner``) and lazy:
 # registering it neither connects to PostgreSQL nor changes Phase 0 JSON state.
@@ -230,9 +235,10 @@ PUBLIC_REPLY_MESSAGES = [
     "Check your DMs 🚀 Your AI prompts are waiting."
 ]
 
-GEMINI_MODEL = "gemini-3.6-flash"
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash").strip()
 
-STATE_LOCK = threading.Lock()
+from filelock import FileLock
+STATE_LOCK = FileLock(str(DATA_DIR / ".state.lock"), timeout=60)
 MEDIA_LOCKS_LOCK = threading.Lock()
 MEDIA_LOCKS = {}
 
@@ -292,6 +298,8 @@ else:
 def home():
     locale = locale_context(session_locale(session))
     public_origin = validated_public_origin(PUBLIC_BASE_URL)
+    if public_origin is None and IS_PRODUCTION:
+        public_origin = "https://postenza.app"
     canonical_url = (
         f"{public_origin}/"
         if public_origin is not None
@@ -309,7 +317,7 @@ def home():
     return render_template(
         "landing.html",
         canonical_url=canonical_url,
-        csrf_token=csrf_token(),
+        csrf_token=csrf_token() if app.secret_key else "",
         locale=locale,
         locale_options=LOCALE_META,
         og_image_url=og_image_url,
@@ -319,40 +327,22 @@ def home():
 
 @app.route("/sitemap.xml", methods=["GET"])
 def sitemap():
-    return Response(
-        """<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url>
-    <loc>https://postenza.app/</loc>
-  </url>
-</urlset>
-""",
-        mimetype="application/xml",
-    )
+    from seo import PUBLIC_PAGES, origin
+    from xml.sax.saxutils import escape
+    urls = "".join(f"<url><loc>{escape(origin() + path)}</loc></url>" for path in PUBLIC_PAGES)
+    return Response('<?xml version="1.0" encoding="UTF-8"?>' +
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' + urls + '</urlset>',
+        mimetype="application/xml")
 
 
 @app.route("/robots.txt", methods=["GET"])
 def robots():
-    return Response(
-        """User-agent: *
-Allow: /
-Disallow: /app
-Disallow: /dashboard
-Disallow: /login
-Disallow: /register
-Disallow: /logout
-Disallow: /connect/
-Disallow: /disconnect/
-Disallow: /oauth/
-Disallow: /webhook
-Disallow: /api/
-Disallow: /health
-Disallow: /p/
-
-Sitemap: https://postenza.app/sitemap.xml
-""",
-        mimetype="text/plain",
-    )
+    from seo import origin
+    if os.getenv("SEARCH_INDEXING_ENABLED", "true").lower() != "true":
+        return Response("User-agent: *\nDisallow: /\n", mimetype="text/plain")
+    private = ["/app", "/dashboard", "/login", "/register", "/logout", "/onboarding", "/auth/", "/connect/", "/disconnect/", "/oauth/", "/webhook", "/billing/", "/api/", "/health", "/ready", "/p/"]
+    content = "User-agent: *\nAllow: /\n" + "".join("Disallow: " + path + "\n" for path in private)
+    return Response(content + "\nSitemap: " + origin() + "/sitemap.xml\n", mimetype="text/plain")
 
 
 @app.route("/health", methods=["GET"])
@@ -462,41 +452,27 @@ def load_json_file(
 
         print(
             f"JSON READ ERROR {path.name}:",
-            error
+            type(error).__name__
         )
 
         return default
 
 
-def save_json_file(
-    path,
-    data
-):
-
+def save_json_file(path, data):
+    import tempfile
+    temporary = None
     try:
-
-        with open(
-            path,
-            "w",
-            encoding="utf-8"
-        ) as file:
-
-            json.dump(
-                data,
-                file,
-                ensure_ascii=False,
-                indent=2
-            )
-
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, prefix=".postenza-", suffix=".tmp", delete=False) as file:
+            temporary = Path(file.name)
+            json.dump(data, file, ensure_ascii=False, indent=2)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, path)
         return True
-
     except Exception as error:
-
-        print(
-            f"JSON SAVE ERROR {path.name}:",
-            error
-        )
-
+        print(f"JSON SAVE ERROR {path.name}:", type(error).__name__)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
         return False
 
 
@@ -1128,7 +1104,7 @@ def get_dashboard_leads():
                     if media_id:
                         media_map[media_id] = item
         except Exception as error:
-            print("LEADS MEDIA LOOKUP ERROR:", error)
+            print("LEADS MEDIA LOOKUP ERROR:", type(error).__name__)
 
     leads = []
     for item in reversed(requests_data[-200:]):
@@ -1421,7 +1397,7 @@ Comment: {source_text}
 
         print(
             "SMART REPLY GEMINI ERROR:",
-            error
+            type(error).__name__
         )
 
         return ""
@@ -1472,7 +1448,7 @@ def send_comment_reply_text(
 
         print(
             "COMMENT REPLY ERROR:",
-            error
+            type(error).__name__
         )
 
         return False
@@ -1558,7 +1534,7 @@ def process_smart_comment(
 
         print(
             "SMART COMMENT PROCESS ERROR:",
-            error
+            type(error).__name__
         )
 
         release_comment(
@@ -1654,7 +1630,7 @@ def get_instagram_media(
 
         print(
             "MEDIA LOOKUP ERROR:",
-            error
+            type(error).__name__
         )
 
         return None
@@ -1772,7 +1748,7 @@ def download_image_bytes(
 
         print(
             "IMAGE DOWNLOAD ERROR:",
-            error
+            type(error).__name__
         )
 
         return None
@@ -1819,7 +1795,7 @@ def parse_gemini_json(
 
         print(
             "Gemini JSON error:",
-            error
+            type(error).__name__
         )
 
         print(
@@ -2085,7 +2061,7 @@ If there are no real prompts:
 
         print(
             "GEMINI ERROR:",
-            error
+            type(error).__name__
         )
 
         return []
@@ -3291,7 +3267,7 @@ def send_access_request(
 
         print(
             "PRIVATE REPLY ERROR:",
-            error
+            type(error).__name__
         )
 
         return None
@@ -3375,7 +3351,7 @@ def send_view_prompts_button(
 
         print(
             "BUTTON TEMPLATE ERROR:",
-            error
+            type(error).__name__
         )
 
         return False
@@ -3585,7 +3561,7 @@ def process_comment(
 
         print(
             "COMMENT PROCESS ERROR:",
-            error
+            type(error).__name__
         )
 
         release_comment(
@@ -4104,6 +4080,9 @@ def _oauth_prompt_post_for_comment(session_factory, account_id, external_id, med
     )
     cover_url = _oauth_prompt_cover_url(media)
     permalink = str(media.get("permalink") or "")
+    if GEMINI_CLIENT is not None:
+        from database.billing import reserve_account_ai
+        reserve_account_ai(session_factory, account_id)
     prompts = extract_oauth_prompts(media)
     if not prompts:
         return None
@@ -4215,6 +4194,9 @@ def _process_oauth_comment(value, route, entry_external_id, public_base_url, ses
             if not allowed:
                 _oauth_complete(session_factory, route.instagram_account_id, comment_id, "comment")
                 return
+            if GEMINI_CLIENT is not None:
+                from database.billing import reserve_account_ai
+                reserve_account_ai(session_factory, route.instagram_account_id)
             reply = generate_oauth_smart_reply(
                 comment_text,
                 tone=automation_config.smart_reply_tone,
@@ -4929,7 +4911,7 @@ MUSIC SUGGESTIONS:
 
         print(
             "DASHBOARD GEMINI ERROR:",
-            error
+            type(error).__name__
         )
 
         return {
@@ -5030,7 +5012,7 @@ def approve_dashboard_draft():
         }, 200
 
     except Exception as error:
-        print("APPROVE DRAFT ERROR:", error)
+        print("APPROVE DRAFT ERROR:", type(error).__name__)
         return {"error": "Could not save the draft."}, 500
 
 
@@ -5126,10 +5108,10 @@ def get_instagram_published_posts():
         return {"posts": cleaned}, 200
 
     except requests.RequestException as error:
-        print("INSTAGRAM PUBLISHED POSTS ERROR:", error)
+        print("INSTAGRAM PUBLISHED POSTS ERROR:", type(error).__name__)
         return {"error": "Could not connect to Instagram."}, 502
     except Exception as error:
-        print("INSTAGRAM PUBLISHED POSTS ERROR:", error)
+        print("INSTAGRAM PUBLISHED POSTS ERROR:", type(error).__name__)
         return {"error": "Could not load Instagram posts."}, 500
 
 
@@ -5359,7 +5341,7 @@ Advanced analytics JSON:
         summary = re.sub(r"\s+", " ", str(response.text or "")).strip()
         return summary[:900] if summary else fallback
     except Exception as error:
-        print("ADVANCED ANALYTICS GEMINI ERROR:", error)
+        print("ADVANCED ANALYTICS GEMINI ERROR:", type(error).__name__)
         return fallback
 
 
@@ -5539,7 +5521,7 @@ def get_instagram_analytics():
                     try:
                         indexed_posts[index] = future.result()
                     except Exception as error:
-                        print("INSTAGRAM ANALYTICS MEDIA ERROR:", error)
+                        print("INSTAGRAM ANALYTICS MEDIA ERROR:", type(error).__name__)
                         indexed_posts[index] = build_post(raw_posts[index]) if False else {
                             "id": str(raw_posts[index].get("id", "") or ""),
                             "caption": str(raw_posts[index].get("caption", "") or ""),
@@ -5595,10 +5577,10 @@ def get_instagram_analytics():
         }, 200
 
     except requests.RequestException as error:
-        print("INSTAGRAM ANALYTICS CONNECTION ERROR:", error)
+        print("INSTAGRAM ANALYTICS CONNECTION ERROR:", type(error).__name__)
         return {"error": "Could not connect to Instagram analytics."}, 502
     except Exception as error:
-        print("INSTAGRAM ANALYTICS ERROR:", error)
+        print("INSTAGRAM ANALYTICS ERROR:", type(error).__name__)
         return {"error": "Could not load Instagram analytics."}, 500
 
 
@@ -5698,7 +5680,7 @@ Recent post data:
         return cleaned, 200
 
     except Exception as error:
-        print("CONTENT PLANNER GEMINI ERROR:", error)
+        print("CONTENT PLANNER GEMINI ERROR:", type(error).__name__)
         return {"error": "Gemini could not generate the content plan."}, 500
 
 
@@ -5756,7 +5738,7 @@ def get_published_permalink(draft_id):
         return {"success": True, "permalink": permalink}, 200
 
     except Exception as error:
-        print("INSTAGRAM PERMALINK ERROR:", error)
+        print("INSTAGRAM PERMALINK ERROR:", type(error).__name__)
         return {"error": "Could not get Instagram permalink."}, 500
 
 
@@ -5873,7 +5855,7 @@ def dashboard_draft_image(draft_id, filename):
 
         print(
             "DRAFT IMAGE ERROR:",
-            error
+            type(error).__name__
         )
 
         return Response(status=404)
@@ -5972,11 +5954,11 @@ def upload_draft_image_to_cloudinary(draft_id, image_number, file_path):
         return secure_url, ""
 
     except requests.RequestException as error:
-        print("CLOUDINARY REQUEST ERROR:", error)
+        print("CLOUDINARY REQUEST ERROR:", type(error).__name__)
         return None, "Cloudinary upload request failed: " + str(error)
 
     except Exception as error:
-        print("CLOUDINARY UPLOAD ERROR:", error)
+        print("CLOUDINARY UPLOAD ERROR:", type(error).__name__)
         return None, "Could not prepare the image for Cloudinary: " + str(error)
 
 
@@ -6096,7 +6078,7 @@ Post caption:
         if result:
             return result[:80]
     except Exception as error:
-        print("DAILY AUTO STORY GEMINI ERROR:", error)
+        print("DAILY AUTO STORY GEMINI ERROR:", type(error).__name__)
 
     return fallback
 
@@ -6429,7 +6411,7 @@ def instagram_archive_posts(limit=25):
             return []
         return [item for item in data.get("data", []) if isinstance(item, dict)]
     except Exception as error:
-        print("DAILY AUTO STORY MEDIA LOOKUP ERROR:", error)
+        print("DAILY AUTO STORY MEDIA LOOKUP ERROR:", type(error).__name__)
         return []
 
 
@@ -6521,7 +6503,7 @@ def _download_daily_archive_image(url):
         if response.ok and response.content:
             return response.content
     except Exception as error:
-        print("DAILY AUTO STORY DOWNLOAD ERROR:", error)
+        print("DAILY AUTO STORY DOWNLOAD ERROR:", type(error).__name__)
     return None
 
 
@@ -7079,7 +7061,7 @@ def publish_scheduled_story(story_id):
             save_stories(stories)
 
     except Exception as error:
-        print("SCHEDULED STORY ERROR:", error)
+        print("SCHEDULED STORY ERROR:", type(error).__name__)
 
         with STATE_LOCK:
             stories = load_stories()
@@ -7190,7 +7172,7 @@ def instagram_container_status(creation_id):
         return str(data.get("status_code", "") or "").upper()
 
     except Exception as error:
-        print("CONTAINER STATUS ERROR:", error)
+        print("CONTAINER STATUS ERROR:", type(error).__name__)
         return ""
 
 
@@ -7431,7 +7413,7 @@ def acquire_schedule_lock(draft_id):
     except FileExistsError:
         return None
     except Exception as error:
-        print("SCHEDULE LOCK ERROR:", error)
+        print("SCHEDULE LOCK ERROR:", type(error).__name__)
         return None
 
 
@@ -7441,7 +7423,7 @@ def release_schedule_lock(lock_path):
     try:
         Path(lock_path).unlink(missing_ok=True)
     except Exception as error:
-        print("SCHEDULE LOCK RELEASE ERROR:", error)
+        print("SCHEDULE LOCK RELEASE ERROR:", type(error).__name__)
 
 
 @app.route("/api/schedule-draft", methods=["POST"])
@@ -7568,7 +7550,7 @@ def publish_scheduled_draft(draft_id):
             save_json_file(DRAFTS_FILE, drafts)
 
     except Exception as error:
-        print("SCHEDULED PUBLISH ERROR:", error)
+        print("SCHEDULED PUBLISH ERROR:", type(error).__name__)
         with STATE_LOCK:
             drafts = load_dashboard_drafts()
             for item in drafts:
@@ -7607,18 +7589,41 @@ def process_due_scheduled_posts():
             publish_scheduled_draft(draft_id)
 
 
+def process_due_tenant_content():
+    from database.content_publishing import execute_due_scheduled_content
+    factory = _oauth_session_factory()
+    if factory is not None:
+        execute_due_scheduled_content(factory)
+
+
+_oauth_maintenance_last_run = 0
+
+
+def process_oauth_maintenance():
+    global _oauth_maintenance_last_run
+    if time.monotonic() - _oauth_maintenance_last_run < 3600:
+        return
+    factory = _oauth_session_factory()
+    if factory is not None:
+        from database.token_refresh import refresh_expiring_tokens
+        from billing import reconcile_subscriptions
+        refresh_expiring_tokens(factory)
+        reconcile_subscriptions(factory)
+    _oauth_maintenance_last_run = time.monotonic()
+
+
 def dashboard_scheduler_loop():
     print("Dashboard scheduler: ON", f"({SCHEDULER_POLL_SECONDS}s, Africa/Casablanca)")
     while True:
-        try:
-            # V0.2: Posts are manual-publish only. Keep Story automation active.
-            process_daily_auto_story()
-            process_due_scheduled_stories()
-            process_due_followups()
-            process_due_oauth_webhook_work()
-            process_due_oauth_followups()
-        except Exception as error:
-            print("DASHBOARD SCHEDULER ERROR:", error)
+        # Keep legacy posts manual-only; tenant image posts use durable DB claims.
+        for job in (process_oauth_maintenance, process_daily_auto_story,
+                    process_due_scheduled_stories, process_due_followups,
+                    process_due_oauth_webhook_work, process_due_oauth_followups,
+                    process_due_tenant_content):
+            try:
+                job()
+            except Exception as error:
+                print("DASHBOARD SCHEDULER ERROR:", job.__name__, type(error).__name__)
         time.sleep(SCHEDULER_POLL_SECONDS)
 
 
@@ -7631,7 +7636,8 @@ def start_dashboard_scheduler():
     thread.start()
 
 
-start_dashboard_scheduler()
+if os.getenv("POSTENZA_EMBEDDED_SCHEDULER", "true").lower() == "true":
+    start_dashboard_scheduler()
 
 
 

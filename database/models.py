@@ -441,3 +441,44 @@ class MigrationRun(TimestampMixin, Base):
     error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     metadata_json: Mapped[dict[str, object] | None] = mapped_column("metadata", JSON)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class BillingSubscription(TimestampMixin, Base):
+    __tablename__ = "billing_subscriptions"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    provider_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    plan: Mapped[str] = mapped_column(String(32), nullable=False, default="free")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="free")
+    interval: Mapped[str | None] = mapped_column(String(16))
+    test_mode: Mapped[bool] = mapped_column(nullable=False, default=True)
+    renews_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    provider_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class BillingCheckout(TimestampMixin, Base):
+    __tablename__ = "billing_checkouts"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    variant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    test_mode: Mapped[bool] = mapped_column(nullable=False)
+    consumed_by: Mapped[str | None] = mapped_column(String(64))
+
+
+class BillingWebhook(Base):
+    __tablename__ = "billing_webhooks"
+
+    digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    event_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class BillingUsage(Base):
+    __tablename__ = "billing_usage"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    period: Mapped[str] = mapped_column(String(7), primary_key=True)
+    metric: Mapped[str] = mapped_column(String(32), primary_key=True)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

@@ -16,7 +16,7 @@ if config.config_file_name is not None:
 database_url = database_url_from_environment()
 if database_url is None:
     raise RuntimeError("DATABASE_URL is required to run Alembic migrations.")
-config.set_main_option("sqlalchemy.url", database_url)
+config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 target_metadata = Base.metadata
 
 

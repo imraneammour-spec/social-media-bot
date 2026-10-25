@@ -20,7 +20,7 @@ LOCALE_META = {
 
 TRANSLATIONS = {
     "en": {
-        "product_name": "Postenza",
+        "Billing": "Billing", "product_name": "Postenza",
         "overview": "Overview", "content": "Content", "calendar": "Calendar",
         "engagement": "Engagement", "automation": "Automation", "instagram": "Instagram",
         "sign_out": "Sign out", "instagram_workspace": "Instagram workspace",
@@ -30,7 +30,7 @@ TRANSLATIONS = {
     },
     "fr": {
         "product_name": "Postenza",
-        "overview": "Vue d’ensemble", "content": "Contenu", "calendar": "Calendrier",
+        "Billing": "Facturation", "overview": "Vue d’ensemble", "content": "Contenu", "calendar": "Calendrier",
         "engagement": "Interactions", "automation": "Automatisation", "instagram": "Instagram",
         "sign_out": "Se déconnecter", "instagram_workspace": "Espace Instagram",
         "account": "Compte Instagram", "language": "Langue",
@@ -39,7 +39,7 @@ TRANSLATIONS = {
     },
     "ar": {
         "product_name": "Postenza",
-        "overview": "نظرة عامة", "content": "المحتوى", "calendar": "التقويم",
+        "Billing": "الفوترة", "overview": "نظرة عامة", "content": "المحتوى", "calendar": "التقويم",
         "engagement": "التفاعل", "automation": "الأتمتة", "instagram": "إنستغرام",
         "sign_out": "تسجيل الخروج", "instagram_workspace": "مساحة عمل إنستغرام",
         "account": "حساب إنستغرام", "language": "اللغة",
@@ -85,6 +85,17 @@ LANDING_TRANSLATIONS = {
         "landing_final_title": "هل أنت مستعد لوضع إنستغرام على الطيار الآلي؟", "landing_final_copy": "ابدأ بمساحة أوضح للمحتوى والتفاعل.", "landing_product": "المنتج", "landing_privacy": "الخصوصية", "landing_terms": "الشروط", "landing_data_deletion": "حذف البيانات",
     },
 }
+
+
+for _locale, _engagement, _followups in (
+    ("en", "Engagement activity", "Private follow-ups"),
+    ("fr", "Activité des interactions", "Suivis privés"),
+    ("ar", "نشاط التفاعل", "المتابعات الخاصة"),
+):
+    LANDING_TRANSLATIONS[_locale].update(
+        landing_feature_engagement_title=_engagement,
+        landing_feature_followups_title=_followups,
+    )
 
 
 def normalize_locale(value: object) -> str:
