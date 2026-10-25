@@ -65,10 +65,13 @@ Sources: [Serv00 offer](https://www.serv00.com/),
 
 ## Serv00 acceptance gate and manual prerequisite
 
-The registration form is available in Chrome; it was not submitted. The
+The registration form was opened in Chrome and was not submitted by the agent. The
 provider prohibits automated account creation, and its terms require actual
-DevilWEB/SSH login within 90 days to avoid deletion. Owner registration/sign-in
-was requested. This is an account prerequisite, not a payment request.
+DevilWEB/SSH login within 90 days to avoid deletion. The owner has now confirmed
+registration and is awaiting activation. The relevant Gmail search returned no
+Serv00 message at this check. No active account resources or successful runtime
+deployment have been inspected. This is an account prerequisite, not a payment
+request.
 [Registration](https://www.serv00.com/register-account/),
 [terms](https://www.serv00.com/terms-of-service/).
 

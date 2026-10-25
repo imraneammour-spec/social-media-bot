@@ -1,5 +1,12 @@
 # Browser access diagnosis — 24 October 2026 (UTC)
 
+**Superseded on 25 October:** authenticated Chrome and OCI Cloud Shell now work
+in this conversation. Oracle activation, home region and actual capacity reports
+were inspected successfully. Do not repeat registration or the troubleshooting
+below as a current prerequisite. No registry/authentication changes were made by
+the agent. See `FREE_HOSTING_ASSESSMENT.md`; OCI capacity, not browser access, is
+the remaining Oracle blocker. The observations below describe the earlier state.
+
 Read-only checks from the bundled Browser plugin confirmed:
 
 - Google Chrome is running.

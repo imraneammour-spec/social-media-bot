@@ -107,6 +107,13 @@ and the support reply received on 25 October. No production export was attached.
   horizontal overflow on overview/content/calendar/billing. Chrome's viewport
   override did not apply, so actual mobile geometry was verified in the in-app
   browser instead. No publishing worker or real integration calls were activated.
+- Latest Linux CI: [run 40202075579](https://github.com/imraneammour-spec/social-media-bot/actions/runs/40202075579)
+  succeeded on remote `aeb1b1f7c86a45fbfa725e99aaafe4751ae15977` (same tree as
+  local `df9a8be`): tests, migrations, audit, shell checks, Docker build,
+  readiness/health and stopped-container named-volume/age/restart drill.
+- Free-host fallback: owner registered at Serv00 and is awaiting activation.
+  Gmail returned no Serv00 message at this check. Runtime/account free limits,
+  worker supervision, dependency compatibility and storage remain unverified.
 - Staging URL: none. Production URL remains https://postenza.app, previously provider 404.
 - Application CI: [run 40137771535](https://github.com/imraneammour-spec/social-media-bot/actions/runs/40137771535) passed 62 tests, migrations, dependency audit, shell syntax, Docker build, Gunicorn startup/readiness and the named-volume encryption drill on review revision `d1b8f83064f6f2a70eea1d4b6a53d8d2b72ea47f` (same Git tree as local `9790642`). Initial CI revealed the tiny backup fixtures unnecessarily using the production-sized scratch cap; fixtures now use a 4-MiB cap, while production's 2-GiB file limit/7-GiB scratch gate and the dedicated insufficient-space regression are unchanged.
 - Billing: disabled; real merchant sandbox credentials/events still required.

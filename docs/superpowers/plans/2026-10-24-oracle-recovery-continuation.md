@@ -37,6 +37,24 @@
 
 ## Continuation ledger
 
+- 25 October: authenticated Chrome/OCI Cloud Shell now work. Actual capacity
+  reports show A1 2/12 and 1/6 OUT_OF_HOST_CAPACITY, E2 Micro unsupported. No VM
+  or VCN was created; registration/browser repair is no longer a prerequisite.
+- 25 October: Railway Support replied; no offline/free export offered. Owner
+  explicitly accepted a fresh database after the unknown data-loss implications
+  were explained, preserving every old volume, archive and encryption key.
+- 25 October: fresh local staging reached head 20261024_01, 20 tables and zero
+  business rows. Snapshot restore matched all tables; age round trip verified.
+  Synthetic browser/test fixtures remain in a different database. Local 62 tests
+  passed; actual 390px mobile auth/content/calendar/billing behavior was checked.
+- 25 October: registration legal links were rendering escaped HTML. A scoped
+  template fix escapes URL substitutions and renders the fixed trusted localized
+  markup. EN/FR/AR rendering and browser signup/onboarding verified. Linux CI
+  run 40202075579 passed on aeb1b1f (same tree as local df9a8be).
+- 25 October: owner registered at Serv00 and is awaiting activation. No free
+  destination has passed actual runtime/worker/persistence checks. No billing,
+  publishing, source deletion, DNS cutover or public launch performed.
+
 - Ruling: keep the existing checkout/branch; pre-existing working-tree UI edits/deletions remain excluded from commits.
 - Ruling: implement host orchestration in standard-library Python behind the shell entry points so failure paths can be tested on Windows and Linux.
 - Added ten host-operation tests, observed failures before corresponding implementations/fixes, then 62 local recovery tests passed.
