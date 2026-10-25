@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
@@ -14,6 +15,8 @@ def create_database_engine(database_url: str) -> Engine:
     if database_url.startswith(("postgresql", "postgres:")):
         options.update(pool_size=5, max_overflow=5, pool_timeout=10, pool_recycle=300,
                        connect_args={"connect_timeout": 10})
+        if os.getenv("POSTENZA_HOST_PROFILE") == "serv00":
+            options.update(pool_size=1, max_overflow=0)
     return create_engine(database_url, **options)
 
 

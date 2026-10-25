@@ -120,3 +120,23 @@ and the support reply received on 25 October. No production export was attached.
 - SEO/Search Console: code prepared; ownership/indexing and live performance unverified.
 - Credential rotation: preserve originals for recovery; coordinate replacement after verified restore.
 - Rollback: source volumes untouched; no DNS cutover or production migration performed.
+
+## Serv00 continuation — local preparation
+
+See `deploy/serv00/README.md` for the native staging path and remote acceptance
+checklist. Docker/systemd are not required there. Targeted tests passed 16/16
+with one existing Alembic warning. These tests use a new disposable PostgreSQL
+database and separate test files, not the approved clean staging DB. A read-only
+preservation check confirmed its 20 tables, one metadata row and zero business
+rows, and the previously recorded dump SHA-256 still matches. Historical Railway
+volumes, backups and keys were not modified.
+
+Staging cron executes readiness/storage probes only, with a distinct heartbeat;
+publishing and billing remain disabled. Resource checks include concurrent native
+web/worker RSS and a 384-MiB application budget, but actual Serv00 memory and
+Passenger/dependency compatibility cannot be accepted before account activation.
+Existing mobile/browser flows were unchanged and not repeated for this work.
+After the scoped review's native-lock fix, the complete local recovery suite
+passed 78 tests, with the Unix ENOSYS test skipped on Windows and five existing
+Alembic warnings. Independent review found no Critical issue; inherited OAuth
+engagement/keyring cleanup remains a documented minor before live promotion.

@@ -83,3 +83,22 @@ The Linux Docker/systemd package must not be assumed to run on shared hosting.
 Use an isolated staging subdomain, no publishing tokens and billing disabled.
 Do not change postenza.app until these checks pass. No provider is yet a verified
 deployable production destination under the complete set of constraints.
+
+## Native Serv00 preparation
+
+The staging-specific package is now in `deploy/serv00/README.md`. It uses
+Passenger and serial cron probes, private external configuration/storage, native
+libpq, one PostgreSQL connection per process and no Docker/systemd. The generic
+worker has a crash-releasing singleton lock and one-cycle mode, while the Serv00
+entry point remains probe-only. A concurrent RSS drill reserves 128 MiB of the
+512-MiB account allowance for provider processes. It does not certify real
+Passenger accounting or full integration/image-generation workload memory.
+
+Targeted local validation passed 16 tests, including existing worker failure
+isolation, fresh migrations in a new disposable PostgreSQL database, refusal to
+reinitialize that nonempty target, cron-process restart, durable file preservation,
+lease expiry/reclaim and stale-token rejection. The approved clean staging DB
+still has 20 tables and zero business rows; its original dump checksum is unchanged.
+Actual native installation, free account limits, TLS, cron/Passenger recovery,
+account-wide RAM/process/disk use and independent backup restore remain gates.
+No Serv00 account activation, deployment or website/DNS changes are claimed.

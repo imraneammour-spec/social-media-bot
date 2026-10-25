@@ -30,12 +30,14 @@ jobs:
       - name: Install standard backup encryption tools
         run: sudo apt-get update -qq && sudo apt-get install -y age
       - run: python -m compileall -q auth.py webhook.py billing.py operations.py seo.py worker.py wsgi.py database scripts
-      - run: bash -n deploy/update.sh deploy/backup.sh deploy/monitor.sh
+      - run: bash -n deploy/update.sh deploy/backup.sh deploy/monitor.sh && sh -n deploy/serv00/deploy.sh
       - name: Apply the full migration chain on PostgreSQL
         env:
           DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
         run: python -m alembic upgrade head
       - run: python -m pytest recovery_tests -q
+      - name: Measure concurrent native staging web and worker memory
+        run: python scripts/serv00_memory.py --ci
       - run: python -m pip_audit -r requirements.txt
       - run: docker build -t postenza:check .
       - name: Start the production entry point and verify readiness
