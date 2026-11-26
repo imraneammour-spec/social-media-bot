@@ -25,6 +25,8 @@ from unittest.mock import MagicMock, patch
 
 from google.genai import errors as genai_errors
 
+import gemini_client
+
 from database.lead_intelligence import LeadIntelligenceContext
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -86,6 +88,7 @@ class GeminiClientTest(unittest.TestCase):
         with patch.dict(os.environ, cls.environment, clear=False), patch(
             "threading.Thread", _NoopThread
         ):
+            sys.modules.pop("legacy_bot", None)  # fresh DATA_DIR
             spec.loader.exec_module(cls.module)
         from database.models import Base
 
@@ -97,12 +100,13 @@ class GeminiClientTest(unittest.TestCase):
     def tearDownClass(cls):
         cls.module.app.extensions["phase3a_auth"].session_factory.kw["bind"].dispose()
         sys.modules.pop(cls.module_name, None)
+        sys.modules.pop("legacy_bot", None)
         cls.temp_dir.cleanup()
 
     def _mock_gemini_client(self, side_effect):
         client = MagicMock()
         client.models.generate_content = MagicMock(side_effect=side_effect)
-        self.module.GEMINI_CLIENT = client
+        gemini_client.GEMINI_CLIENT = client
         return client
 
     def _models_called(self, client):
@@ -180,24 +184,30 @@ class GeminiClientTest(unittest.TestCase):
     # -- callers route through _gemini_generate_content -------------------
 
     def test_generate_smart_reply_routes_through_helper(self):
-        self.module.GEMINI_CLIENT = MagicMock()
+        # generate_smart_reply now lives in legacy_bot.py and calls
+        # gemini_client._gemini_generate_content: patch those.
+        gemini_client.GEMINI_CLIENT = MagicMock()
         helper = MagicMock(return_value=_fake_response("Thanks so much!"))
-        with patch.object(self.module, "_gemini_generate_content", helper):
+        with patch.object(gemini_client, "_gemini_generate_content", helper):
             reply = self.module.generate_smart_reply("lovely post", username="visitor")
         helper.assert_called_once()
         self.assertEqual(reply, "Thanks so much!")
 
     def test_extract_prompts_routes_through_helper(self):
-        self.module.GEMINI_CLIENT = MagicMock()
+        # extract_prompts_with_gemini now lives in prompt_pages.py and
+        # calls gemini_client._gemini_generate_content: patch those.
+        import prompt_pages
+
+        gemini_client.GEMINI_CLIENT = MagicMock()
         helper = MagicMock(
             return_value=_fake_response(
                 '{"prompts": [{"source_index": 1, "text": "a cat on a beach"}]}'
             )
         )
         with (
-            patch.object(self.module, "_gemini_generate_content", helper),
+            patch.object(gemini_client, "_gemini_generate_content", helper),
             patch.object(
-                self.module,
+                prompt_pages,
                 "download_image_bytes",
                 return_value={"data": b"fake-image", "mime_type": "image/jpeg"},
             ),

@@ -5,18 +5,22 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import os
 import secrets
+import smtplib
 import threading
 import time
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from functools import wraps
 from typing import Callable, TypeVar
 from urllib.parse import urlsplit
 
 from flask import Response, current_app, jsonify, redirect, render_template, request, session, url_for
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
@@ -78,6 +82,17 @@ ACCOUNT_ACTION_REFERENCE_VERSION = "v1"
 SESSION_LIFETIME_HOURS = 8
 READY_CONNECTION_STATUSES = {"connected"}
 RECONNECT_CONNECTION_STATUSES = {"disconnected", "error", "reconnect_required"}
+
+# Email verification before the Instagram-connect step. The token is signed
+# with Flask's secret key through itsdangerous (already a Flask dependency,
+# so no new package is needed) and expires after 24 hours. Single use is
+# enforced server-side: the token carries a random nonce that is stored on
+# the user until it is consumed or replaced by a resend.
+EMAIL_VERIFICATION_TOKEN_MAX_AGE_SECONDS = 86400
+EMAIL_VERIFICATION_SALT = "postenza-email-verification"
+EMAIL_VERIFICATION_NONCE_KEY = "email_verification_nonce"
+EMAIL_VERIFICATION_RESEND_LIMIT = 3
+EMAIL_VERIFICATION_RESEND_WINDOW_SECONDS = 3600
 
 ONBOARDING_USE_CASE_OPTIONS = tuple(zip(USE_CASE_VALUES, (
     "Grow my own Instagram account",
@@ -427,6 +442,159 @@ def _rate_limit_allowed(scope: str, limit: int = 5, window_seconds: int = 900) -
     return True
 
 
+def _email_verification_serializer() -> URLSafeTimedSerializer:
+    """Sign verification tokens with Flask's secret key (no new dependency)."""
+
+    return URLSafeTimedSerializer(str(current_app.secret_key), salt=EMAIL_VERIFICATION_SALT)
+
+
+def _pending_verification_nonce(preferences: object) -> str | None:
+    if isinstance(preferences, dict):
+        nonce = preferences.get(EMAIL_VERIFICATION_NONCE_KEY)
+        if isinstance(nonce, str) and nonce:
+            return nonce
+    return None
+
+
+def user_requires_email_verification(user: User | None) -> bool:
+    """Return True for new-flow users whose email is still unverified.
+
+    Only users registered through /register (who always get a
+    UserOnboardingProfile row) are gated. Accounts created before
+    onboarding existed have no profile row and predate email verification,
+    so they keep connecting Instagram as before.
+    """
+
+    if user is None or user.email_verified_at is not None:
+        return False
+    state = _auth_state()
+    if not state.session_factory:
+        return False
+    try:
+        with state.session_factory() as db_session:
+            return onboarding_profile_for_user(db_session, user.id) is not None
+    except SQLAlchemyError:
+        return False
+
+
+def issue_email_verification_token(user: User) -> str | None:
+    """Create a signed, single-use, expiring token and remember its nonce."""
+
+    state = _auth_state()
+    if not state.session_factory:
+        return None
+    nonce = secrets.token_urlsafe(24)
+    token = _email_verification_serializer().dumps(
+        {"user_id": str(user.id), "email": user.email, "nonce": nonce}
+    )
+    try:
+        with state.session_factory.begin() as db_session:
+            stored = db_session.get(User, user.id)
+            if stored is None:
+                return None
+            preferences = dict(stored.notification_preferences or {})
+            preferences[EMAIL_VERIFICATION_NONCE_KEY] = nonce
+            stored.notification_preferences = preferences
+    except SQLAlchemyError:
+        return None
+    return token
+
+
+def _smtp_configuration() -> dict[str, object] | None:
+    """Read optional stdlib SMTP settings; None when email is unconfigured."""
+
+    host = os.environ.get("SMTP_HOST", "").strip()
+    if not host:
+        return None
+    try:
+        port = int(os.environ.get("SMTP_PORT", "587") or 587)
+    except ValueError:
+        port = 587
+    return {
+        "host": host,
+        "port": port,
+        "username": os.environ.get("SMTP_USER", "").strip(),
+        "password": os.environ.get("SMTP_PASS", ""),
+        "sender": (
+            os.environ.get("SMTP_FROM", "").strip()
+            or os.environ.get("SMTP_USER", "").strip()
+            or "no-reply@postenza.app"
+        ),
+        "use_tls": os.environ.get("SMTP_USE_TLS", "true").strip().lower()
+        not in {"0", "false", "no"},
+    }
+
+
+def _send_email_message(address: str, verification_url: str) -> bool:
+    """Send one plain-text verification email with stdlib SMTP only."""
+
+    configuration = _smtp_configuration()
+    if configuration is None:
+        return False
+    message = EmailMessage()
+    message["From"] = str(configuration["sender"])
+    message["To"] = address
+    message["Subject"] = "Verify your Postenza email address"
+    message.set_content(
+        "Welcome to Postenza.\n\n"
+        "Verify your email address to connect Instagram:\n"
+        f"{verification_url}\n\n"
+        "This link expires in 24 hours. If you did not create a Postenza "
+        "account, ignore this email.\n"
+    )
+    try:
+        if configuration["port"] == 465:
+            server = smtplib.SMTP_SSL(
+                str(configuration["host"]), int(configuration["port"]), timeout=30
+            )
+        else:
+            server = smtplib.SMTP(
+                str(configuration["host"]), int(configuration["port"]), timeout=30
+            )
+            if configuration["use_tls"]:
+                server.starttls()
+        with server:
+            if configuration["username"] and configuration["password"]:
+                server.login(
+                    str(configuration["username"]), str(configuration["password"])
+                )
+            server.send_message(message)
+    except (OSError, smtplib.SMTPException):
+        current_app.logger.warning("Email verification message could not be sent.")
+        return False
+    return True
+
+
+def send_email_verification(user: User) -> str:
+    """Issue a token and deliver it; 'sent', 'logged', or 'unavailable'.
+
+    When no SMTP server is configured the verification link is written to
+    the server log instead, so the flow still works in development. The
+    token itself is never rendered on a user-facing page.
+    """
+
+    token = issue_email_verification_token(user)
+    if token is None:
+        return "unavailable"
+    verification_url = url_for("verify_email", token=token, _external=True)
+    if _send_email_message(str(user.email), verification_url):
+        return "sent"
+    if _smtp_configuration() is None:
+        current_app.logger.warning(
+            "SMTP is not configured; email verification link for %s: %s",
+            user.email,
+            verification_url,
+        )
+        return "logged"
+    return "unavailable"
+
+
+def smtp_configured() -> bool:
+    """Return True when an SMTP host is configured for verification email."""
+
+    return _smtp_configuration() is not None
+
+
 def _validate_registration(display_name: str, email: str, password: str) -> str | None:
     if not display_name or len(display_name) > 80:
         return "Enter a display name of 80 characters or fewer."
@@ -556,6 +724,29 @@ def post_login_destination(user: User | None) -> str:
     return url_for("onboarding")
 
 
+def _verify_email_error(message: str):
+    """Render the verification page with an error and a resend action."""
+
+    return (
+        render_template(
+            "auth_verify_email.html",
+            error=message,
+            current_user=get_current_user(),
+            **_auth_shell_context(),
+        ),
+        400,
+    )
+
+
+def _verify_email_success_redirect():
+    """Send a freshly verified user onward; logged-out users sign in first."""
+
+    user = get_current_user()
+    if user is None:
+        return redirect(url_for("login"))
+    return redirect(post_login_destination(user))
+
+
 def register_auth_routes(app) -> None:
     """Register only additive Phase 3A browser authentication routes."""
 
@@ -603,7 +794,90 @@ def register_auth_routes(app) -> None:
             if user is None:
                 return _unavailable_response()
             rotate_authenticated_session(user)
+            # A new account must verify its email before the Instagram
+            # step; delivery is best-effort and never blocks registration.
+            send_email_verification(user)
         return redirect(url_for("onboarding"))
+
+    @app.get("/auth/verify-email")
+    def verify_email():
+        """Consume a signed verification link; login is not required."""
+
+        if not authentication_available():
+            return _unavailable_response()
+        token = str(request.args.get("token") or "")
+        try:
+            payload = _email_verification_serializer().loads(
+                token, max_age=EMAIL_VERIFICATION_TOKEN_MAX_AGE_SECONDS
+            )
+        except SignatureExpired:
+            return _verify_email_error(
+                "This verification link has expired. Request a new one below."
+            )
+        except BadSignature:
+            return _verify_email_error(
+                "This verification link is invalid. Request a new one below."
+            )
+        if not isinstance(payload, dict):
+            return _verify_email_error(
+                "This verification link is invalid. Request a new one below."
+            )
+        user_id = payload.get("user_id")
+        email = payload.get("email")
+        nonce = payload.get("nonce")
+        try:
+            user_uuid = uuid.UUID(str(user_id))
+        except (TypeError, ValueError, AttributeError):
+            return _verify_email_error(
+                "This verification link is invalid. Request a new one below."
+            )
+        if not isinstance(email, str) or not isinstance(nonce, str):
+            return _verify_email_error(
+                "This verification link is invalid. Request a new one below."
+            )
+        state = _auth_state()
+        if state.session_factory is None:
+            return _unavailable_response()
+        try:
+            with state.session_factory.begin() as db_session:
+                user = db_session.get(User, user_uuid)
+                if user is None or user.email != email or user.status != "active":
+                    return _verify_email_error(
+                        "This verification link is invalid. Request a new one below."
+                    )
+                if user.email_verified_at is not None:
+                    return _verify_email_success_redirect()
+                if _pending_verification_nonce(user.notification_preferences) != nonce:
+                    return _verify_email_error(
+                        "This verification link has already been used or replaced. "
+                        "Request a new one below."
+                    )
+                user.email_verified_at = datetime.now(timezone.utc)
+                preferences = dict(user.notification_preferences or {})
+                preferences.pop(EMAIL_VERIFICATION_NONCE_KEY, None)
+                user.notification_preferences = preferences
+        except SQLAlchemyError:
+            return _unavailable_response()
+        return _verify_email_success_redirect()
+
+    @app.post("/auth/verify-email/resend")
+    @login_required
+    def resend_verification_email():
+        if not validate_csrf_token(request_csrf_token()):
+            return _auth_ui_text("Invalid form token."), 400
+        user = get_current_user()
+        if user is None:
+            return _unauthenticated_response()
+        if user.email_verified_at is not None:
+            return redirect(url_for("onboarding"), code=303)
+        if not _rate_limit_allowed(
+            "resend-verification-email",
+            limit=EMAIL_VERIFICATION_RESEND_LIMIT,
+            window_seconds=EMAIL_VERIFICATION_RESEND_WINDOW_SECONDS,
+        ):
+            return _auth_ui_text("Too many verification emails requested. Try again later."), 429
+        send_email_verification(user)
+        return redirect(url_for("onboarding"), code=303)
 
     @app.route("/login", methods=["GET", "POST"])
     def login():
@@ -663,6 +937,11 @@ def register_auth_routes(app) -> None:
             return _unauthenticated_response()
         if not user_has_completed_onboarding(user):
             return redirect(url_for("onboarding"))
+        if user_requires_email_verification(user):
+            return _auth_ui_text(
+                "Verify your email before connecting Instagram. Open the "
+                "verification link we sent, or request a new one from onboarding."
+            ), 403
         if current_user_has_legacy_environment_managed_account():
             return _auth_ui_text("Instagram connection is not available for this account."), 403
         try:
@@ -864,10 +1143,15 @@ def register_auth_routes(app) -> None:
                 )
         except SQLAlchemyError:
             return _unavailable_response()
+        email_verification_required = (
+            profile is not None and user.email_verified_at is None
+        )
         return render_template(
             "onboarding.html",
             current_user=user,
             onboarding_step=step,
+            email_verification_required=email_verification_required,
+            email_verification_smtp_configured=smtp_configured(),
             onboarding_step_number={
                 "profile": 1,
                 "source": 2,

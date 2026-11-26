@@ -53,6 +53,21 @@
     <h1>{{ t('Instagram workspace status') }}</h1>
     <p class="auth-lede">{{ t("{name}, your Instagram connection status is shown below.", name=current_user.display_name) }}</p>
 </div>
+{% if email_verification_required %}
+<div class="auth-status">
+    <section class="auth-status-card">
+        <h2>{{ t('Verify your email to Connect Instagram') }}</h2>
+        <p>{{ t('We sent a verification link to {email}. Open the link in that email, then connect Instagram.', email=current_user.email) }}</p>
+        <form method="post" action="{{ url_for('resend_verification_email') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="button button-primary" type="submit">{{ t('Resend verification email') }}</button>
+        </form>
+        {% if not email_verification_smtp_configured %}
+        <p class="auth-note">{{ t('Email delivery is not configured in this environment. The verification link was written to the server log.') }}</p>
+        {% endif %}
+    </section>
+</div>
+{% endif %}
 {% if account_statuses %}
 <ul class="auth-status">
     {% for account in account_statuses %}
@@ -80,11 +95,15 @@
 <div class="auth-status">
     <section class="auth-status-card">
         <h2>{{ t('No Instagram account connected') }}</h2>
+        {% if email_verification_required %}
+        <p>{{ t('Connect Instagram after verifying your email address.') }}</p>
+        {% else %}
         <p>{{ t('Connect your Instagram professional account to continue.') }}</p>
         <form method="post" action="{{ url_for('start_instagram_connection') }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="button button-primary" type="submit">{{ t('Connect Instagram') }}</button>
         </form>
+        {% endif %}
     </section>
 </div>
 {% endif %}

@@ -109,6 +109,7 @@ class OAuthWebhookCapabilityGateTest(unittest.TestCase):
         self.module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = self.module
         with patch.dict(os.environ, environment, clear=False), patch("threading.Thread"):
+            sys.modules.pop("legacy_bot", None)  # fresh DATA_DIR
             spec.loader.exec_module(self.module)
         self.module_name = module_name
         self.Session = self.module.app.extensions["phase3a_auth"].session_factory
@@ -137,6 +138,7 @@ class OAuthWebhookCapabilityGateTest(unittest.TestCase):
     def tearDown(self):
         self.Session.kw["bind"].dispose()
         sys.modules.pop(self.module_name, None)
+        sys.modules.pop("legacy_bot", None)
         self.temp_dir.cleanup()
 
     def test_default_disabled_entry_claims_nothing_and_never_reaches_graph_or_legacy(self):

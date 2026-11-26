@@ -36,6 +36,7 @@ class LandingPageTest(unittest.TestCase):
 
     def tearDown(self):
         sys.modules.pop(self.module_name, None)
+        sys.modules.pop("legacy_bot", None)
         self.temp_dir.cleanup()
 
     def _load_webhook_module(self):
@@ -59,6 +60,7 @@ class LandingPageTest(unittest.TestCase):
             patch("threading.Thread", _NoopThread),
             redirect_stdout(startup_output),
         ):
+            sys.modules.pop("legacy_bot", None)  # fresh DATA_DIR
             spec.loader.exec_module(module)
         self.startup_output = startup_output.getvalue()
         return module

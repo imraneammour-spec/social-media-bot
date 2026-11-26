@@ -46,6 +46,7 @@ class LegacyModeConfigurationTest(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         with patch.dict(os.environ, environment, clear=False), patch("threading.Thread", _NoopThread):
+            sys.modules.pop("legacy_bot", None)  # fresh DATA_DIR
             spec.loader.exec_module(module)
         Base.metadata.create_all(module.app.extensions["phase3a_auth"].session_factory.kw["bind"])
         return module

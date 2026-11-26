@@ -64,7 +64,7 @@ under ignored `backups/railway-20261024`. They contain sensitive secrets and mus
 stay private. They are configuration exports, **not production database dumps**.
 An additional encrypted archive of these six configuration/log files has now
 been privately decrypted and byte-verified. The originals remain intact. See
-`docs/ORACLE_MIGRATION_STATUS.md` for the protected archive/key locations and limits.
+`docs/archive/ORACLE_MIGRATION_STATUS.md` for the protected archive/key locations and limits.
 The two projects have different integration settings: precious-peace has Gemini
 and Cloudinary but lacks OAuth/encryption settings; devoted-imagination has
 OAuth/encryption settings but lacks Gemini/Cloudinary. Preserve both key sets
@@ -101,7 +101,7 @@ PostgreSQL volumes listed above. A provider confirmation of current recoverabili
 and the exact retention deadline remains necessary before any infrastructure
 switch. No follow-up message was sent during the 25 October mailbox check.
 [Central Station outage notice](https://status.railway.com/incident/ZEO9X68O).
-The request text is in `docs/RAILWAY_RECOVERY_REQUEST.md`; its private inventory
+The request text is in `docs/archive/RAILWAY_RECOVERY_REQUEST.md`; its private inventory
 was excluded from the email. Do not choose a blank replacement database or delete
 either project.
 
@@ -187,7 +187,7 @@ Update: Oracle activation and Casablanca home region are now verified through
 authenticated Chrome/Cloud Shell. Earlier registration/browser blockers are
 resolved. The remaining OCI blocker is actual host capacity, not sign-in.
 No VM, VCN or account upgrade was created. Current continuation status is in
-`docs/ORACLE_MIGRATION_STATUS.md`.
+`docs/archive/ORACLE_MIGRATION_STATUS.md`.
 It may reclaim idle VMs and may lack capacity. A small free VM would be
 self-managed with no high availability. Do not upgrade it to paid to obtain
 capacity. The prepared container package remains portable.

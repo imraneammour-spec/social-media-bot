@@ -83,6 +83,7 @@ class Phase7D1CliIsolationTest(unittest.TestCase):
         with patch.dict(os.environ, environment, clear=False), patch(
             "threading.Thread", return_value=thread
         ) as create_thread:
+            sys.modules.pop("legacy_bot", None)  # fresh DATA_DIR
             spec.loader.exec_module(module)
 
         create_thread.assert_called_once_with(

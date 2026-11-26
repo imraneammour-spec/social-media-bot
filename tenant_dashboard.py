@@ -37,7 +37,12 @@ from auth import (
     validate_csrf_token,
 )
 from database import tenant_dashboard as tenant_data
-from database.admin_dashboard import admin_snapshot
+from database.admin_dashboard import (
+    admin_snapshot,
+    admin_users,
+    delete_managed_user,
+    set_user_status,
+)
 from database.tenant_insights import direct_interactions
 from dashboard.presentation import display_time, public_image_url
 from dashboard.i18n import LOCALE_META, LOCALE_SESSION_KEY, locale_context, normalize_locale, translate, session_locale
@@ -1230,6 +1235,80 @@ def _settings_presentation(user):
     return profile, preferences
 
 
+def _gemini_key_presentation(user):
+    """Return the user's BYOK Gemini key status for the Settings page."""
+
+    fallback = {
+        "configured": False,
+        "hint": None,
+        "status": "none",
+        "last_validated_at": None,
+    }
+    session_factory = getattr(_auth_state(), "session_factory", None)
+    if session_factory is None:
+        return fallback
+    try:
+        from database.gemini_keys import user_gemini_key_status
+
+        with session_factory() as session:
+            return user_gemini_key_status(session, user.id)
+    except SQLAlchemyError:
+        return fallback
+
+
+def _internal_admin_context():
+    """Return ``(admin_user, session_factory, None)`` for the internal admin.
+
+    The gate is the same check behind ``internal_admin_access`` in
+    :func:`_render_page`: the signed-in user must own the configured
+    legacy Instagram account. Anything else gets ``(None, None, response)``
+    with the response already built (403 for non-admins, 503 when the
+    workspace is unavailable).
+    """
+
+    if not current_user_has_legacy_workspace_access():
+        return None, None, _cache_control(make_response("Forbidden.", 403))
+
+    user = get_current_user()
+    state = _auth_state()
+    session_factory = getattr(state, "session_factory", None)
+    if user is None or session_factory is None:
+        return None, None, _workspace_unavailable()
+    return user, session_factory, None
+
+
+def _render_admin_page(user, session_factory, *, confirm_delete_user_id=None):
+    """Render the Admin page with snapshot, user list, and CSRF token."""
+
+    try:
+        with session_factory() as session:
+            snapshot = admin_snapshot(session)
+            users = admin_users(session)
+    except SQLAlchemyError:
+        return _workspace_unavailable()
+
+    confirm_delete_user = None
+    if confirm_delete_user_id is not None:
+        confirm_delete_user = next(
+            (row for row in users if row.user_id == confirm_delete_user_id),
+            None,
+        )
+        if confirm_delete_user is None:
+            return _cache_control(make_response("User unavailable.", 404))
+
+    return _cache_control(
+        render_template(
+            "app_admin.html",
+            current_user=user,
+            admin=snapshot,
+            users=users,
+            csrf_token=csrf_token(),
+            confirm_delete_user=confirm_delete_user,
+            display_time=lambda value: display_time(value, "en"),
+        )
+    )
+
+
 def register_tenant_dashboard(app) -> None:
     dashboard = Blueprint(
         "tenant_dashboard",
@@ -1253,26 +1332,109 @@ def register_tenant_dashboard(app) -> None:
     @dashboard.get("/admin")
     @login_required
     def app_admin():
-        if not current_user_has_legacy_workspace_access():
-            return make_response("Forbidden.", 403)
+        admin_user, session_factory, error = _internal_admin_context()
+        if error is not None:
+            return error
 
-        user = get_current_user()
-        state = _auth_state()
-        session_factory = getattr(state, "session_factory", None)
-        if user is None or session_factory is None:
-            return _workspace_unavailable()
+        return _render_admin_page(admin_user, session_factory)
 
+    @dashboard.post("/admin/users/<user_id>/status")
+    @login_required
+    def app_admin_user_status(user_id):
+        """Disable or re-enable a registered user (internal admin only)."""
+
+        admin_user, session_factory, error = _internal_admin_context()
+        if error is not None:
+            return error
+        if not validate_csrf_token(request_csrf_token()):
+            return _cache_control(make_response("Invalid form token.", 400))
         try:
-            with session_factory() as session:
-                snapshot = admin_snapshot(session)
+            target_user_id = uuid.UUID(str(user_id))
+        except (TypeError, ValueError, AttributeError):
+            return _cache_control(make_response("User unavailable.", 404))
+
+        new_status = str(request.form.get("status") or "").strip().lower()
+        try:
+            with session_factory.begin() as session:
+                updated = set_user_status(
+                    session,
+                    target_user_id=target_user_id,
+                    status=new_status,
+                    admin_user_id=admin_user.id,
+                )
+                if updated is None:
+                    return _cache_control(make_response("User unavailable.", 404))
+        except ValueError as exc:
+            return _cache_control(make_response(str(exc), 400))
         except SQLAlchemyError:
             return _workspace_unavailable()
 
-        return render_template(
-            "app_admin.html",
-            current_user=user,
-            admin=snapshot,
-            display_time=lambda value: display_time(value, "en"),
+        return _cache_control(
+            redirect(url_for("tenant_dashboard.app_admin"), code=303)
+        )
+
+    @dashboard.post("/admin/users/<user_id>/delete")
+    @login_required
+    def app_admin_user_delete(user_id):
+        """Delete a registered user (internal admin only).
+
+        The first POST without ``confirm=delete`` re-renders the Admin
+        page with a confirmation step for that user; only the confirming
+        POST deletes. Deletion is refused for users with Instagram
+        accounts or billing records — disable them instead.
+        """
+
+        admin_user, session_factory, error = _internal_admin_context()
+        if error is not None:
+            return error
+        if not validate_csrf_token(request_csrf_token()):
+            return _cache_control(make_response("Invalid form token.", 400))
+        try:
+            target_user_id = uuid.UUID(str(user_id))
+        except (TypeError, ValueError, AttributeError):
+            return _cache_control(make_response("User unavailable.", 404))
+
+        if str(request.form.get("confirm") or "").strip() != "delete":
+            return _render_admin_page(
+                admin_user,
+                session_factory,
+                confirm_delete_user_id=target_user_id,
+            )
+
+        try:
+            with session_factory.begin() as session:
+                outcome = delete_managed_user(
+                    session,
+                    target_user_id=target_user_id,
+                    admin_user_id=admin_user.id,
+                )
+        except SQLAlchemyError:
+            return _workspace_unavailable()
+
+        if outcome == "not_found":
+            return _cache_control(make_response("User unavailable.", 404))
+        if outcome == "is_self":
+            return _cache_control(
+                make_response("You cannot delete your own account.", 400)
+            )
+        if outcome == "has_instagram_accounts":
+            return _cache_control(
+                make_response(
+                    "This user still owns Instagram accounts. "
+                    "Disable the user instead of deleting them.",
+                    400,
+                )
+            )
+        if outcome == "has_billing_records":
+            return _cache_control(
+                make_response(
+                    "This user has billing records. "
+                    "Disable the user instead of deleting them.",
+                    400,
+                )
+            )
+        return _cache_control(
+            redirect(url_for("tenant_dashboard.app_admin"), code=303)
         )
 
     @dashboard.get("/onboarding")
@@ -2181,6 +2343,132 @@ def register_tenant_dashboard(app) -> None:
                             "Notification preferences saved."
                         )
 
+                    elif form_kind == "gemini_key":
+                        from database.credentials import (
+                            credential_keyring_from_environment,
+                        )
+                        from database.gemini_keys import (
+                            clear_user_gemini_key,
+                            keyring_available,
+                            load_user_gemini_key,
+                            mark_user_gemini_key_invalid,
+                            mark_user_gemini_key_validated,
+                            store_user_gemini_key,
+                            user_gemini_key_status,
+                            validate_gemini_api_key,
+                        )
+
+                        gemini_action = str(
+                            request.form.get("gemini_action") or "save"
+                        ).strip().lower()
+                        if not keyring_available():
+                            settings_error = (
+                                "Gemini key storage is not configured "
+                                "on this deployment."
+                            )
+                            status = 400
+                        elif gemini_action == "remove":
+                            removed = clear_user_gemini_key(
+                                session, stored_user.id
+                            )
+                            if removed:
+                                settings_message = (
+                                    "Gemini API key removed. "
+                                    "The shared key is used instead."
+                                )
+                            else:
+                                settings_message = (
+                                    "No Gemini API key was stored."
+                                )
+                        elif gemini_action == "test":
+                            key_status = user_gemini_key_status(
+                                session, stored_user.id
+                            )
+                            if not key_status["configured"]:
+                                settings_error = (
+                                    "No Gemini API key stored yet."
+                                )
+                                status = 400
+                            else:
+                                stored_key = load_user_gemini_key(
+                                    session,
+                                    stored_user.id,
+                                    credential_keyring_from_environment(),
+                                )
+                                if stored_key is None:
+                                    settings_error = (
+                                        "The stored key could not be "
+                                        "read. Save it again."
+                                    )
+                                    status = 400
+                                else:
+                                    verdict = validate_gemini_api_key(
+                                        stored_key
+                                    )
+                                    if verdict == "valid":
+                                        mark_user_gemini_key_validated(
+                                            session, stored_user.id
+                                        )
+                                        settings_message = (
+                                            "Gemini API key works."
+                                        )
+                                    elif verdict == "invalid":
+                                        mark_user_gemini_key_invalid(
+                                            session,
+                                            stored_user.id,
+                                            "api_key_invalid",
+                                        )
+                                        settings_error = (
+                                            "That Gemini API key was "
+                                            "rejected by Google. Check it "
+                                            "and save it again."
+                                        )
+                                        status = 400
+                                    else:
+                                        settings_message = (
+                                            "Could not reach Google to "
+                                            "check the key. It was left "
+                                            "as-is."
+                                        )
+                        else:
+                            new_key = str(
+                                request.form.get("gemini_api_key") or ""
+                            ).strip()
+                            if not new_key:
+                                settings_error = (
+                                    "Paste a Gemini API key first."
+                                )
+                                status = 400
+                            else:
+                                verdict = validate_gemini_api_key(new_key)
+                                if verdict == "invalid":
+                                    settings_error = (
+                                        "That Gemini API key was rejected "
+                                        "by Google. Check it and try again."
+                                    )
+                                    status = 400
+                                else:
+                                    store_user_gemini_key(
+                                        session,
+                                        stored_user,
+                                        new_key,
+                                        credential_keyring_from_environment(),
+                                    )
+                                    if verdict == "valid":
+                                        mark_user_gemini_key_validated(
+                                            session, stored_user.id
+                                        )
+                                        settings_message = (
+                                            "Gemini API key saved and "
+                                            "verified."
+                                        )
+                                    else:
+                                        settings_message = (
+                                            "Gemini API key saved. Google "
+                                            "could not be reached to verify "
+                                            "it yet."
+                                        )
+
                     else:
                         settings_error = "Workspace temporarily unavailable."
                         status = 400
@@ -2188,6 +2476,7 @@ def register_tenant_dashboard(app) -> None:
                 return _workspace_unavailable()
 
         profile, preferences = _settings_presentation(user)
+        gemini_key_status = _gemini_key_presentation(user)
 
         response = _render_page(
             "app_settings.html",
@@ -2197,6 +2486,7 @@ def register_tenant_dashboard(app) -> None:
             include_disconnect_actions=True,
             settings_profile=profile,
             notification_preferences=preferences,
+            gemini_key_status=gemini_key_status,
             settings_error=settings_error,
             settings_message=settings_message,
         )

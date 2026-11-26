@@ -1,0 +1,17 @@
+{% extends "auth_shell.html" %}
+{% block auth_title %}{{ t('Verify your email address') }} | {{ t('product_name') }}{% endblock %}
+{% block auth_content %}
+<div class="auth-card-header">
+    <h1>{{ t('Verify your email address') }}</h1>
+    <p class="auth-lede">{{ t('Use the verification link we sent to your email address to connect Instagram.') }}</p>
+</div>
+{% if error %}<p class="auth-alert" role="alert">{{ t(error) }}</p>{% endif %}
+{% if current_user %}
+<form class="auth-form" method="post" action="{{ url_for('resend_verification_email') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="button button-primary" type="submit">{{ t('Resend verification email') }}</button>
+</form>
+{% else %}
+<p class="auth-note"><a href="{{ url_for('login') }}">{{ t('Sign in to request a new verification email.') }}</a></p>
+{% endif %}
+{% endblock %}

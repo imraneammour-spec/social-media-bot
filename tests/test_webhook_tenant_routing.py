@@ -62,6 +62,7 @@ class WebhookTenantRoutingTest(unittest.TestCase):
         with patch.dict(os.environ, self.environment, clear=False), patch(
             "threading.Thread", _NoopThread
         ):
+            sys.modules.pop("legacy_bot", None)  # fresh DATA_DIR
             spec.loader.exec_module(self.module)
         self.session_factory = self.module.app.extensions["phase3a_auth"].session_factory
         Base.metadata.create_all(self.session_factory.kw["bind"])
@@ -684,7 +685,11 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
         ) as public_reply, patch.object(self.module, "_oauth_prompt_post_for_comment") as prompt_page:
             self._process(self.primary_external_id, "smart-normal-comment", "How does this work?")
 
-        generate.assert_called_once_with("How does this work?", tone="professional")
+        # BYOK: the call now carries the account's Gemini key (None here,
+        # so the shared env key is used).
+        generate.assert_called_once_with(
+            "How does this work?", tone="professional", api_key=None
+        )
         public_reply.assert_called_once()
         prompt_page.assert_not_called()
 
@@ -776,7 +781,11 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
         ) as public_reply:
             self._process(self.secondary_external_id, "secondary-not-limited", "How does this work?")
 
-        generate.assert_called_once_with("How does this work?", tone="concise")
+        # BYOK: the call now carries the account's Gemini key (None here,
+        # so the shared env key is used).
+        generate.assert_called_once_with(
+            "How does this work?", tone="concise", api_key=None
+        )
         public_reply.assert_called_once()
 
     def test_short_and_emoji_only_comments_are_not_sent_to_the_generator(self):

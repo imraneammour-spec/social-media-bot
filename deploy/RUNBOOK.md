@@ -45,7 +45,7 @@ An encrypted configuration-only archive has subsequently been created and
 byte-verified locally. It is not a PostgreSQL backup or an independent off-host
 copy. Use `scripts/encrypted_backup.py` with the standard age CLI for backup-file
 encryption, keep private identities off the cloud host, and test decryption and
-database restore separately. See `docs/ORACLE_MIGRATION_STATUS.md` for exact state.
+database restore separately. See `docs/archive/ORACLE_MIGRATION_STATUS.md` for exact state.
 
 ### October 2026 incident: coordinate credential rotation
 

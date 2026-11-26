@@ -33,7 +33,7 @@
 - [x] Implement `scripts/encrypted_backup.py`: `encrypt_file(source, output, recipient)` and `decrypt_file(source, output, identity)`, using age subprocesses, protected temporary files and exclusive final publication.
 - [x] Add `deploy/backup.sh`, `deploy/monitor.sh` and inactive systemd templates. Capture database, app files and config during a short graceful app stop, retain encrypted archives without automatic deletion, and document restore verification/off-host requirements.
 - [x] Run local recovery tests and Linux CI including actual age encryption/decryption; update draft PR #1 without merging.
-- [x] Record exact Oracle/production/billing/SEO acceptance status and remaining external actions in `docs/ORACLE_MIGRATION_STATUS.md`.
+- [x] Record exact Oracle/production/billing/SEO acceptance status and remaining external actions in `docs/archive/ORACLE_MIGRATION_STATUS.md`.
 
 ## Continuation ledger
 

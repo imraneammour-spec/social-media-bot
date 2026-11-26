@@ -387,6 +387,7 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
         self.module = importlib.util.module_from_spec(spec)
         sys.modules["phase4c_oauth_webhook"] = self.module
         with patch.dict(os.environ, environment, clear=False), patch("threading.Thread"):
+            sys.modules.pop("legacy_bot", None)  # fresh DATA_DIR
             spec.loader.exec_module(self.module)
         self.Session = self.module.app.extensions["phase3a_auth"].session_factory
         Base.metadata.create_all(self.Session.kw["bind"])

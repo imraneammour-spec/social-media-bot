@@ -1,5 +1,6 @@
 """Tenant Settings page: profile, password, notifications, disconnect."""
 
+import os
 import re
 import tempfile
 import unittest
@@ -241,6 +242,134 @@ class TenantSettingsTest(unittest.TestCase):
         self.assertEqual(
             prefs, {"new_lead_email": True, "weekly_summary": False}
         )
+    def _keyring_env(self):
+        # One stable Fernet key per test case: save and test/remove must
+        # decrypt with the same key.
+        from cryptography.fernet import Fernet
+
+        if not hasattr(self, "_keyring_key"):
+            self._keyring_key = Fernet.generate_key().decode("ascii")
+        return {
+            "INSTAGRAM_CREDENTIAL_ACTIVE_KEY_ID": "K1",
+            "INSTAGRAM_CREDENTIAL_KEY_K1": self._keyring_key,
+        }
+
+    def _stored_gemini_key(self):
+        from database.models import UserGeminiKey
+
+        with self.Session() as session:
+            return session.scalar(
+                select(UserGeminiKey).where(
+                    UserGeminiKey.user_id == self.owner.id
+                )
+            )
+
+    def _save_gemini_key(self, key, verdict="valid"):
+        from unittest.mock import patch
+
+        self._login_as(self.owner)
+        csrf = self._csrf()
+        with (
+            patch.dict(os.environ, self._keyring_env(), clear=False),
+            patch(
+                "database.gemini_keys.validate_gemini_api_key",
+                return_value=verdict,
+            ),
+        ):
+            return self.client.post(
+                "/app/settings",
+                data={
+                    "csrf_token": csrf,
+                    "form": "gemini_key",
+                    "gemini_action": "save",
+                    "gemini_api_key": key,
+                },
+            )
+
+    def test_gemini_key_section_shows_when_unconfigured(self):
+        self._login_as(self.owner)
+        response = self.client.get("/app/settings")
+        self.assertEqual(response.status_code, 200)
+        page = response.get_data(as_text=True)
+        self.assertIn("Gemini API key", page)
+        self.assertIn("No key stored", page)
+
+    def test_gemini_key_save_valid_stores_encrypted_key(self):
+        response = self._save_gemini_key("AIzaTestKey1234", verdict="valid")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            "Gemini API key saved and verified.",
+            response.get_data(as_text=True),
+        )
+        row = self._stored_gemini_key()
+        self.assertIsNotNone(row)
+        self.assertEqual(row.key_hint, "1234")
+        self.assertEqual(row.key_status, "active")
+        self.assertNotIn("AIzaTestKey1234", row.key_ciphertext or "")
+        self.assertIn("…1234", self.client.get("/app/settings").get_data(as_text=True))
+
+    def test_gemini_key_save_invalid_is_rejected(self):
+        response = self._save_gemini_key("AIzaBadKey", verdict="invalid")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("rejected by Google", response.get_data(as_text=True))
+        self.assertIsNone(self._stored_gemini_key())
+
+    def test_gemini_key_save_without_keyring_is_rejected(self):
+        self._login_as(self.owner)
+        csrf = self._csrf()
+        response = self.client.post(
+            "/app/settings",
+            data={
+                "csrf_token": csrf,
+                "form": "gemini_key",
+                "gemini_action": "save",
+                "gemini_api_key": "AIzaTestKey1234",
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("not configured", response.get_data(as_text=True))
+        self.assertIsNone(self._stored_gemini_key())
+
+    def test_gemini_key_test_and_remove(self):
+        from unittest.mock import patch
+
+        self._save_gemini_key("AIzaTestKey1234", verdict="valid")
+        self.assertIsNotNone(self._stored_gemini_key())
+
+        self._login_as(self.owner)
+        csrf = self._csrf()
+        with (
+            patch.dict(os.environ, self._keyring_env(), clear=False),
+            patch(
+                "database.gemini_keys.validate_gemini_api_key",
+                return_value="invalid",
+            ),
+        ):
+            response = self.client.post(
+                "/app/settings",
+                data={
+                    "csrf_token": csrf,
+                    "form": "gemini_key",
+                    "gemini_action": "test",
+                },
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("rejected by Google", response.get_data(as_text=True))
+        self.assertEqual(self._stored_gemini_key().key_status, "invalid")
+
+        csrf = self._csrf()
+        with patch.dict(os.environ, self._keyring_env(), clear=False):
+            response = self.client.post(
+                "/app/settings",
+                data={
+                    "csrf_token": csrf,
+                    "form": "gemini_key",
+                    "gemini_action": "remove",
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("removed", response.get_data(as_text=True))
+        self.assertIsNone(self._stored_gemini_key())
 
 
 if __name__ == "__main__":

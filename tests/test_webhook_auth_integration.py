@@ -57,12 +57,14 @@ class WebhookAuthenticationIntegrationTest(unittest.TestCase):
         with patch.dict(os.environ, environment, clear=False), patch(
             "threading.Thread", _NoopThread
         ):
+            sys.modules.pop("legacy_bot", None)  # fresh DATA_DIR
             spec.loader.exec_module(module)
         return module
 
     def tearDown(self):
         self.session_factory.kw["bind"].dispose()
         sys.modules.pop(self.module_name, None)
+        sys.modules.pop("legacy_bot", None)
         self.temp_dir.cleanup()
 
     def _create_legacy_owner(self):
@@ -172,6 +174,7 @@ class WebhookAuthenticationIntegrationTest(unittest.TestCase):
         finally:
             module.app.extensions["phase3a_auth"].session_factory.kw["bind"].dispose()
             sys.modules.pop(module_name, None)
+            sys.modules.pop("legacy_bot", None)
 
     def test_missing_signature_is_rejected_in_production_before_processing(self):
         production_environment = dict(self.environment)
@@ -196,6 +199,7 @@ class WebhookAuthenticationIntegrationTest(unittest.TestCase):
         finally:
             module.app.extensions["phase3a_auth"].session_factory.kw["bind"].dispose()
             sys.modules.pop(module_name, None)
+            sys.modules.pop("legacy_bot", None)
 
     def test_explicit_test_bypass_accepts_unsigned_json_only_outside_production(self):
         body = b'{ "object": "instagram", "entry": [] }'
@@ -228,6 +232,7 @@ class WebhookAuthenticationIntegrationTest(unittest.TestCase):
         finally:
             module.app.extensions["phase3a_auth"].session_factory.kw["bind"].dispose()
             sys.modules.pop(module_name, None)
+            sys.modules.pop("legacy_bot", None)
 
 
 if __name__ == "__main__":

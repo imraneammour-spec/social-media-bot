@@ -38,6 +38,21 @@
         <div class="form-actions"><button class="button button-primary" type="submit">{{ t('Save notification preferences') }}</button></div>
     </form>
 </section>
+<section class="card" aria-label="{{ t('Gemini API key') }}">
+    <h2>{{ t('Gemini API key') }}</h2>
+    <p class="muted">{{ t('Your own Gemini API key is used for smart replies and prompt extraction instead of the shared key. Get a free key from Google AI Studio.') }}</p>
+    {% if gemini_key_status and gemini_key_status.configured %}
+    <p>{{ t('Key stored') }}: …{{ gemini_key_status.hint }} — {{ gemini_key_status.status }}{% if gemini_key_status.last_validated_at %} ({{ t('verified') }} {{ gemini_key_status.last_validated_at }}){% endif %}</p>
+    {% else %}
+    <p class="muted">{{ t('No key stored — the shared key is used.') }}</p>
+    {% endif %}
+    <form method="post" action="{{ url_for('tenant_dashboard.app_settings', account=selected_account.selection_ref) }}" class="settings-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="form" value="gemini_key">
+        <label>{{ t('Gemini API key') }} <input type="password" name="gemini_api_key" autocomplete="off" placeholder="AIza…"></label>
+        <div class="form-actions"><button class="button button-primary" type="submit" name="gemini_action" value="save">{{ t('Save key') }}</button>{% if gemini_key_status and gemini_key_status.configured %}<button class="button" type="submit" name="gemini_action" value="test">{{ t('Test key') }}</button><button class="button button-destructive" type="submit" name="gemini_action" value="remove">{{ t('Remove key') }}</button>{% endif %}</div>
+    </form>
+</section>
 {% if selected_account.can_disconnect %}
 <section class="card" aria-label="{{ t('Disconnect Instagram') }}">
     <h2>{{ t('Disconnect Instagram') }}</h2>

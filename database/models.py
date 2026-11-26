@@ -39,6 +39,7 @@ class User(TimestampMixin, Base):
         JSON, default=dict, server_default=text("'{}'")
     )
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     instagram_accounts: Mapped[list["InstagramAccount"]] = relationship(
         back_populates="owner", cascade="all, delete-orphan"
@@ -485,3 +486,132 @@ class BillingUsage(Base):
     period: Mapped[str] = mapped_column(String(7), primary_key=True)
     metric: Mapped[str] = mapped_column(String(32), primary_key=True)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class LegacyProcessedComment(TimestampMixin, Base):
+    """Durable legacy-bot comment dedupe claim (replaces processed_comments.json).
+
+    One row per comment the legacy bot has seen; ``state`` is ``processing``
+    while the comment is being handled and ``done`` afterwards. The JSON file
+    is wiped on every Heroku restart, which allowed double replies; this
+    table survives restarts. Scoped to the legacy Instagram account.
+    """
+
+    __tablename__ = "legacy_processed_comments"
+    __table_args__ = (
+        UniqueConstraint(
+            "instagram_account_id", "comment_id", name="uq_legacy_processed_account_comment"
+        ),
+        Index("ix_legacy_processed_account_created", "instagram_account_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    instagram_account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("instagram_accounts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    comment_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    state: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="processing", server_default="processing"
+    )
+
+
+class LegacyPromptRequest(TimestampMixin, Base):
+    """Durable legacy-bot prompt-request log (replaces requests.json).
+
+    One row per successful prompt-request flow; the latest row for a
+    ``request_key`` drives the 10-minute cooldown. Kept to the newest 5000
+    rows, mirroring the JSON cap.
+    """
+
+    __tablename__ = "legacy_prompt_requests"
+    __table_args__ = (
+        Index(
+            "ix_legacy_prompt_requests_account_key_created",
+            "instagram_account_id",
+            "request_key",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    instagram_account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("instagram_accounts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    request_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    media_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    comment_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    commenter_id: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    username: Mapped[str | None] = mapped_column(String(255))
+    page_url: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+
+class LegacyPendingAccess(TimestampMixin, Base):
+    """Durable legacy-bot pending DM access (replaces pending_access.json).
+
+    One row per user waiting for the prompt page DM; cleared when the DM is
+    sent or the user replies. Scoped to the legacy Instagram account.
+    """
+
+    __tablename__ = "legacy_pending_access"
+    __table_args__ = (
+        UniqueConstraint(
+            "instagram_account_id", "recipient_id", name="uq_legacy_pending_account_recipient"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    instagram_account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("instagram_accounts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    recipient_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    page_url: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class LegacyPromptPost(TimestampMixin, Base):
+    """Durable legacy-bot prompt cache (replaces posts.json).
+
+    One row per media item whose prompts were extracted by Gemini, so the
+    same post is never re-extracted after a restart. Mirrors the JSON shape
+    (media_id, permalink, cover_url, prompts, prompt_count).
+    """
+
+    __tablename__ = "legacy_prompt_posts"
+    __table_args__ = (
+        UniqueConstraint(
+            "instagram_account_id", "media_id", name="uq_legacy_prompt_post_account_media"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    instagram_account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("instagram_accounts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    media_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    permalink: Mapped[str | None] = mapped_column(Text)
+    cover_url: Mapped[str | None] = mapped_column(Text)
+    prompts: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False)
+    prompt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class UserGeminiKey(TimestampMixin, Base):
+    """One BYOK Gemini API key per user, Fernet-encrypted (see gemini_keys.py).
+
+    When a user has an active key, their Gemini calls use it instead of the
+    shared ``GEMINI_API_KEY`` env key; when they have none, the shared key
+    is the fallback. ``key_hint`` holds only the last 4 characters for
+    display (never enough to reconstruct the key).
+    """
+
+    __tablename__ = "user_gemini_keys"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    key_ciphertext: Mapped[str | None] = mapped_column(Text)
+    encryption_key_id: Mapped[str | None] = mapped_column(String(255))
+    key_hint: Mapped[str | None] = mapped_column(String(8))
+    key_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="active", server_default="active"
+    )
+    last_validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(128))
