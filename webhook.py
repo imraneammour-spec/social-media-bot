@@ -244,6 +244,29 @@ def _sanitized_gemini_error(error):
     detail = re.sub(r"AIza[0-9A-Za-z_\-]{20,}", "[API_KEY_REDACTED]", detail)
     return f"{type(error).__name__}: {detail}" if detail else type(error).__name__
 
+
+def _gemini_generate_with_retry(generate, *, attempts=3, base_delay=5.0):
+    """Call generate() (a zero-arg callable), retrying transient 503s.
+
+    Gemini returns 503 UNAVAILABLE when a model is under high demand and
+    says to try again later, so retry those with backoff. Other errors
+    (bad key, unknown model, bad request) are permanent and raise at once.
+    """
+    last_error = None
+    for attempt in range(attempts):
+        try:
+            return generate()
+        except Exception as error:
+            last_error = error
+            detail = _sanitized_gemini_error(error)
+            transient = "503" in detail or type(error).__name__ == "ServerError"
+            if not transient or attempt == attempts - 1:
+                raise
+            delay = base_delay * (2 ** attempt)
+            print(f"GEMINI RETRY: attempt {attempt + 1} failed ({detail}); retrying in {delay:.0f}s")
+            time.sleep(delay)
+    raise last_error
+
 from filelock import FileLock
 STATE_LOCK = FileLock(str(DATA_DIR / ".state.lock"), timeout=60)
 MEDIA_LOCKS_LOCK = threading.Lock()
@@ -1364,16 +1387,11 @@ Comment: {source_text}
 
     try:
 
-        response = (
-            GEMINI_CLIENT
-            .models
-            .generate_content(
-
+        response = _gemini_generate_with_retry(
+            lambda: GEMINI_CLIENT.models.generate_content(
                 model=GEMINI_MODEL,
-
                 contents=instructions,
-
-                config=types.GenerateContentConfig()
+                config=types.GenerateContentConfig(),
             )
         )
 
@@ -3844,10 +3862,12 @@ Return only the reply text, under {SMART_REPLY_MAX_LENGTH} characters.
 Comment: {source_text}
 """
     try:
-        response = GEMINI_CLIENT.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=instructions,
-            config=types.GenerateContentConfig(),
+        response = _gemini_generate_with_retry(
+            lambda: GEMINI_CLIENT.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=instructions,
+                config=types.GenerateContentConfig(),
+            )
         )
         reply = re.sub(r"\s+", " ", str(response.text or "")).strip().strip('"\'')
         return reply[:SMART_REPLY_MAX_LENGTH].rstrip()
