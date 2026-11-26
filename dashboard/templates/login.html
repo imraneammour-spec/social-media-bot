@@ -1,32 +1,19 @@
-<!doctype html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Sign in | Imran Prompts</title>
-    <style>
-        :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; background: #0b0b0e; color: #f5f5f7; }
-        body { min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 24px; box-sizing: border-box; }
-        main { width: min(100%, 420px); background: #16161b; border: 1px solid #2b2b33; border-radius: 18px; padding: 30px; }
-        h1 { margin: 0 0 8px; } p { color: #b8bbc7; line-height: 1.5; }
-        label { display: grid; gap: 7px; margin-top: 16px; font-weight: 700; }
-        input { border: 1px solid #3a3a44; border-radius: 9px; padding: 12px; color: inherit; background: #0f0f13; font: inherit; }
-        button { margin-top: 22px; width: 100%; border: 0; border-radius: 9px; padding: 12px; background: #bc83ff; color: #170524; font-weight: 800; font: inherit; cursor: pointer; }
-        .error { margin: 16px 0 0; border-left: 3px solid #ff718c; padding-left: 10px; color: #ffbdc8; } a { color: #d5afff; }
-    </style>
-</head>
-<body>
-    <main>
-        <h1>Welcome back</h1>
-        <p>Sign in to access your workspace.</p>
-        {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
-        <form method="post" action="{{ url_for('login') }}">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <label>Email<input name="email" type="email" autocomplete="email" required></label>
-            <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
-            <button type="submit">Sign in</button>
-        </form>
-        <p>Need an account? <a href="{{ url_for('register') }}">Create one</a>.</p>
-    </main>
-</body>
-</html>
+﻿{% extends "auth_shell.html" %}
+{% block auth_title %}{{ t('Welcome back') }} | {{ t('product_name') }}{% endblock %}
+{% block auth_content %}
+<div class="auth-card-header">
+    <h1>{{ t('Welcome back') }}</h1>
+    <p class="auth-lede">{{ t('Sign in to continue to your Postenza workspace.') }}</p>
+</div>
+{% if error %}
+<p class="auth-alert" role="alert">{{ t(error) }}</p>
+{% endif %}
+<form class="auth-form" method="post" action="{{ url_for('login') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>{{ t('Email') }}<input type="email" name="email" autocomplete="email" required maxlength="320"></label>
+    <label>{{ t('Password') }}<input type="password" name="password" autocomplete="current-password" required></label>
+    <button class="button button-primary" type="submit">{{ t('Sign in') }}</button>
+</form>
+<p class="auth-note">{{ t('Need an account?') }} <a href="{{ url_for('register') }}">{{ t('Create one') }}</a></p>
+<p class="auth-note">{{ t('Need help accessing your account? Contact support at {email}.', email=support_email) }}</p>
+{% endblock %}

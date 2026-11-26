@@ -7,5 +7,23 @@ pending_access.json
 pending_prompts.json
 processed_comments.json
 
+# Runtime legacy-bot state (Postgres is the source of truth; JSON is a
+# local/dev fallback only). Never commit state that the app writes at runtime.
+data/*.json
+posts.json
+
 .DS_Store
 Thumbs.db
+
+.recovery-venv/
+.recovery/
+backups/
+.pytest_cache/
+.idea/
+*.db
+*.sqlite*
+.env.*
+!.env.example
+
+.venv-global/
+.venv-test/

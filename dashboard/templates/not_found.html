@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="{{ locale.code }}" dir="{{ locale.direction }}">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#081633">
+    <title>{{ t('landing_not_found_title') }} | Postenza</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='brand/postenza-favicon-32.png') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='landing.css') }}">
+</head>
+<body id="top">
+    <a class="skip-link" href="#main-content">{{ t('Skip to content') }}</a>
+    <header class="site-header">
+        <nav class="site-nav landing-container" aria-label="Postenza">
+            <a class="site-brand" href="/"><img src="{{ url_for('static', filename='brand/postenza-logo-light.png') }}" alt="Postenza"></a>
+        </nav>
+    </header>
+    <main id="main-content">
+        <section class="section landing-container">
+            <p class="eyebrow">404</p>
+            <h1>{{ t('landing_not_found_title') }}</h1>
+            <p class="hero-lede">{{ t('landing_not_found_copy') }}</p>
+            <div class="button-row"><a class="button button-primary" href="/">{{ t('landing_back_to_postenza') }}</a></div>
+        </section>
+    </main>
+</body>
+</html>

@@ -1,0 +1,19 @@
+{% extends "app_base.html" %}
+{% block title %}{{ t('Activity') }}{% endblock %}
+{% block heading %}{{ t('Activity') }}{% endblock %}
+{% block content %}
+{% set engagement_section = 'activity' %}{% include "_engagement_tabs.html" %}
+<section class="page-intro"><p class="eyebrow">{{ t('Engagement') }}</p><h2>{{ t('Engagement activity') }}</h2><p class="muted">{{ t('Comments, messages, smart replies, and follow-up events for the selected Instagram account.') }}</p></section>
+<form method="get" action="{{ url_for('tenant_dashboard.app_activity') }}" class="card activity-filters" aria-label="{{ t('Activity filters') }}">
+    <input type="hidden" name="account" value="{{ selected_account.selection_ref }}">
+    <label>{{ t('Show') }}
+        <select name="event_type">
+            {% for value, label in activity_filters %}<option value="{{ value }}" {% if selected_event_type == value %}selected{% endif %}>{{ t(label) }}</option>{% endfor %}
+        </select>
+    </label>
+    <button class="button button-primary" type="submit">{{ t('Apply filter') }}</button>
+</form>
+<section class="page-stack" aria-label="{{ t('Account activity') }}">
+{% for item in activity %}<article class="card activity-card activity-feed-item"><span class="activity-icon" aria-hidden="true">{% if 'Comment' in item.type %}◆{% elif 'Message' in item.type %}✦{% elif 'Follow-up' in item.type %}→{% else %}✺{% endif %}</span><div><h2>{{ t(item.type) }}</h2><p class="muted">{% if item.username %}{{ display_username(item.username) }} · {% endif %}<span class="status-pill {% if item.state == 'Completed' %}status-success{% elif item.state == 'Waiting' %}status-warning{% elif item.state == 'Unavailable' or item.state == 'Failed' %}status-error{% else %}status-neutral{% endif %}">{{ t(item.state) }}</span></p><p class="muted">{{ display_time(item.occurred_at) }}</p></div></article>{% else %}<p class="empty-state">{{ t('No activity yet. New Instagram activity will appear here when engagement automation is activated.') }}</p>{% endfor %}
+</section>
+{% endblock %}

@@ -36,6 +36,7 @@ class LandingPageTest(unittest.TestCase):
 
     def tearDown(self):
         sys.modules.pop(self.module_name, None)
+        sys.modules.pop("legacy_bot", None)
         self.temp_dir.cleanup()
 
     def _load_webhook_module(self):
@@ -59,6 +60,7 @@ class LandingPageTest(unittest.TestCase):
             patch("threading.Thread", _NoopThread),
             redirect_stdout(startup_output),
         ):
+            sys.modules.pop("legacy_bot", None)  # fresh DATA_DIR
             spec.loader.exec_module(module)
         self.startup_output = startup_output.getvalue()
         return module
@@ -99,6 +101,42 @@ class LandingPageTest(unittest.TestCase):
             '<div class="product-stage"', 1
         )[0]
         self.assertNotIn("Social media, on autopilot.", hero)
+
+    def test_landing_footer_legal_column_is_not_labelled_faq(self):
+        page = self.client.get("/").get_data(as_text=True)
+        footer = page.split("<footer", 1)[1]
+        self.assertIn("<b>Legal</b>", footer)
+        self.assertNotIn("<b>FAQ</b>", footer)
+
+    def test_landing_tagline_is_the_same_english_line_in_every_locale(self):
+        for locale in ("en", "fr", "ar"):
+            with self.subTest(locale=locale):
+                page = self._page_for_locale(locale)
+                self.assertEqual(page.count("Social media, on autopilot."), 1)
+
+    def test_landing_hero_mock_is_a_labelled_example_without_an_ai_content_assistant_card(self):
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertIn("Example workspace with sample data.", page)
+        self.assertIn("Top post", page)
+        self.assertIn("248 likes", page)
+        self.assertNotIn("AI content assistant", page)
+        self.assertNotIn("content assistant", page.lower())
+
+    def test_unknown_pages_get_the_branded_postenza_404(self):
+        for path in ("/no-such-page", "/app/no-such-page"):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                page = response.get_data(as_text=True)
+                self.assertEqual(response.status_code, 404)
+                self.assertIn("Page not found", page)
+                self.assertIn("Back to Postenza", page)
+                self.assertIn('href="/"', page)
+                self.assertIn("postenza-logo-light.png", page)
+
+    def test_app_onboarding_redirects_to_onboarding(self):
+        response = self.client.get("/app/onboarding", follow_redirects=False)
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["Location"], "/onboarding")
 
     def test_health_is_a_safe_liveness_response(self):
         response = self.client.get("/health")
@@ -228,7 +266,7 @@ class LandingPageTest(unittest.TestCase):
 
         self.assertEqual(page.count(verification_tag), 1)
 
-    def test_sitemap_exposes_only_the_canonical_public_homepage(self):
+    def test_sitemap_exposes_all_canonical_public_pages(self):
         response = self.client.get("/sitemap.xml")
 
         self.assertEqual(response.status_code, 200)
@@ -238,7 +276,18 @@ class LandingPageTest(unittest.TestCase):
             element.text
             for element in root.findall("{http://www.sitemaps.org/schemas/sitemap/0.9}url/{http://www.sitemaps.org/schemas/sitemap/0.9}loc")
         ]
-        self.assertEqual(locations, ["https://postenza.app/"])
+        self.assertEqual(
+            locations,
+            [
+                "https://postenza.app/",
+                "https://postenza.app/features/instagram-scheduling",
+                "https://postenza.app/features/instagram-automation",
+                "https://postenza.app/pricing",
+                "https://postenza.app/privacy",
+                "https://postenza.app/terms",
+                "https://postenza.app/deletion",
+            ],
+        )
 
     def test_robots_allows_the_homepage_and_protects_private_routes(self):
         response = self.client.get("/robots.txt")
@@ -250,12 +299,16 @@ class LandingPageTest(unittest.TestCase):
             "Disallow: /login\n"
             "Disallow: /register\n"
             "Disallow: /logout\n"
+            "Disallow: /onboarding\n"
+            "Disallow: /auth/\n"
             "Disallow: /connect/\n"
             "Disallow: /disconnect/\n"
             "Disallow: /oauth/\n"
             "Disallow: /webhook\n"
+            "Disallow: /billing/\n"
             "Disallow: /api/\n"
             "Disallow: /health\n"
+            "Disallow: /ready\n"
             "Disallow: /p/\n"
             "\n"
             "Sitemap: https://postenza.app/sitemap.xml\n"

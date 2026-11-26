@@ -23,6 +23,7 @@ TRANSLATIONS = {
         "Billing": "Billing", "product_name": "Postenza",
         "overview": "Overview", "content": "Content", "calendar": "Calendar",
         "engagement": "Engagement", "automation": "Automation", "instagram": "Instagram",
+        "Settings": "Settings",
         "sign_out": "Sign out", "instagram_workspace": "Instagram workspace",
         "account": "Instagram account", "language": "Language",
         "automation_on": "Automation is on", "automation_off": "Automation is off",
@@ -32,19 +33,21 @@ TRANSLATIONS = {
         "product_name": "Postenza",
         "Billing": "Facturation", "overview": "Vue d’ensemble", "content": "Contenu", "calendar": "Calendrier",
         "engagement": "Interactions", "automation": "Automatisation", "instagram": "Instagram",
+        "Settings": "Paramètres",
         "sign_out": "Se déconnecter", "instagram_workspace": "Espace Instagram",
         "account": "Compte Instagram", "language": "Langue",
         "automation_on": "L’automatisation est activée", "automation_off": "L’automatisation est désactivée",
-        "social_tagline": "Les réseaux sociaux en pilote automatique.",
+        "social_tagline": "Social media, on autopilot.",
     },
     "ar": {
         "product_name": "Postenza",
         "Billing": "الفوترة", "overview": "نظرة عامة", "content": "المحتوى", "calendar": "التقويم",
         "engagement": "التفاعل", "automation": "الأتمتة", "instagram": "إنستغرام",
+        "Settings": "الإعدادات",
         "sign_out": "تسجيل الخروج", "instagram_workspace": "مساحة عمل إنستغرام",
         "account": "حساب إنستغرام", "language": "اللغة",
         "automation_on": "الأتمتة مفعّلة", "automation_off": "الأتمتة متوقفة",
-        "social_tagline": "وسائل التواصل الاجتماعي، على الطيار الآلي.",
+        "social_tagline": "Social media, on autopilot.",
     },
 }
 
@@ -63,6 +66,7 @@ LANDING_TRANSLATIONS = {
         "landing_connection_label": "Instagram connection", "landing_connection_title": "Keep account status clear", "landing_connection_copy": "Connect a professional Instagram account, see its connection status, and reconnect or disconnect when needed.", "landing_faq_title": "Frequently asked questions",
         "landing_faq_accounts_q": "What Instagram accounts can I connect?", "landing_faq_accounts_a": "Postenza is built for professional Instagram accounts supported by the connection flow.", "landing_faq_schedule_q": "Can Postenza schedule posts automatically?", "landing_faq_schedule_a": "Yes. You can schedule supported image posts for automatic publishing.", "landing_faq_replies_q": "Does Postenza reply to comments automatically?", "landing_faq_replies_a": "It can when you enable and configure the relevant automation controls.", "landing_faq_off_q": "Can I turn automation off?", "landing_faq_off_a": "Yes. Automation controls remain configurable for each connected account.", "landing_faq_multi_q": "Does Postenza support multiple Instagram accounts?", "landing_faq_multi_a": "You can switch between connected Instagram accounts in your workspace.", "landing_faq_video_q": "Does Postenza support video or Reels yet?", "landing_faq_video_a": "Not in the current publishing workflow. Image publishing is supported today.",
         "landing_final_title": "Ready to put your Instagram on autopilot?", "landing_final_copy": "Start with a clearer workspace for content and engagement.", "landing_product": "Product", "landing_privacy": "Privacy", "landing_terms": "Terms", "landing_data_deletion": "Data Deletion",
+        "landing_example": "Example", "landing_example_note": "Example workspace with sample data.", "landing_top_post": "Top post", "landing_top_post_stats": "248 likes · 32 comments", "landing_not_found_title": "Page not found", "landing_not_found_copy": "This page does not exist or was moved.", "landing_back_to_postenza": "Back to Postenza",
     },
     "fr": {
         "landing_title": "Postenza | L’automatisation Instagram simplifiée", "landing_description": "Planifiez des publications image, automatisez l’engagement Instagram et suivez l’activité des messages dans un seul espace Postenza.", "landing_features": "Fonctionnalités", "landing_how_it_works": "Comment ça marche", "landing_automation": "Automatisation", "landing_faq": "FAQ", "landing_login": "Connexion", "landing_get_started": "Commencer", "landing_menu": "Ouvrir la navigation", "landing_close_menu": "Fermer la navigation", "landing_status_on": "Activée",
@@ -73,6 +77,7 @@ LANDING_TRANSLATIONS = {
         "landing_automation_title": "Rendez chaque réponse intentionnelle", "landing_automation_copy": "Choisissez les contrôles actifs. Postenza organise les réponses publiques, messages privés, suivis et réponses intelligentes sans vous enlever le contrôle.", "landing_comment": "Commentaire ou mot-clé", "landing_public_reply": "Réponse publique", "landing_private": "Message privé facultatif", "landing_followup": "Suivi facultatif", "landing_smart_replies": "Réponses intelligentes", "landing_connection_label": "Connexion Instagram", "landing_connection_title": "Gardez un statut de compte clair", "landing_connection_copy": "Connectez un compte Instagram professionnel, consultez son statut, reconnectez-le ou déconnectez-le si nécessaire.", "landing_faq_title": "Questions fréquentes",
         "landing_faq_accounts_q": "Quels comptes Instagram puis-je connecter ?", "landing_faq_accounts_a": "Postenza est conçu pour les comptes Instagram professionnels pris en charge par le flux de connexion.", "landing_faq_schedule_q": "Postenza peut-il planifier des publications automatiquement ?", "landing_faq_schedule_a": "Oui. Vous pouvez planifier des publications image compatibles pour une publication automatique.", "landing_faq_replies_q": "Postenza répond-il automatiquement aux commentaires ?", "landing_faq_replies_a": "Il le peut lorsque vous activez et configurez les contrôles d’automatisation correspondants.", "landing_faq_off_q": "Puis-je désactiver l’automatisation ?", "landing_faq_off_a": "Oui. Les contrôles restent configurables pour chaque compte connecté.", "landing_faq_multi_q": "Postenza prend-il en charge plusieurs comptes Instagram ?", "landing_faq_multi_a": "Vous pouvez basculer entre les comptes Instagram connectés dans votre espace.", "landing_faq_video_q": "Postenza prend-il déjà en charge les vidéos ou Reels ?", "landing_faq_video_a": "Pas dans le flux de publication actuel. La publication d’images est prise en charge aujourd’hui.",
         "landing_final_title": "Prêt à mettre votre Instagram en pilote automatique ?", "landing_final_copy": "Commencez avec un espace plus clair pour votre contenu et vos interactions.", "landing_product": "Produit", "landing_privacy": "Confidentialité", "landing_terms": "Conditions", "landing_data_deletion": "Suppression des données",
+        "landing_example": "Exemple", "landing_example_note": "Exemple d’espace de travail avec des données fictives.", "landing_top_post": "Publication la plus populaire", "landing_top_post_stats": "248 J’aime · 32 commentaires", "landing_not_found_title": "Page introuvable", "landing_not_found_copy": "Cette page n’existe pas ou a été déplacée.", "landing_back_to_postenza": "Retour à Postenza",
     },
     "ar": {
         "landing_title": "Postenza | أتمتة إنستغرام ببساطة", "landing_description": "جدول منشورات الصور، وأتمت تفاعل إنستغرام، وتابع نشاط الرسائل من مساحة Postenza واحدة.", "landing_features": "الميزات", "landing_how_it_works": "كيف يعمل", "landing_automation": "الأتمتة", "landing_faq": "الأسئلة الشائعة", "landing_login": "تسجيل الدخول", "landing_get_started": "ابدأ الآن", "landing_menu": "فتح التنقل", "landing_close_menu": "إغلاق التنقل", "landing_status_on": "مفعّلة",
@@ -83,6 +88,7 @@ LANDING_TRANSLATIONS = {
         "landing_automation_title": "اجعل كل رد مقصوداً", "landing_automation_copy": "اختر عناصر التحكم المفعلة. ينظم Postenza الردود العامة والرسائل الخاصة والمتابعات والردود الذكية دون أن يسلبك التحكم.", "landing_comment": "تعليق أو كلمة مفتاحية", "landing_public_reply": "رد علني", "landing_private": "رسالة خاصة اختيارية", "landing_followup": "متابعة اختيارية", "landing_smart_replies": "ردود ذكية", "landing_connection_label": "اتصال إنستغرام", "landing_connection_title": "حافظ على وضوح حالة الحساب", "landing_connection_copy": "صل حساب إنستغرام احترافياً، واطلع على حالة الاتصال، وأعد الاتصال أو افصله عند الحاجة.", "landing_faq_title": "الأسئلة الشائعة",
         "landing_faq_accounts_q": "ما حسابات إنستغرام التي يمكنني وصلها؟", "landing_faq_accounts_a": "Postenza مصمم لحسابات إنستغرام الاحترافية التي يدعمها مسار الاتصال.", "landing_faq_schedule_q": "هل يستطيع Postenza جدولة المنشورات تلقائياً؟", "landing_faq_schedule_a": "نعم، يمكنك جدولة منشورات الصور المدعومة للنشر التلقائي.", "landing_faq_replies_q": "هل يرد Postenza على التعليقات تلقائياً؟", "landing_faq_replies_a": "يمكنه ذلك عند تفعيل وضبط عناصر تحكم الأتمتة ذات الصلة.", "landing_faq_off_q": "هل يمكنني إيقاف الأتمتة؟", "landing_faq_off_a": "نعم، تبقى عناصر التحكم قابلة للضبط لكل حساب متصل.", "landing_faq_multi_q": "هل يدعم Postenza حسابات إنستغرام متعددة؟", "landing_faq_multi_a": "يمكنك التبديل بين حسابات إنستغرام المتصلة في مساحة عملك.", "landing_faq_video_q": "هل يدعم Postenza الفيديو أو Reels حالياً؟", "landing_faq_video_a": "ليس في سير النشر الحالي. نشر الصور مدعوم اليوم.",
         "landing_final_title": "هل أنت مستعد لوضع إنستغرام على الطيار الآلي؟", "landing_final_copy": "ابدأ بمساحة أوضح للمحتوى والتفاعل.", "landing_product": "المنتج", "landing_privacy": "الخصوصية", "landing_terms": "الشروط", "landing_data_deletion": "حذف البيانات",
+        "landing_example": "مثال", "landing_example_note": "مساحة عمل تجريبية ببيانات نموذجية.", "landing_top_post": "أفضل منشور", "landing_top_post_stats": "248 إعجابًا · 32 تعليقًا", "landing_not_found_title": "الصفحة غير موجودة", "landing_not_found_copy": "هذه الصفحة غير موجودة أو تم نقلها.", "landing_back_to_postenza": "العودة إلى Postenza",
     },
 }
 

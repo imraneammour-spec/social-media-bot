@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 
 from flask import Flask, session
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from werkzeug.security import generate_password_hash
 
@@ -19,7 +20,7 @@ from auth import (
     validate_csrf_token,
     verify_meta_signature,
 )
-from database.models import Base, InstagramAccount, User
+from database.models import Base, InstagramAccount, User, UserOnboardingProfile
 
 
 class AuthenticationCoreTest(unittest.TestCase):
@@ -94,6 +95,31 @@ class AuthenticationCoreTest(unittest.TestCase):
             self.assertTrue(current_user_has_legacy_workspace_access())
             self.assertEqual(set(session), {"user_id"})
 
+    def test_user_with_another_account_cannot_access_legacy_workspace(self):
+        self._create_owner()
+        with self.Session.begin() as db_session:
+            another_user = User(
+                email="another-owner@example.test",
+                password_hash=generate_password_hash("correct horse battery staple"),
+            )
+            db_session.add(another_user)
+            db_session.flush()
+            db_session.add(
+                InstagramAccount(
+                    user_id=another_user.id,
+                    instagram_user_id="another-account-id",
+                )
+            )
+            another_user_id = another_user.id
+
+        client = self.app.test_client()
+        with client.session_transaction() as browser_session:
+            browser_session["user_id"] = str(another_user_id)
+            browser_session["_csrf_token"] = "other-account-csrf-token-with-32-byte-minimum"
+
+        self.assertEqual(client.get("/dashboard").status_code, 302)
+        self.assertEqual(client.post("/api/test-mutation").status_code, 403)
+
     def test_invalid_session_user_id_is_cleared(self):
         with self.app.test_request_context("/"):
             session["user_id"] = "not-a-uuid"
@@ -101,7 +127,7 @@ class AuthenticationCoreTest(unittest.TestCase):
             self.assertIsNone(get_current_user())
             self.assertNotIn("user_id", session)
 
-    def test_register_creates_non_owner_and_redirects_to_onboarding(self):
+    def test_register_creates_user_and_incomplete_onboarding_profile_atomically(self):
         client = self.app.test_client()
         with client.session_transaction() as browser_session:
             browser_session["_csrf_token"] = "register-csrf-token"
@@ -123,8 +149,91 @@ class AuthenticationCoreTest(unittest.TestCase):
             user = db_session.scalar(select(User).where(User.email == "new@example.test"))
             self.assertIsNotNone(user)
             self.assertNotEqual(user.password_hash, "correct horse battery staple")
+            profile = db_session.get(UserOnboardingProfile, user.id)
+            self.assertIsNotNone(profile)
+            self.assertIsNone(profile.use_case)
+            self.assertIsNone(profile.main_goal)
+            self.assertIsNone(profile.onboarding_source)
+            self.assertIsNone(profile.selected_plan)
+            self.assertIsNone(profile.completed_at)
         self.assertEqual(client.post("/api/test-mutation").status_code, 403)
         self.assertTrue(client.get("/dashboard").headers["Location"].endswith("/onboarding"))
+
+    def test_registration_profile_failure_rolls_back_user_and_does_not_authenticate(self):
+        client = self.app.test_client()
+        with client.session_transaction() as browser_session:
+            browser_session["_csrf_token"] = "register-profile-failure-csrf-token"
+
+        def reject_profile_insert(*_args, **_kwargs):
+            raise IntegrityError(
+                "INSERT INTO user_onboarding_profiles", {}, RuntimeError("unavailable")
+            )
+
+        event.listen(UserOnboardingProfile, "before_insert", reject_profile_insert)
+        try:
+            response = client.post(
+                "/register",
+                data={
+                    "csrf_token": "register-profile-failure-csrf-token",
+                    "display_name": "Rollback user",
+                    "email": "rollback@example.test",
+                    "password": "correct horse battery staple",
+                },
+                follow_redirects=False,
+            )
+        finally:
+            event.remove(UserOnboardingProfile, "before_insert", reject_profile_insert)
+
+        self.assertEqual(response.status_code, 503)
+        with self.Session() as db_session:
+            self.assertIsNone(
+                db_session.scalar(
+                    select(User).where(User.email == "rollback@example.test")
+                )
+            )
+            self.assertEqual(
+                db_session.query(UserOnboardingProfile).count(), 0
+            )
+        with client.session_transaction() as browser_session:
+            self.assertNotIn("user_id", browser_session)
+
+    def test_connected_incomplete_user_login_is_still_sent_to_onboarding(self):
+        with self.Session.begin() as db_session:
+            user = User(
+                email="connected-incomplete@example.test",
+                display_name="Incomplete",
+                password_hash=generate_password_hash("correct horse battery staple"),
+            )
+            db_session.add(user)
+            db_session.flush()
+            db_session.add_all(
+                [
+                    UserOnboardingProfile(user_id=user.id),
+                    InstagramAccount(
+                        user_id=user.id,
+                        instagram_user_id="connected-incomplete-account",
+                        username="connected_incomplete",
+                        connection_status="connected",
+                    ),
+                ]
+            )
+
+        client = self.app.test_client()
+        csrf = "connected-incomplete-login-csrf-token"
+        with client.session_transaction() as browser_session:
+            browser_session["_csrf_token"] = csrf
+        response = client.post(
+            "/login",
+            data={
+                "csrf_token": csrf,
+                "email": "connected-incomplete@example.test",
+                "password": "correct horse battery staple",
+            },
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.headers["Location"].endswith("/onboarding"))
 
     def test_login_and_logout_use_csrf_and_rotate_authenticated_session(self):
         owner = self._create_owner()
@@ -144,6 +253,7 @@ class AuthenticationCoreTest(unittest.TestCase):
         )
 
         self.assertEqual(login.status_code, 302)
+        # The legacy owner lands on the legacy dashboard, not onboarding.
         self.assertTrue(login.headers["Location"].endswith("/dashboard"))
         with client.session_transaction() as browser_session:
             self.assertEqual(browser_session["user_id"], str(owner.id))
@@ -155,11 +265,147 @@ class AuthenticationCoreTest(unittest.TestCase):
         with client.session_transaction() as browser_session:
             self.assertNotIn("user_id", browser_session)
 
+    def test_connected_user_login_redirects_to_tenant_app(self):
+        """A normal OAuth-ready account must never re-enter the legacy workspace."""
+
+        with self.Session.begin() as db_session:
+            user = User(
+                email="connected@example.test",
+                display_name="Connected user",
+                password_hash=generate_password_hash("correct horse battery staple"),
+            )
+            db_session.add(user)
+            db_session.flush()
+            db_session.add(
+                InstagramAccount(
+                    user_id=user.id,
+                    instagram_user_id="connected-account-id",
+                    connection_status="connected",
+                )
+            )
+            user_id = user.id
+
+        client = self.app.test_client()
+        with client.session_transaction() as browser_session:
+            browser_session["_csrf_token"] = "connected-login-csrf-token"
+
+        response = client.post(
+            "/login",
+            data={
+                "csrf_token": "connected-login-csrf-token",
+                "email": "connected@example.test",
+                "password": "correct horse battery staple",
+            },
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.headers["Location"].endswith("/app"))
+        with client.session_transaction() as browser_session:
+            self.assertEqual(browser_session["user_id"], str(user_id))
+
+    def test_disconnected_user_login_redirects_to_onboarding(self):
+        with self.Session.begin() as db_session:
+            user = User(
+                email="disconnected@example.test",
+                display_name="Disconnected user",
+                password_hash=generate_password_hash("correct horse battery staple"),
+            )
+            db_session.add(user)
+            db_session.flush()
+            db_session.add(
+                InstagramAccount(
+                    user_id=user.id,
+                    instagram_user_id="disconnected-account-id",
+                    connection_status="disconnected",
+                )
+            )
+
+        client = self.app.test_client()
+        with client.session_transaction() as browser_session:
+            browser_session["_csrf_token"] = "disconnected-login-csrf-token"
+
+        response = client.post(
+            "/login",
+            data={
+                "csrf_token": "disconnected-login-csrf-token",
+                "email": "disconnected@example.test",
+                "password": "correct horse battery staple",
+            },
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.headers["Location"].endswith("/onboarding"))
+
     def test_auth_forms_render_a_session_bound_csrf_token(self):
         response = self.app.test_client().get("/register")
 
         self.assertEqual(response.status_code, 200)
         self.assertIn(b'name="csrf_token"', response.data)
+
+    def test_auth_pages_render_postenza_branding_and_favicon(self):
+        """A rebrand must cover every public account-access page."""
+        client = self.app.test_client()
+
+        for path in ("/login", "/register"):
+            page = client.get(path).get_data(as_text=True)
+            self.assertIn("Postenza", page)
+            self.assertIn("postenza-logo-light.png", page)
+            self.assertIn("postenza-favicon.png", page)
+            self.assertIn('sizes="16x16" href="/static/brand/postenza-favicon-16.png"', page)
+            self.assertIn('sizes="32x32" href="/static/brand/postenza-favicon-32.png"', page)
+            favicon_markup = page.split("<head>", 1)[1].split("</head>", 1)[0]
+            self.assertNotIn("postenza-logo", favicon_markup)
+            self.assertIn('alt="Postenza"', page)
+            self.assertNotIn("Sociora", page)
+
+    def test_auth_pages_follow_session_locale_and_fit_mobile_widths(self):
+        client = self.app.test_client()
+        expected = {
+            "fr": ("ltr", "Bienvenue", "Créez votre compte"),
+            "ar": ("rtl", "مرحبًا بعودتك", "أنشئ حسابك"),
+        }
+
+        for locale, (direction, login_text, register_text) in expected.items():
+            with client.session_transaction() as browser_session:
+                browser_session["postenza_locale"] = locale
+            login_page = client.get("/login").get_data(as_text=True)
+            register_page = client.get("/register").get_data(as_text=True)
+            self.assertIn(f'<html lang="{locale}" dir="{direction}">', login_page)
+            self.assertIn(f'<html lang="{locale}" dir="{direction}">', register_page)
+            self.assertIn(login_text, login_page)
+            self.assertIn(register_text, register_page)
+
+        stylesheet = (
+            Path(__file__).resolve().parents[1] / "dashboard" / "static" / "auth.css"
+        ).read_text(encoding="utf-8")
+        self.assertIn("* { box-sizing: border-box; }", stylesheet)
+        self.assertIn("@media (max-width: 560px)", stylesheet)
+        for path in ("/login", "/register"):
+            page = client.get(path).get_data(as_text=True)
+            self.assertIn("auth.css", page)
+            self.assertIn(":focus-visible", stylesheet)
+
+    def test_auth_validation_messages_follow_session_locale(self):
+        client = self.app.test_client()
+        with client.session_transaction() as browser_session:
+            browser_session["postenza_locale"] = "fr"
+            browser_session["_csrf_token"] = "localized-auth-csrf-token-with-32-bytes"
+
+        invalid_csrf = client.post("/login", data={"csrf_token": "wrong"})
+        invalid_registration = client.post(
+            "/register",
+            data={
+                "csrf_token": "localized-auth-csrf-token-with-32-bytes",
+                "display_name": "",
+                "email": "bad",
+                "password": "short",
+            },
+        )
+
+        self.assertIn("Jeton du formulaire invalide", invalid_csrf.get_data(as_text=True))
+        self.assertIn("Saisissez un nom affiché", invalid_registration.get_data(as_text=True))
 
     def test_private_api_requires_legacy_owner_and_csrf(self):
         owner = self._create_owner()
