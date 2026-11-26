@@ -7,8 +7,8 @@ import hmac
 import threading
 import uuid
 import time
+from urllib.parse import urlsplit, urlunsplit
 from pathlib import Path
-from urllib.parse import urlsplit
 from io import BytesIO
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
@@ -17,29 +17,73 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 
 from dotenv import load_dotenv
-from flask import Flask, redirect, request, send_file, Response, session, url_for, render_template
+from flask import Flask, request, send_file, Response, url_for, render_template, redirect, session
 from werkzeug.utils import secure_filename
 
 from database.cli import register_database_commands
 from database.config import database_url_from_environment
+from database.account_runtime import (
+    InstagramAccountRoute,
+    RuntimeAccountRouteUnavailableError,
+    resolve_instagram_account_route,
+)
+from database.oauth_engagement import (
+    claim_oauth_event,
+    complete_oauth_event,
+    consume_oauth_direct_message_interaction,
+    get_oauth_pending_access,
+    get_oauth_prompt_post,
+    get_oauth_prompt_post_by_public_id,
+    oauth_prompt_post,
+    oauth_request_on_cooldown,
+    oauth_smart_reply_allowed,
+    pop_oauth_pending_access,
+    record_oauth_request,
+    record_oauth_smart_reply,
+    record_oauth_direct_message_interaction,
+    save_oauth_pending_access,
+)
+from database.oauth_graph import (
+    lookup_oauth_media,
+    oauth_engagement_capability_state,
+    send_oauth_delayed_followup,
+    send_oauth_private_comment_reply,
+    send_oauth_private_access_reply,
+    send_oauth_prompt_access_button,
+    send_oauth_public_comment_reply,
+)
+from database.oauth_followups import (
+    DIRECT_MESSAGE_RESPONSE_WINDOW,
+    cancel_oauth_followups,
+    claim_due_oauth_followups,
+    finalize_oauth_followup_failure,
+    finalize_oauth_followup_success,
+    oauth_followup_account_external_id,
+    reap_expired_oauth_followup_leases,
+    schedule_oauth_followup,
+)
+from database.oauth_webhook_ingress import (
+    claim_due_oauth_webhook_work,
+    complete_oauth_webhook_work,
+    enqueue_oauth_webhook_work,
+    fail_oauth_webhook_work,
+    oauth_webhook_work_account_matches,
+)
+from database.lead_intelligence import analyze_lead_intelligence
+from database.tenant_automation import oauth_automation_runtime_config
 from auth import (
     configure_auth,
     csrf_token,
+    validate_csrf_token,
     get_current_user,
     install_auth_route_guard,
     register_auth_routes,
-    validate_csrf_token,
     verify_meta_signature,
     webhook_signature_verification_active,
 )
-from dashboard.i18n import (
-    LOCALE_META,
-    LOCALE_SESSION_KEY,
-    locale_context,
-    normalize_locale,
-    session_locale,
-    translate,
-)
+from dashboard.i18n import LOCALE_META, LOCALE_SESSION_KEY, locale_context, normalize_locale, translate, session_locale
+from tenant_dashboard import register_tenant_dashboard
+from instagram_oauth import validated_public_origin
 
 from google import genai
 from google.genai import types
@@ -64,7 +108,9 @@ ENV_FILE = BASE_DIR / ".env"
 # - Locally, keep using the project's data folder.
 RAILWAY_DATA_DIR = Path("/app/data")
 DATA_DIR = (
-    RAILWAY_DATA_DIR
+    Path(os.environ["POSTENZA_DATA_DIR"])
+    if os.environ.get("POSTENZA_DATA_DIR")
+    else RAILWAY_DATA_DIR
     if RAILWAY_DATA_DIR.exists()
     else BASE_DIR / "data"
 )
@@ -90,6 +136,7 @@ SCHEDULER_LOCKS_DIR.mkdir(parents=True, exist_ok=True)
 load_dotenv(ENV_FILE)
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024
 
 # Optional Phase 2 configuration only.  No engine, session, table creation, or
 # JSON-to-SQL migration occurs during application startup.
@@ -97,13 +144,9 @@ DATABASE_URL = database_url_from_environment()
 
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "").strip()
 
-INSTAGRAM_ACCESS_TOKEN = os.getenv(
-    "INSTAGRAM_ACCESS_TOKEN"
-)
+INSTAGRAM_ACCESS_TOKEN = os.getenv("INSTAGRAM_ACCESS_TOKEN", "").strip()
 
-GEMINI_API_KEY = os.getenv(
-    "GEMINI_API_KEY"
-)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 
 CLOUDINARY_CLOUD_NAME = os.getenv(
     "CLOUDINARY_CLOUD_NAME",
@@ -120,7 +163,8 @@ CLOUDINARY_API_SECRET = os.getenv(
     ""
 ).strip()
 
-INSTAGRAM_USER_ID = "17841438617458289"
+LEGACY_INSTAGRAM_USER_ID = os.getenv("LEGACY_INSTAGRAM_USER_ID", "").strip()
+INSTAGRAM_USER_ID = LEGACY_INSTAGRAM_USER_ID
 
 # Phase 3A auth is additive.  If this deployment has not yet configured both
 # DATABASE_URL and FLASK_SECRET_KEY, public compatibility routes keep working
@@ -132,28 +176,16 @@ IS_PRODUCTION = APP_ENVIRONMENT in {"production", "prod"} or bool(
     os.getenv("RAILWAY_ENVIRONMENT_NAME", "").strip()
 )
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip()
-
-
-def validated_public_origin(value):
-    """Accept only the exact canonical public origin, without forwarded-host trust."""
-
-    try:
-        parsed = urlsplit(str(value or "").strip())
-        port = parsed.port
-    except ValueError:
-        return None
-    if (
-        parsed.scheme != "https"
-        or parsed.hostname != "postenza.app"
-        or port not in (None, 443)
-        or parsed.username
-        or parsed.password
-        or parsed.path not in ("", "/")
-        or parsed.query
-        or parsed.fragment
-    ):
-        return None
-    return "https://postenza.app"
+ALLOW_UNSIGNED_WEBHOOKS = os.getenv("ALLOW_UNSIGNED_WEBHOOKS", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+WEBHOOK_UNSIGNED_COMPATIBILITY = bool(
+    not IS_PRODUCTION
+    and APP_ENVIRONMENT in {"development", "dev", "test", "testing"}
+    and ALLOW_UNSIGNED_WEBHOOKS
+)
 configure_auth(
     app,
     database_url=DATABASE_URL,
@@ -162,8 +194,16 @@ configure_auth(
     production=IS_PRODUCTION,
 )
 app.config["META_APP_SECRET"] = META_APP_SECRET
+app.config["WEBHOOK_UNSIGNED_COMPATIBILITY"] = WEBHOOK_UNSIGNED_COMPATIBILITY
 register_auth_routes(app)
 install_auth_route_guard(app)
+register_tenant_dashboard(app)
+from billing import register_billing
+register_billing(app)
+from operations import register_operations
+register_operations(app)
+from seo import register_seo
+register_seo(app)
 
 # The command is explicit (``flask --app webhook bootstrap-owner``) and lazy:
 # registering it neither connects to PostgreSQL nor changes Phase 0 JSON state.
@@ -173,6 +213,9 @@ API_VERSION = "v25.0"
 
 TRIGGER_WORDS = {"ai", "prompt", "prompts", "send", "access"}
 REQUEST_COOLDOWN_MINUTES = 10
+# Provider CDN cover URLs are presentation metadata rather than durable media.
+# Refresh them at most once every six hours instead of on every public request.
+OAUTH_PROMPT_COVER_METADATA_TTL = timedelta(hours=6)
 SMART_REPLY_MIN_INTERVAL_SECONDS = 15
 SMART_REPLY_MAX_PER_HOUR = 20
 SMART_REPLY_MAX_LENGTH = 180
@@ -192,9 +235,10 @@ PUBLIC_REPLY_MESSAGES = [
     "Check your DMs 🚀 Your AI prompts are waiting."
 ]
 
-GEMINI_MODEL = "gemini-3.6-flash"
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash").strip()
 
-STATE_LOCK = threading.Lock()
+from filelock import FileLock
+STATE_LOCK = FileLock(str(DATA_DIR / ".state.lock"), timeout=60)
 MEDIA_LOCKS_LOCK = threading.Lock()
 MEDIA_LOCKS = {}
 
@@ -210,7 +254,7 @@ print("========================================")
 if INSTAGRAM_ACCESS_TOKEN:
     print("Instagram access token: OK")
 else:
-    print("Optional legacy Instagram integration: not configured")
+    print("INFO: Optional legacy Instagram integration: not configured")
 
 if GEMINI_API_KEY:
     print("Gemini API key: OK")
@@ -273,12 +317,39 @@ def home():
     return render_template(
         "landing.html",
         canonical_url=canonical_url,
-        csrf_token=csrf_token(),
+        csrf_token=csrf_token() if app.secret_key else "",
         locale=locale,
         locale_options=LOCALE_META,
         og_image_url=og_image_url,
         t=lambda key: translate(locale["code"], key),
     )
+
+
+@app.route("/sitemap.xml", methods=["GET"])
+def sitemap():
+    from seo import PUBLIC_PAGES, origin
+    from xml.sax.saxutils import escape
+    urls = "".join(f"<url><loc>{escape(origin() + path)}</loc></url>" for path in PUBLIC_PAGES)
+    return Response('<?xml version="1.0" encoding="UTF-8"?>' +
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' + urls + '</urlset>',
+        mimetype="application/xml")
+
+
+@app.route("/robots.txt", methods=["GET"])
+def robots():
+    from seo import origin
+    if os.getenv("SEARCH_INDEXING_ENABLED", "true").lower() != "true":
+        return Response("User-agent: *\nDisallow: /\n", mimetype="text/plain")
+    private = ["/app", "/dashboard", "/login", "/register", "/logout", "/onboarding", "/auth/", "/connect/", "/disconnect/", "/oauth/", "/webhook", "/billing/", "/api/", "/health", "/ready", "/p/"]
+    content = "User-agent: *\nAllow: /\n" + "".join("Disallow: " + path + "\n" for path in private)
+    return Response(content + "\nSitemap: " + origin() + "/sitemap.xml\n", mimetype="text/plain")
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    """Return a constant liveness response without touching application state."""
+
+    return {"status": "ok"}, 200
 
 
 @app.route("/locale", methods=["POST"])
@@ -289,48 +360,6 @@ def landing_locale():
         return "Invalid form token.", 400
     session[LOCALE_SESSION_KEY] = normalize_locale(request.form.get("locale"))
     return redirect(url_for("home"), code=303)
-
-
-@app.route("/health", methods=["GET"])
-def health():
-    """Return a constant liveness response without touching application state."""
-
-    return {"status": "ok"}, 200
-
-
-@app.route("/sitemap.xml", methods=["GET"])
-def sitemap():
-    origin = validated_public_origin(PUBLIC_BASE_URL) or "https://postenza.app"
-    return Response(
-        '<?xml version="1.0" encoding="UTF-8"?>'
-        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
-        f"<url><loc>{origin}/</loc></url>"
-        "</urlset>",
-        mimetype="application/xml",
-    )
-
-
-@app.route("/robots.txt", methods=["GET"])
-def robots():
-    return Response(
-        "User-agent: *\n"
-        "Allow: /\n"
-        "Disallow: /app\n"
-        "Disallow: /dashboard\n"
-        "Disallow: /login\n"
-        "Disallow: /register\n"
-        "Disallow: /logout\n"
-        "Disallow: /connect/\n"
-        "Disallow: /disconnect/\n"
-        "Disallow: /oauth/\n"
-        "Disallow: /webhook\n"
-        "Disallow: /api/\n"
-        "Disallow: /health\n"
-        "Disallow: /p/\n"
-        "\n"
-        "Sitemap: https://postenza.app/sitemap.xml\n",
-        mimetype="text/plain",
-    )
 
 
 @app.route("/privacy", methods=["GET"])
@@ -423,41 +452,27 @@ def load_json_file(
 
         print(
             f"JSON READ ERROR {path.name}:",
-            error
+            type(error).__name__
         )
 
         return default
 
 
-def save_json_file(
-    path,
-    data
-):
-
+def save_json_file(path, data):
+    import tempfile
+    temporary = None
     try:
-
-        with open(
-            path,
-            "w",
-            encoding="utf-8"
-        ) as file:
-
-            json.dump(
-                data,
-                file,
-                ensure_ascii=False,
-                indent=2
-            )
-
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, prefix=".postenza-", suffix=".tmp", delete=False) as file:
+            temporary = Path(file.name)
+            json.dump(data, file, ensure_ascii=False, indent=2)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, path)
         return True
-
     except Exception as error:
-
-        print(
-            f"JSON SAVE ERROR {path.name}:",
-            error
-        )
-
+        print(f"JSON SAVE ERROR {path.name}:", type(error).__name__)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
         return False
 
 
@@ -889,7 +904,7 @@ def send_followup_message(recipient_id):
         "message": {
             "text": (
                 "Hope the prompts helped ✨ If you want another set, "
-                "comment AI on any post and I’ll send it to you."
+                "comment AI on any post and I'll send it to you."
             )
         }
     }
@@ -1089,7 +1104,7 @@ def get_dashboard_leads():
                     if media_id:
                         media_map[media_id] = item
         except Exception as error:
-            print("LEADS MEDIA LOOKUP ERROR:", error)
+            print("LEADS MEDIA LOOKUP ERROR:", type(error).__name__)
 
     leads = []
     for item in reversed(requests_data[-200:]):
@@ -1382,7 +1397,7 @@ Comment: {source_text}
 
         print(
             "SMART REPLY GEMINI ERROR:",
-            error
+            type(error).__name__
         )
 
         return ""
@@ -1433,7 +1448,7 @@ def send_comment_reply_text(
 
         print(
             "COMMENT REPLY ERROR:",
-            error
+            type(error).__name__
         )
 
         return False
@@ -1519,7 +1534,7 @@ def process_smart_comment(
 
         print(
             "SMART COMMENT PROCESS ERROR:",
-            error
+            type(error).__name__
         )
 
         release_comment(
@@ -1615,7 +1630,7 @@ def get_instagram_media(
 
         print(
             "MEDIA LOOKUP ERROR:",
-            error
+            type(error).__name__
         )
 
         return None
@@ -1733,7 +1748,7 @@ def download_image_bytes(
 
         print(
             "IMAGE DOWNLOAD ERROR:",
-            error
+            type(error).__name__
         )
 
         return None
@@ -1780,7 +1795,7 @@ def parse_gemini_json(
 
         print(
             "Gemini JSON error:",
-            error
+            type(error).__name__
         )
 
         print(
@@ -2046,7 +2061,7 @@ If there are no real prompts:
 
         print(
             "GEMINI ERROR:",
-            error
+            type(error).__name__
         )
 
         return []
@@ -2260,6 +2275,64 @@ def post_preview(
 # PROMPT PAGE
 # ==================================================
 
+@app.route("/p/o/<public_id>", methods=["GET"])
+def oauth_prompt_page(public_id):
+    """Neutral, opaque OAuth prompt page; legacy /p/<media_id> stays untouched."""
+    session_factory = _oauth_session_factory()
+    if session_factory is None:
+        return Response("Prompt page is unavailable.", status=404, mimetype="text/plain")
+    try:
+        with session_factory() as db_session:
+            post = get_oauth_prompt_post_by_public_id(db_session, public_id)
+            prompts = list(post.prompts) if post is not None and isinstance(post.prompts, list) else []
+    except Exception:
+        return Response("Prompt page is unavailable.", status=404, mimetype="text/plain")
+    if post is None:
+        return Response("Prompt page is unavailable.", status=404, mimetype="text/plain")
+    if _oauth_prompt_cover_refresh_due(post):
+        _oauth_refresh_prompt_post_metadata(
+            session_factory,
+            post.instagram_account_id,
+            post.media_id,
+            post.public_id,
+        )
+        try:
+            with session_factory() as db_session:
+                refreshed = get_oauth_prompt_post_by_public_id(db_session, public_id)
+                if refreshed is not None:
+                    post = refreshed
+                    prompts = (
+                        list(post.prompts) if isinstance(post.prompts, list) else []
+                    )
+        except Exception:
+            pass
+    cards = []
+    prompt_ids = []
+    for number, prompt in enumerate(prompts, start=1):
+        text = prompt.get("text", "") if isinstance(prompt, dict) else str(prompt or "")
+        text = str(text).strip()
+        if text:
+            prompt_id = f"oauth-prompt-{number}"
+            prompt_ids.append(prompt_id)
+            cards.append(f'''<article class="prompt-card"><div class="prompt-meta"><span>PROMPT {number}</span><button class="copy-button" type="button" onclick="copyPrompt('{prompt_id}',this)">Copy Prompt</button></div><div id="{prompt_id}" class="prompt-text">{html.escape(text)}</div></article>''')
+    cover_url = str(post.cover_url or "").strip()
+    permalink = str(post.permalink or "").strip()
+    cover_html = ""
+    if cover_url:
+        cover_html = f'''<div class="post-preview" id="post-preview"><img src="{html.escape(cover_url, quote=True)}" alt="Instagram post preview" loading="eager" referrerpolicy="no-referrer" onerror="document.getElementById('post-preview').style.display='none'"></div>'''
+    instagram_button = ""
+    if permalink:
+        instagram_button = f'''<a class="secondary-button" href="{html.escape(permalink, quote=True)}" target="_blank" rel="noopener noreferrer">View Instagram Post</a>'''
+    prompt_ids_json = json.dumps(prompt_ids)
+    cards_html = "".join(cards) or '<p class="empty">No prompts are available.</p>'
+    return Response(
+        f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#0b0b0d"><title>AI Prompts</title><style>
+:root{{--bg:#0b0b0d;--panel:#151518;--panel2:#1b1b1f;--line:#2a2a30;--text:#f7f7f8;--muted:#a6a6af}}*{{box-sizing:border-box}}body{{margin:0;background:radial-gradient(circle at top,rgba(255,255,255,.06),transparent 28rem),var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}}button,a{{-webkit-tap-highlight-color:transparent}}.container{{width:min(860px,100%);margin:auto;padding:20px 16px 70px}}.brand{{display:flex;justify-content:space-between;gap:16px;padding:6px 2px 20px;font-size:14px;font-weight:800;letter-spacing:.13em}}.badge{{color:var(--muted);font-size:12px;border:1px solid var(--line);border-radius:999px;padding:7px 10px;letter-spacing:normal}}.post-preview{{overflow:hidden;border:1px solid var(--line);border-radius:24px;background:var(--panel);margin-bottom:22px}}.post-preview img{{display:block;width:100%;max-height:720px;object-fit:contain;background:#0f0f12}}.eyebrow{{color:var(--muted);font-size:12px;font-weight:800;letter-spacing:.16em}}h1{{margin:10px 0;font-size:clamp(34px,8vw,58px);letter-spacing:-.045em}}.description{{color:var(--muted);line-height:1.65}}.actions{{display:grid;gap:10px;margin:24px 0 26px}}.primary-button,.secondary-button,.copy-button{{border:0;border-radius:14px;font-weight:750;cursor:pointer}}.primary-button{{padding:15px 18px;background:#fff;color:#0c0c0e;font-size:15px}}.secondary-button{{padding:15px 18px;text-align:center;text-decoration:none;background:var(--panel2);color:var(--text);border:1px solid var(--line)}}.prompt-list{{display:grid;gap:14px}}.prompt-card{{overflow:hidden;background:rgba(21,21,24,.96);border:1px solid var(--line);border-radius:22px}}.prompt-meta{{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 14px 12px 18px;border-bottom:1px solid var(--line);color:var(--muted);font-size:12px;font-weight:850;letter-spacing:.12em}}.copy-button{{padding:9px 12px;background:#2a2a2f;color:var(--text);font-size:12px;letter-spacing:normal}}.prompt-text{{white-space:pre-wrap;overflow-wrap:anywhere;padding:19px 18px 22px;line-height:1.72;font-size:15px}}.empty{{color:var(--muted)}}.footer{{padding:30px 4px 0;color:#777782;text-align:center;font-size:12px}}.toast{{position:fixed;left:50%;bottom:max(22px,env(safe-area-inset-bottom));transform:translate(-50%,14px);opacity:0;pointer-events:none;background:#fff;color:#0c0c0e;border-radius:999px;padding:11px 16px;font-size:13px;font-weight:800;transition:.2s;z-index:999}}.toast.show{{transform:translate(-50%,0);opacity:1}}@media(min-width:680px){{.container{{padding:30px 24px 90px}}.actions{{grid-template-columns:1fr 1fr}}.prompt-text{{padding:22px 22px 26px;font-size:16px}}}}</style></head><body><main class="container"><div class="brand"><div>AI PROMPTS</div><div class="badge">Prompt Library</div></div>{cover_html}<header><p class="eyebrow">READY TO COPY</p><h1>AI Prompts</h1><p class="description">Copy one prompt or copy everything at once.</p></header><div class="actions"><button class="primary-button" type="button" onclick="copyAllPrompts()">Copy All Prompts</button>{instagram_button}</div><section class="prompt-list">{cards_html}</section><footer class="footer">Generated automatically</footer></main><div id="toast" class="toast">Prompt copied ✓</div><script>
+var promptIds={prompt_ids_json};function toast(m){{var t=document.getElementById('toast');t.innerText=m;t.className='toast show';clearTimeout(window.__toastTimer);window.__toastTimer=setTimeout(function(){{t.className='toast'}},1600)}}function fallbackCopyText(text){{var a=document.createElement('textarea');a.value=text;a.setAttribute('readonly','readonly');a.style.cssText='position:fixed;top:0;left:0;width:1px;height:1px;opacity:.01';document.body.appendChild(a);a.focus();a.select();try{{a.setSelectionRange(0,a.value.length)}}catch(e){{}}var ok=false;try{{ok=document.execCommand('copy')}}catch(e){{}}document.body.removeChild(a);return ok}}function manualCopy(text){{var a=document.createElement('textarea');a.value=text;a.readOnly=true;a.style.cssText='position:fixed;inset:10%;width:80%;height:70%;z-index:99999;padding:16px;font-size:16px';document.body.appendChild(a);a.focus();a.select();toast('Select and copy manually')}}function copyText(text,done){{try{{if(navigator.clipboard&&navigator.clipboard.writeText){{navigator.clipboard.writeText(text).then(function(){{done(true)}},function(){{done(fallbackCopyText(text))}});return}}}}catch(e){{}}done(fallbackCopyText(text))}}function copyPrompt(id,button){{var e=document.getElementById(id),text=e&&(e.innerText||e.textContent||'').trim();if(!text){{toast('Prompt not found');return}}var original=button.innerText;copyText(text,function(ok){{if(ok){{button.innerText='Copied ✓';toast('Prompt copied ✓');setTimeout(function(){{button.innerText=original}},1600)}}else{{manualCopy(text)}}}})}}function copyAllPrompts(){{var parts=[];for(var i=0;i<promptIds.length;i++){{var e=document.getElementById(promptIds[i]),text=e&&(e.innerText||e.textContent||'').trim();if(text)parts.push('PROMPT '+(i+1)+'\\n\\n'+text)}}var all=parts.join('\\n\\n--------------------\\n\\n');if(!all){{toast('No prompts found');return}}copyText(all,function(ok){{if(ok)toast('All prompts copied ✓');else manualCopy(all)}})}}document.documentElement.setAttribute('data-copy-script','ready');</script></body></html>''',
+        mimetype="text/html",
+    )
+
+
 @app.route(
     "/p/<media_id>",
     methods=["GET"]
@@ -2421,7 +2494,7 @@ def prompt_page(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0b0b0d">
-<title>IMRAN PROMPTS</title>
+<title>Postenza — AI Prompt Library</title>
 
 <style>
 :root {{
@@ -2685,7 +2758,7 @@ a {{
 <main class="container">
 
     <div class="brand">
-        <div class="brand-name">IMRAN PROMPTS</div>
+        <div class="brand-name">Postenza</div>
         <div class="brand-badge">AI Prompt Library</div>
     </div>
 
@@ -2717,7 +2790,7 @@ a {{
     </section>
 
     <footer class="footer">
-        Generated automatically for @imran.prompts
+        Generated automatically by Postenza
     </footer>
 
 </main>
@@ -3112,7 +3185,7 @@ def send_access_request(
             "text": (
                 "Hey! 👋\n\n"
                 "Your AI prompts are ready ✨\n\n"
-                "Tap below and I’ll send you the access."
+                "Tap below and I'll send you the access."
             ),
             "quick_replies": [
                 {
@@ -3162,7 +3235,7 @@ def send_access_request(
                 "text": (
                     "Hey! 👋\n\n"
                     "Your AI prompts are ready ✨\n\n"
-                    "Reply ACCESS and I’ll send you "
+                    "Reply ACCESS and I'll send you "
                     "a button to open them."
                 )
             }
@@ -3194,7 +3267,7 @@ def send_access_request(
 
         print(
             "PRIVATE REPLY ERROR:",
-            error
+            type(error).__name__
         )
 
         return None
@@ -3278,7 +3351,7 @@ def send_view_prompts_button(
 
         print(
             "BUTTON TEMPLATE ERROR:",
-            error
+            type(error).__name__
         )
 
         return False
@@ -3488,7 +3561,7 @@ def process_comment(
 
         print(
             "COMMENT PROCESS ERROR:",
-            error
+            type(error).__name__
         )
 
         release_comment(
@@ -3622,60 +3695,1024 @@ def process_message_event(event):
 # BACKGROUND PROCESSOR
 # ==================================================
 
+WEBHOOK_EXTERNAL_ID_PATTERN = re.compile(r"^[0-9]{1,64}$")
+
+
+def _webhook_entry_external_id(entry):
+    """Return a canonical, numeric envelope ID without accepting fallbacks."""
+
+    if not isinstance(entry, dict):
+        return None
+    external_id = entry.get("id")
+    if not isinstance(external_id, str):
+        return None
+    external_id = external_id.strip()
+    return external_id if WEBHOOK_EXTERNAL_ID_PATTERN.fullmatch(external_id) else None
+
+
+def _resolve_webhook_entry_route(entry_external_id):
+    """Resolve one entry through a fresh database session, without credentials."""
+
+    auth_state = app.extensions.get("phase3a_auth")
+    session_factory = getattr(auth_state, "session_factory", None)
+    if session_factory is None:
+        raise RuntimeAccountRouteUnavailableError("Instagram account route is unavailable.")
+    with session_factory() as db_session:
+        return resolve_instagram_account_route(
+            db_session,
+            instagram_user_id=entry_external_id,
+            legacy_instagram_user_id=INSTAGRAM_USER_ID,
+        )
+
+
+def _messaging_event_matches_entry(event, entry_external_id):
+    """Require a supplied messaging recipient to agree with its envelope ID."""
+
+    if not isinstance(event, dict):
+        return False
+    if "recipient" not in event:
+        return True
+    recipient = event.get("recipient")
+    if not isinstance(recipient, dict):
+        return False
+    recipient_id = recipient.get("id")
+    if not isinstance(recipient_id, str):
+        return False
+    recipient_id = recipient_id.strip()
+    return bool(
+        WEBHOOK_EXTERNAL_ID_PATTERN.fullmatch(recipient_id)
+        and hmac.compare_digest(recipient_id, entry_external_id)
+    )
+
+
+def _process_legacy_webhook_entry(entry, entry_external_id, public_base_url):
+    """Invoke unchanged legacy handlers only after exact route classification."""
+
+    changes = entry.get("changes", [])
+    if isinstance(changes, list):
+        for change in changes:
+            if not isinstance(change, dict):
+                continue
+            if change.get("field") != "comments":
+                continue
+            value = change.get("value", {})
+            if isinstance(value, dict):
+                process_comment(value, public_base_url)
+
+    messaging_events = entry.get("messaging", [])
+    if isinstance(messaging_events, list):
+        for event in messaging_events:
+            if _messaging_event_matches_entry(event, entry_external_id):
+                process_message_event(event)
+
+
+def persist_oauth_webhook_ingress(data, public_base_url):
+    """Queue normalized OAuth work before acknowledgement; legacy work stays untouched."""
+    session_factory = _oauth_session_factory()
+    entries = data.get("entry", []) if isinstance(data, dict) else []
+    if session_factory is None or not isinstance(entries, list):
+        return 0
+    persisted = 0
+    for entry in entries:
+        entry_external_id = _webhook_entry_external_id(entry)
+        if entry_external_id is None:
+            continue
+        try:
+            route = _resolve_webhook_entry_route(entry_external_id)
+        except Exception:
+            # Preserve the existing fail-closed route behavior: an unknown or
+            # currently unavailable account is not allowed into a legacy path.
+            continue
+        if route.connection_mode != "oauth":
+            continue
+        changes = entry.get("changes", []) if isinstance(entry, dict) else []
+        messaging_events = entry.get("messaging", []) if isinstance(entry, dict) else []
+        with session_factory.begin() as db_session:
+            if isinstance(changes, list):
+                for change in changes:
+                    if not isinstance(change, dict) or change.get("field") != "comments":
+                        continue
+                    if enqueue_oauth_webhook_work(
+                        db_session,
+                        instagram_account_id=route.instagram_account_id,
+                        instagram_user_id=entry_external_id,
+                        event_type="comment",
+                        value=change.get("value"),
+                        public_base_url=public_base_url,
+                    ):
+                        persisted += 1
+            if isinstance(messaging_events, list):
+                for event in messaging_events:
+                    if not _messaging_event_matches_entry(event, entry_external_id):
+                        continue
+                    if enqueue_oauth_webhook_work(
+                        db_session,
+                        instagram_account_id=route.instagram_account_id,
+                        instagram_user_id=entry_external_id,
+                        event_type="message",
+                        value=event,
+                        public_base_url=public_base_url,
+                    ):
+                        persisted += 1
+    return persisted
+
+
+def _oauth_session_factory():
+    """Return the configured database factory without a legacy fallback."""
+    auth_state = app.extensions.get("phase3a_auth")
+    return getattr(auth_state, "session_factory", None)
+
+
+def _oauth_words(value):
+    return re.findall(r"\b\w+\b", str(value or "").lower())
+
+
+def generate_oauth_smart_reply(comment_text, *, tone="friendly"):
+    """Generate a tenant-neutral reply; no legacy account identity is supplied."""
+    source_text = str(comment_text or "").strip()
+    if not source_text or GEMINI_CLIENT is None:
+        return ""
+    instructions = f"""
+Write one short, natural {tone} reply to an Instagram comment for a professional account.
+Use the comment's language where practical. Do not mention automation, account
+names, credentials, or private information. Do not use links, hashtags, fake
+promises, or generic thanks unless it is genuinely appropriate. Do not invent
+facts about the post or business.
+Return only the reply text, under {SMART_REPLY_MAX_LENGTH} characters.
+
+Comment: {source_text}
+"""
+    try:
+        response = GEMINI_CLIENT.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=instructions,
+            config=types.GenerateContentConfig(temperature=0.7),
+        )
+        reply = re.sub(r"\s+", " ", str(response.text or "")).strip().strip('"\'')
+        return reply[:SMART_REPLY_MAX_LENGTH].rstrip()
+    except Exception:
+        print("OAUTH ENGAGEMENT: smart reply unavailable.")
+        return ""
+
+
+def generate_oauth_lead_intelligence(context):
+    """Analyze only sanitized persisted lead facts through the existing Gemini client."""
+
+    if GEMINI_CLIENT is None:
+        return None
+    try:
+        return analyze_lead_intelligence(
+            context,
+            lambda prompt: str(
+                GEMINI_CLIENT.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        temperature=0,
+                    ),
+                ).text
+                or ""
+            ),
+        )
+    except Exception:
+        print("LEAD INTELLIGENCE: analysis unavailable.")
+        return None
+
+
+app.extensions["lead_intelligence_analyzer"] = generate_oauth_lead_intelligence
+
+
+def _oauth_smart_reply_eligible(comment_text):
+    """Exclude empty, emoji-only, and too-short public comments."""
+
+    source_text = str(comment_text or "").strip()
+    return len(source_text) >= 3 and bool(_oauth_words(source_text))
+
+
+def extract_oauth_prompts(media):
+    """Extract only visible prompts with a generic, account-neutral Gemini prompt."""
+    if GEMINI_CLIENT is None or not isinstance(media, dict):
+        return []
+    urls = []
+    for item in [media, *((media.get("children") or {}).get("data") or [])]:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("media_url") or item.get("thumbnail_url")
+        if isinstance(url, str) and url.startswith("https://"):
+            urls.append(url)
+    if not urls:
+        return []
+    contents = ["""Extract only complete AI image or video generation prompts visibly written in these Instagram images. Ignore usernames, watermarks, captions, UI labels, calls to action, and decorative text. Do not invent text. Return JSON only: {\"prompts\":[{\"source_index\":1,\"text\":\"...\"}]}."""]
+    try:
+        for url in urls[:10]:
+            response = requests.get(url, timeout=15)
+            if response.ok and response.content:
+                contents.append(types.Part.from_bytes(data=response.content, mime_type=response.headers.get("Content-Type", "image/jpeg")))
+        if len(contents) == 1:
+            return []
+        response = GEMINI_CLIENT.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=contents,
+            config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0),
+        )
+        return parse_gemini_json(str(response.text or ""))
+    except Exception:
+        print("OAUTH ENGAGEMENT: prompt extraction unavailable.")
+        return []
+
+
+def _oauth_complete(session_factory, account_id, provider_event_id, event_type, *, failed=False):
+    with session_factory.begin() as db_session:
+        complete_oauth_event(db_session, account_id, provider_event_id, event_type, failed=failed)
+
+
+def _oauth_provider_https_url(value):
+    """Return a provider media URL only when it is safe for public image markup."""
+    if not isinstance(value, str):
+        return ""
+    candidate = value.strip()
+    if not candidate or any(character.isspace() for character in candidate):
+        return ""
+    try:
+        parsed = urlsplit(candidate)
+        if (
+            parsed.scheme.lower() != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            return ""
+        parsed.port
+    except (TypeError, ValueError):
+        return ""
+    return candidate
+
+
+def _oauth_prompt_cover_url(media):
+    """Select a usable image cover from provider-returned media metadata."""
+    if not isinstance(media, dict):
+        return ""
+
+    media_type = str(media.get("media_type") or "").strip().upper()
+    if media_type == "IMAGE":
+        return _oauth_provider_https_url(media.get("media_url"))
+    if media_type in {"VIDEO", "REEL", "REELS"}:
+        return _oauth_provider_https_url(media.get("thumbnail_url"))
+    if media_type == "CAROUSEL_ALBUM":
+        cover_url = _oauth_provider_https_url(media.get("media_url"))
+        if cover_url:
+            return cover_url
+
+    children = media.get("children")
+    child_items = children.get("data") if isinstance(children, dict) else []
+    if not isinstance(child_items, list):
+        return ""
+    for child in child_items:
+        if not isinstance(child, dict):
+            continue
+        child_type = str(child.get("media_type") or "").strip().upper()
+        if child_type == "IMAGE":
+            cover_url = _oauth_provider_https_url(child.get("media_url"))
+        elif child_type in {"VIDEO", "REEL", "REELS"}:
+            cover_url = _oauth_provider_https_url(child.get("thumbnail_url"))
+        else:
+            continue
+        if cover_url:
+            return cover_url
+    return ""
+
+
+def _oauth_utc_timestamp(value):
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _oauth_prompt_cover_refresh_due(post, *, now=None):
+    """Return whether cached provider cover metadata is due for refresh.
+
+    ``updated_at`` doubles as the last refresh-attempt timestamp in this
+    migration-free cache. A missing cover gets one immediate attempt when the
+    row has never been updated, then observes the same TTL after that attempt.
+    """
+    current_time = _oauth_utc_timestamp(now) or datetime.now(timezone.utc)
+    updated_at = _oauth_utc_timestamp(getattr(post, "updated_at", None))
+    if updated_at is None or updated_at <= current_time - OAUTH_PROMPT_COVER_METADATA_TTL:
+        return True
+    if str(getattr(post, "cover_url", "") or "").strip():
+        return False
+    created_at = _oauth_utc_timestamp(getattr(post, "created_at", None))
+    return created_at is None or updated_at <= created_at
+
+
+def _oauth_refresh_prompt_post_metadata(
+    session_factory, account_id, media_id, public_id, *, now=None
+):
+    """Best-effort account-scoped refresh of cached prompt presentation data."""
+    current_time = _oauth_utc_timestamp(now) or datetime.now(timezone.utc)
+    try:
+        with session_factory.begin() as db_session:
+            post = get_oauth_prompt_post(db_session, account_id, media_id)
+            if post is None or str(post.public_id) != str(public_id):
+                return False
+            if not _oauth_prompt_cover_refresh_due(post, now=current_time):
+                return True
+            external_id = oauth_followup_account_external_id(db_session, account_id)
+            # ``updated_at`` is also the attempt timestamp so a failed provider
+            # lookup cannot be retriggered by every public page request.
+            post.updated_at = current_time
+    except Exception:
+        return False
+
+    if not external_id:
+        return True
+    try:
+        media = lookup_oauth_media(
+            session_factory,
+            instagram_account_id=account_id,
+            instagram_user_id=external_id,
+            media_id=media_id,
+        )
+    except Exception:
+        return True
+
+    cover_url = _oauth_prompt_cover_url(media)
+    permalink = str(media.get("permalink") or "")
+    try:
+        with session_factory.begin() as db_session:
+            post = get_oauth_prompt_post(db_session, account_id, media_id)
+            if post is None or str(post.public_id) != str(public_id):
+                return False
+            if cover_url:
+                post.cover_url = cover_url
+            if not str(post.permalink or "").strip() and permalink:
+                post.permalink = permalink
+        return True
+    except Exception:
+        return False
+
+
+def _oauth_prompt_post_for_comment(session_factory, account_id, external_id, media_id):
+    cached_public_id = None
+    refresh_cached_metadata = False
+    with session_factory() as db_session:
+        cached = get_oauth_prompt_post(db_session, account_id, media_id)
+        if cached is not None:
+            cached_public_id = cached.public_id
+            refresh_cached_metadata = _oauth_prompt_cover_refresh_due(cached)
+    if cached_public_id is not None:
+        if refresh_cached_metadata:
+            _oauth_refresh_prompt_post_metadata(
+                session_factory,
+                account_id,
+                media_id,
+                cached_public_id,
+            )
+        return cached_public_id
+    media = lookup_oauth_media(
+        session_factory,
+        instagram_account_id=account_id,
+        instagram_user_id=external_id,
+        media_id=media_id,
+    )
+    cover_url = _oauth_prompt_cover_url(media)
+    permalink = str(media.get("permalink") or "")
+    if GEMINI_CLIENT is not None:
+        from database.billing import reserve_account_ai
+        reserve_account_ai(session_factory, account_id)
+    prompts = extract_oauth_prompts(media)
+    if not prompts:
+        return None
+    with session_factory.begin() as db_session:
+        record = oauth_prompt_post(
+            db_session,
+            account_id,
+            media_id,
+            prompts,
+            permalink=permalink,
+            cover_url=cover_url,
+        )
+        return record.public_id
+
+
+def _log_oauth_engagement_failure(exc, *, context):
+    """Print a credential-safe diagnostic for a swallowed OAuth engagement failure.
+
+    The original code used a bare ``except Exception:`` that printed a generic
+    "processing unavailable" message, hiding the real failing condition (e.g.
+    capability gate, credential resolution, provider rejection).  This helper
+    surfaces the exception type and a sanitized message so operators can
+    diagnose the exact blocker without exposing tokens, secrets, or raw
+    provider payloads.
+    """
+
+    exc_type = type(exc).__name__
+    raw_message = str(exc) or ""
+    # Never print raw exception text that might contain a token, URL, or
+    # provider payload fragment.  Only surface known-safe sentinel messages.
+    safe_messages = {
+        "oauth comment delivery unavailable",
+        "oauth prompt media unavailable",
+        "oauth prompt extraction unavailable",
+        "oauth public reply unavailable",
+        "oauth private reply unavailable",
+        "oauth prompt access unavailable",
+        "Instagram engagement is temporarily unavailable.",
+    }
+    safe_message = raw_message if raw_message in safe_messages else "sanitized"
+    print(
+        f"OAUTH ENGAGEMENT: {context} processing unavailable. "
+        f"reason={exc_type}:{safe_message}"
+    )
+
+
+def _log_oauth_followup_claim_failure(exc):
+    """Report a safe class-only diagnostic for scheduler claim failures."""
+
+    print(
+        "OAUTH FOLLOW-UP: job claim unavailable. "
+        f"reason={type(exc).__name__}:sanitized"
+    )
+
+
+def _process_oauth_comment(value, route, entry_external_id, public_base_url, session_factory):
+    comment_id = str(value.get("id") or "").strip()
+    comment_text = str(value.get("text") or "").strip()
+    commenter = value.get("from") if isinstance(value.get("from"), dict) else {}
+    commenter_id = str(commenter.get("id") or "").strip()
+    username = str(commenter.get("username") or "").strip()
+    media = value.get("media") if isinstance(value.get("media"), dict) else {}
+    media_id = str(media.get("id") or "").strip()
+    if not comment_id or not comment_text or not commenter_id or commenter_id == entry_external_id:
+        return
+    with session_factory() as db_session:
+        automation_config = oauth_automation_runtime_config(
+            db_session,
+            instagram_account_id=route.instagram_account_id,
+        )
+    with session_factory.begin() as db_session:
+        if not claim_oauth_event(db_session, route.instagram_account_id, comment_id, "comment"):
+            return
+    if automation_config is None:
+        is_keyword_match = False
+        delivery_mode = "prompt_request"
+        prompt_request_decision = "runtime_config_unavailable"
+    else:
+        is_keyword_match = automation_config.enabled and any(
+            word in automation_config.trigger_keywords
+            for word in _oauth_words(comment_text)
+        )
+        delivery_mode = getattr(automation_config, "delivery_mode", "prompt_request")
+        prompt_request_decision = "keyword_no_match"
+        if is_keyword_match:
+            prompt_request_decision = {
+                "direct_message": "direct_message_matched",
+                "link": "link_matched",
+            }.get(delivery_mode, "prompt_request_matched")
+    print(f"OAUTH AUTOMATION: prompt_request_decision={prompt_request_decision}")
+    try:
+        if not is_keyword_match:
+            if (
+                automation_config is None
+                or not automation_config.enabled
+                or not automation_config.smart_reply_enabled
+                or not _oauth_smart_reply_eligible(comment_text)
+            ):
+                _oauth_complete(session_factory, route.instagram_account_id, comment_id, "comment")
+                return
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+            with session_factory() as db_session:
+                allowed = oauth_smart_reply_allowed(
+                    db_session,
+                    route.instagram_account_id,
+                    cutoff=cutoff,
+                    limit=automation_config.smart_reply_max_per_hour,
+                )
+            if not allowed:
+                _oauth_complete(session_factory, route.instagram_account_id, comment_id, "comment")
+                return
+            if GEMINI_CLIENT is not None:
+                from database.billing import reserve_account_ai
+                reserve_account_ai(session_factory, route.instagram_account_id)
+            reply = generate_oauth_smart_reply(
+                comment_text,
+                tone=automation_config.smart_reply_tone,
+            )
+            if not reply:
+                _oauth_complete(session_factory, route.instagram_account_id, comment_id, "comment")
+                return
+            if not send_oauth_public_comment_reply(session_factory, instagram_account_id=route.instagram_account_id, instagram_user_id=entry_external_id, comment_id=comment_id, message=reply):
+                raise RuntimeError("oauth comment delivery unavailable")
+            with session_factory.begin() as db_session:
+                record_oauth_smart_reply(db_session, route.instagram_account_id, comment_id, commenter_id, username, reply)
+                complete_oauth_event(db_session, route.instagram_account_id, comment_id, "comment")
+            return
+
+        if delivery_mode in {"direct_message", "link"}:
+            if automation_config.public_reply_enabled:
+                if not send_oauth_public_comment_reply(
+                    session_factory,
+                    instagram_account_id=route.instagram_account_id,
+                    instagram_user_id=entry_external_id,
+                    comment_id=comment_id,
+                    message=automation_config.public_reply_text,
+                ):
+                    raise RuntimeError("oauth public reply unavailable")
+            private_message_text = str(
+                getattr(automation_config, "private_message_text", "") or ""
+            ).strip()
+            if delivery_mode == "link":
+                destination_url = str(
+                    getattr(automation_config, "destination_url", "") or ""
+                ).strip()
+                private_message_text = f"{private_message_text}\n\n{destination_url}"
+            if not private_message_text:
+                _oauth_complete(session_factory, route.instagram_account_id, comment_id, "comment")
+                return
+            recipient_id = send_oauth_private_comment_reply(
+                session_factory,
+                instagram_account_id=route.instagram_account_id,
+                instagram_user_id=entry_external_id,
+                comment_id=comment_id,
+                message=private_message_text,
+                recipient_id_fallback=commenter_id,
+            )
+            if not recipient_id:
+                raise RuntimeError("oauth private reply unavailable")
+            with session_factory.begin() as db_session:
+                record_oauth_direct_message_interaction(
+                    db_session,
+                    route.instagram_account_id,
+                    comment_id,
+                    recipient_id,
+                )
+                complete_oauth_event(db_session, route.instagram_account_id, comment_id, "comment")
+            print("OAUTH FOLLOW-UP: waiting_for_recipient_reply")
+            return
+
+        if not media_id:
+            raise RuntimeError("oauth prompt media unavailable")
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=REQUEST_COOLDOWN_MINUTES)
+        with session_factory() as db_session:
+            cooling_down = oauth_request_on_cooldown(db_session, route.instagram_account_id, media_id, commenter_id, cutoff=cutoff)
+        if cooling_down:
+            _oauth_complete(session_factory, route.instagram_account_id, comment_id, "comment")
+            return
+        public_id = _oauth_prompt_post_for_comment(session_factory, route.instagram_account_id, entry_external_id, media_id)
+        if not public_id:
+            raise RuntimeError("oauth prompt extraction unavailable")
+        page_url = f"{public_base_url.rstrip('/')}/p/o/{public_id}"
+        if automation_config.public_reply_enabled:
+            if not send_oauth_public_comment_reply(session_factory, instagram_account_id=route.instagram_account_id, instagram_user_id=entry_external_id, comment_id=comment_id, message=automation_config.public_reply_text):
+                raise RuntimeError("oauth public reply unavailable")
+        # Two-step DM flow:
+        # 1. Send the first private DM with a visible "View prompts" quick
+        #    reply (no URL, no web_url button, no instruction to type a
+        #    legacy ACCESS/SEND keyword).
+        # 2. Save pending access with the prompt page URL so that when the
+        #    user presses the quick reply, the second DM with the real
+        #    prompt-page link is unlocked.
+        recipient_id = send_oauth_private_access_reply(
+            session_factory,
+            instagram_account_id=route.instagram_account_id,
+            instagram_user_id=entry_external_id,
+            comment_id=comment_id,
+            message=automation_config.prompt_opening_message_text,
+        )
+        # The comment webhook also contains the commenter's Instagram-scoped ID,
+        # so use it as a fallback if Meta did not return recipient_id.
+        recipient_id = recipient_id or commenter_id
+        if not recipient_id:
+            raise RuntimeError("oauth private reply unavailable")
+        with session_factory.begin() as db_session:
+            save_oauth_pending_access(db_session, route.instagram_account_id, recipient_id, page_url)
+            record_oauth_request(db_session, route.instagram_account_id, media_id, comment_id, recipient_id, username, page_url)
+            followup_enabled = getattr(automation_config, "followup_enabled", True)
+            if followup_enabled is None:
+                followup_enabled = True
+            followup_delay_minutes = getattr(automation_config, "followup_delay_minutes", 360)
+            try:
+                followup_delay_minutes = int(followup_delay_minutes)
+            except (TypeError, ValueError):
+                followup_delay_minutes = 360
+            if followup_enabled:
+                schedule_oauth_followup(
+                    db_session,
+                    instagram_account_id=route.instagram_account_id,
+                    source_message_id=comment_id,
+                    recipient_id=recipient_id,
+                    page_url=page_url,
+                    run_at=datetime.now(timezone.utc) + timedelta(minutes=followup_delay_minutes),
+                )
+            complete_oauth_event(db_session, route.instagram_account_id, comment_id, "comment")
+    except Exception as exc:
+        _oauth_complete(session_factory, route.instagram_account_id, comment_id, "comment", failed=True)
+        _log_oauth_engagement_failure(exc, context="comment")
+
+
+def _process_oauth_message(event, route, entry_external_id, session_factory):
+    message = event.get("message") if isinstance(event, dict) else None
+    sender = event.get("sender") if isinstance(event, dict) else None
+    if not isinstance(message, dict) or not isinstance(sender, dict) or message.get("is_echo"):
+        return
+    message_id = str(message.get("mid") or "").strip()
+    sender_id = str(sender.get("id") or "").strip()
+    if not message_id or not sender_id:
+        return
+    with session_factory.begin() as db_session:
+        if not claim_oauth_event(db_session, route.instagram_account_id, message_id, "message"):
+            return
+    # Only the explicit "View prompts" quick-reply payload (VIEW_AI_PROMPTS)
+    # unlocks the prompt-link button for the new two-step flow.
+    # Backward compatibility: legacy ACCESS/SEND keywords remain supported
+    # for already-issued legacy pending flows.
+    quick = message.get("quick_reply") if isinstance(message.get("quick_reply"), dict) else {}
+    quick_payload = str(quick.get("payload") or "").strip().upper()
+    words = _oauth_words(message.get("text"))
+    is_view_prompts_quick_reply = quick_payload == "VIEW_AI_PROMPTS"
+    is_legacy_access = "access" in words or "send" in words
+    with session_factory() as db_session:
+        automation_config = oauth_automation_runtime_config(
+            db_session,
+            instagram_account_id=route.instagram_account_id,
+        )
+    if (
+        automation_config is not None
+        and automation_config.delivery_mode in {"direct_message", "link"}
+    ):
+        recipient = event.get("recipient")
+        if (
+            sender_id == entry_external_id
+            or not isinstance(recipient, dict)
+            or str(recipient.get("id") or "").strip() != entry_external_id
+            or event.get("is_non_reply") or event.get("read") or event.get("delivery")
+            or message.get("is_deleted")
+            or not (str(message.get("text") or "").strip() or quick_payload
+                    or message.get("attachments") or message.get("has_attachments"))
+        ):
+            print("OAUTH FOLLOW-UP: recipient reply skipped. reason=unsupported_event_shape")
+            _oauth_complete(session_factory, route.instagram_account_id, message_id, "message")
+            return
+        followup_message_text = str(automation_config.followup_message_text or "").strip()
+        if (
+            not automation_config.enabled
+            or not automation_config.followup_enabled
+            or not followup_message_text
+        ):
+            print("OAUTH FOLLOW-UP: recipient reply skipped. reason=followup_disabled")
+            _oauth_complete(session_factory, route.instagram_account_id, message_id, "message")
+            return
+        current = datetime.now(timezone.utc)
+        try:
+            timestamp = event.get("timestamp")
+            if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
+                raise ValueError
+            replied_at = datetime.fromtimestamp(timestamp / 1000, timezone.utc)
+            if replied_at > current:
+                raise ValueError
+        except (ValueError, TypeError, OverflowError, OSError):
+            print("OAUTH FOLLOW-UP: recipient reply skipped. reason=invalid_reply_timestamp")
+            _oauth_complete(session_factory, route.instagram_account_id, message_id, "message")
+            return
+        run_at = replied_at + timedelta(minutes=automation_config.followup_delay_minutes)
+        window_expires_at = replied_at + DIRECT_MESSAGE_RESPONSE_WINDOW
+        if run_at >= window_expires_at or current >= window_expires_at:
+            print("OAUTH FOLLOW-UP: recipient reply skipped. reason=outside_provider_window")
+            _oauth_complete(session_factory, route.instagram_account_id, message_id, "message")
+            return
+        with session_factory.begin() as db_session:
+            interaction = consume_oauth_direct_message_interaction(
+                db_session,
+                route.instagram_account_id,
+                sender_id,
+                message_id,
+                replied_at=replied_at,
+            )
+            if interaction is None:
+                print("OAUTH FOLLOW-UP: recipient reply skipped. reason=no_prior_direct_interaction")
+                complete_oauth_event(
+                    db_session, route.instagram_account_id, message_id, "message"
+                )
+                return
+            print("OAUTH FOLLOW-UP: recipient_reply_eligible")
+            scheduled_followup = schedule_oauth_followup(
+                db_session,
+                instagram_account_id=route.instagram_account_id,
+                source_message_id=message_id,
+                recipient_id=sender_id,
+                message_text=followup_message_text,
+                provider_window_expires_at=window_expires_at,
+                run_at=run_at,
+                now=current,
+            )
+            if scheduled_followup is None:
+                print("OAUTH FOLLOW-UP: recipient reply skipped. reason=cooldown")
+            elif scheduled_followup.source_message_id == message_id:
+                print("OAUTH FOLLOW-UP: job_scheduled_after_reply")
+            else:
+                print("OAUTH FOLLOW-UP: recipient reply skipped. reason=active_job")
+            complete_oauth_event(
+                db_session, route.instagram_account_id, message_id, "message"
+            )
+        return
+    if not is_view_prompts_quick_reply and not is_legacy_access:
+        # Arbitrary text reply: cancel any queued follow-up because the
+        # person has already re-engaged, but do NOT unlock the prompt link.
+        with session_factory.begin() as db_session:
+            cancel_oauth_followups(
+                db_session,
+                instagram_account_id=route.instagram_account_id,
+                recipient_id=sender_id,
+            )
+            complete_oauth_event(db_session, route.instagram_account_id, message_id, "message")
+        return
+    try:
+        with session_factory() as db_session:
+            page_url = get_oauth_pending_access(db_session, route.instagram_account_id, sender_id)
+        if not page_url:
+            _oauth_complete(session_factory, route.instagram_account_id, message_id, "message")
+            return
+        if not send_oauth_prompt_access_button(session_factory, instagram_account_id=route.instagram_account_id, instagram_user_id=entry_external_id, recipient_id=sender_id, page_url=page_url):
+            raise RuntimeError("oauth prompt access unavailable")
+        # Only consume pending access after successful button delivery.
+        with session_factory.begin() as db_session:
+            pop_oauth_pending_access(db_session, route.instagram_account_id, sender_id)
+            followup_enabled = getattr(automation_config, "followup_enabled", True)
+            if followup_enabled is None:
+                followup_enabled = True
+            followup_delay_minutes = getattr(automation_config, "followup_delay_minutes", 360)
+            try:
+                followup_delay_minutes = int(followup_delay_minutes)
+            except (TypeError, ValueError):
+                followup_delay_minutes = 360
+            if followup_enabled:
+                schedule_oauth_followup(
+                    db_session,
+                    instagram_account_id=route.instagram_account_id,
+                    source_message_id=message_id,
+                    recipient_id=sender_id,
+                    page_url=page_url,
+                    run_at=datetime.now(timezone.utc) + timedelta(minutes=followup_delay_minutes),
+                )
+            complete_oauth_event(db_session, route.instagram_account_id, message_id, "message")
+    except Exception as exc:
+        _oauth_complete(session_factory, route.instagram_account_id, message_id, "message", failed=True)
+        _log_oauth_engagement_failure(exc, context="message")
+
+
+def process_due_oauth_followups(now=None):
+    """Process durable OAuth jobs without touching legacy JSON follow-ups."""
+    session_factory = _oauth_session_factory()
+    if session_factory is None:
+        return
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    try:
+        with session_factory.begin() as db_session:
+            reap_expired_oauth_followup_leases(db_session, now=current)
+            claimed_jobs = claim_due_oauth_followups(db_session, now=current)
+    except Exception as exc:
+        _log_oauth_followup_claim_failure(exc)
+        return
+
+    for job in claimed_jobs:
+        try:
+            delivery_time = current if now is not None else datetime.now(timezone.utc)
+            if (
+                job.provider_window_expires_at is not None
+                and delivery_time >= job.provider_window_expires_at
+            ):
+                with session_factory.begin() as db_session:
+                    finalize_oauth_followup_failure(
+                        db_session,
+                        job.id,
+                        job.lease_token,
+                        category="outside_provider_window",
+                        retryable=False,
+                        now=current,
+                    )
+                print("OAUTH FOLLOW-UP: delivery skipped. reason=outside_provider_window")
+                continue
+            with session_factory() as db_session:
+                external_id = oauth_followup_account_external_id(
+                    db_session, job.instagram_account_id
+                )
+            outcome = send_oauth_delayed_followup(
+                session_factory,
+                instagram_account_id=job.instagram_account_id,
+                instagram_user_id=external_id,
+                recipient_id=job.recipient_id,
+                message_text=job.message_text,
+                provider_window_expires_at=job.provider_window_expires_at,
+            )
+            with session_factory.begin() as db_session:
+                if outcome == "success":
+                    finalize_oauth_followup_success(db_session, job.id, job.lease_token, now=current)
+                elif outcome == "retryable_pre_dispatch":
+                    finalize_oauth_followup_failure(
+                        db_session, job.id, job.lease_token,
+                        category="credential_unavailable", retryable=True, now=current,
+                    )
+                elif outcome == "provider_rejected":
+                    finalize_oauth_followup_failure(
+                        db_session, job.id, job.lease_token,
+                        category="provider_rejected", retryable=False, now=current,
+                    )
+                elif outcome in {"capability_unavailable", "outside_provider_window"}:
+                    finalize_oauth_followup_failure(
+                        db_session, job.id, job.lease_token,
+                        category=outcome, retryable=False, now=current,
+                    )
+                else:
+                    finalize_oauth_followup_failure(
+                        db_session, job.id, job.lease_token,
+                        category="ambiguous_graph_failure", retryable=False, now=current,
+                    )
+        except Exception:
+            try:
+                with session_factory.begin() as db_session:
+                    finalize_oauth_followup_failure(
+                        db_session, job.id, job.lease_token,
+                        category="database_unavailable", retryable=True, now=current,
+                    )
+            except Exception:
+                pass
+            print("OAUTH FOLLOW-UP: processing unavailable.")
+
+
+def process_oauth_webhook_entry(entry, route, entry_external_id, public_base_url):
+    """Handle OAuth events only; no legacy handler, JSON store, or token fallback."""
+    session_factory = _oauth_session_factory()
+    if session_factory is None or not isinstance(entry, dict):
+        return
+    if oauth_engagement_capability_state(
+        session_factory,
+        instagram_account_id=route.instagram_account_id,
+        instagram_user_id=entry_external_id,
+    ) != "active":
+        return
+    changes = entry.get("changes", [])
+    if isinstance(changes, list):
+        for change in changes:
+            if isinstance(change, dict) and change.get("field") == "comments" and isinstance(change.get("value"), dict):
+                _process_oauth_comment(change["value"], route, entry_external_id, public_base_url, session_factory)
+    messaging_events = entry.get("messaging", [])
+    if isinstance(messaging_events, list):
+        for event in messaging_events:
+            if _messaging_event_matches_entry(event, entry_external_id):
+                _process_oauth_message(event, route, entry_external_id, session_factory)
+
+
+def _oauth_webhook_entry_from_work(work):
+    if work.event_type == "comment":
+        return {
+            "id": work.instagram_user_id,
+            "changes": [{"field": "comments", "value": work.payload}],
+        }
+    if work.event_type == "message":
+        return {"id": work.instagram_user_id, "messaging": [work.payload]}
+    return None
+
+
+def process_due_oauth_webhook_work(now=None):
+    """Consume durable ingress without replaying terminal or ambiguous work."""
+    session_factory = _oauth_session_factory()
+    if session_factory is None:
+        return
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    try:
+        with session_factory.begin() as db_session:
+            claimed_work = claim_due_oauth_webhook_work(db_session, now=current)
+    except Exception:
+        print("OAUTH INGRESS: work claim unavailable.")
+        return
+
+    for work in claimed_work:
+        try:
+            with session_factory() as db_session:
+                account_matches = oauth_webhook_work_account_matches(
+                    db_session,
+                    instagram_account_id=work.instagram_account_id,
+                    instagram_user_id=work.instagram_user_id,
+                )
+            entry = _oauth_webhook_entry_from_work(work)
+            if not account_matches or entry is None:
+                raise RuntimeError("OAuth ingress account binding unavailable")
+            route = InstagramAccountRoute(work.instagram_account_id, "oauth")
+            process_oauth_webhook_entry(
+                entry, route, work.instagram_user_id, work.public_base_url
+            )
+        except Exception:
+            try:
+                with session_factory.begin() as db_session:
+                    fail_oauth_webhook_work(
+                        db_session, work.id, work.lease_token, now=current
+                    )
+            except Exception:
+                pass
+            print("OAUTH INGRESS: work processing unavailable.")
+            continue
+        try:
+            with session_factory.begin() as db_session:
+                complete_oauth_webhook_work(
+                    db_session, work.id, work.lease_token, now=current
+                )
+        except Exception:
+            print("OAUTH INGRESS: work completion unavailable.")
+
+
 def process_webhook_background(
     data,
-    public_base_url
+    public_base_url,
+    *,
+    process_oauth=True,
+    process_durable_oauth=True,
 ):
+    """Dispatch each signed entry independently, with no cross-tenant fallback."""
 
+    entries = data.get("entry", []) if isinstance(data, dict) else []
+    if not isinstance(entries, list):
+        return
+
+    for entry in entries:
+        entry_external_id = _webhook_entry_external_id(entry)
+        if entry_external_id is None:
+            print("WEBHOOK ROUTING: entry skipped (invalid envelope).")
+            continue
+        print(f"WEBHOOK ROUTING: resolving entry_external_id={entry_external_id}")
+        try:
+            route = _resolve_webhook_entry_route(entry_external_id)
+        except RuntimeAccountRouteUnavailableError:
+            print(f"WEBHOOK ROUTING: unavailable entry_external_id={entry_external_id} reason=account_route_unavailable")
+            continue
+        except Exception as exc:
+            print(f"WEBHOOK ROUTING: unexpected failure entry_external_id={entry_external_id} exception={type(exc).__name__}")
+            continue
+
+        if route.connection_mode == "oauth":
+            print("WEBHOOK ROUTING: oauth_route_selected=True")
+            if not process_oauth:
+                continue
+            try:
+                process_oauth_webhook_entry(entry, route, entry_external_id, public_base_url)
+            except Exception:
+                print("WEBHOOK ROUTING: OAuth entry skipped (engagement unavailable).")
+            continue
+        try:
+            _process_legacy_webhook_entry(entry, entry_external_id, public_base_url)
+        except Exception:
+            print("WEBHOOK ROUTING: entry skipped (legacy processing failed).")
+    if not process_oauth and process_durable_oauth:
+        process_due_oauth_webhook_work()
+
+
+def _configured_public_base_url() -> str | None:
+    """Return a safe configured HTTPS base URL, if this deployment provides one."""
     try:
+        parsed = urlsplit(PUBLIC_BASE_URL)
+        if (
+            parsed.scheme != "https"
+            or not parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            return None
+        _ = parsed.port
+    except (TypeError, ValueError):
+        return None
+    return urlunsplit(("https", parsed.netloc, parsed.path.rstrip("/"), "", ""))
 
-        entries = data.get(
-            "entry",
-            []
-        )
 
-        for entry in entries:
-
-            changes = entry.get(
-                "changes",
-                []
-            )
-
-            for change in changes:
-
-                field = change.get(
-                    "field"
-                )
-
-                value = change.get(
-                    "value",
-                    {}
-                )
-
-                if field == "comments":
-
-                    process_comment(
-                        value,
-                        public_base_url
-                    )
-
-            messaging_events = entry.get(
-                "messaging",
-                []
-            )
-
-            for event in messaging_events:
-
-                process_message_event(
-                    event
-                )
-
-    except Exception as error:
-
-        print(
-            "BACKGROUND ERROR:",
-            error
-        )
+def _public_webhook_base_url() -> str:
+    """Keep generated links public when a production proxy terminates TLS."""
+    configured = _configured_public_base_url()
+    if configured is not None:
+        return configured
+    request_base = request.host_url.rstrip("/")
+    if not IS_PRODUCTION:
+        return request_base
+    try:
+        parsed = urlsplit(request_base)
+        hostname = (parsed.hostname or "").lower()
+        if (
+            parsed.scheme == "http"
+            and parsed.netloc
+            and hostname
+            and hostname not in {"localhost", "127.0.0.1", "::1"}
+            and not hostname.endswith((".local", ".internal"))
+        ):
+            return urlunsplit(("https", parsed.netloc, parsed.path.rstrip("/"), "", ""))
+    except (TypeError, ValueError):
+        pass
+    return request_base
 
 
 # ==================================================
@@ -3689,6 +4726,9 @@ def process_webhook_background(
 def receive_webhook():
 
     signature_valid = verify_meta_signature()
+    if signature_valid is None:
+        if not app.config.get("WEBHOOK_UNSIGNED_COMPATIBILITY", False):
+            return "Webhook signature verification is required.", 503
     if signature_valid is False:
         return "Invalid webhook signature.", 403
 
@@ -3696,10 +4736,14 @@ def receive_webhook():
         silent=True
     ) or {}
 
-    public_base_url = (
-        request.host_url
-        .rstrip("/")
-    )
+    public_base_url = _public_webhook_base_url()
+
+    try:
+        oauth_work_persisted = persist_oauth_webhook_ingress(data, public_base_url)
+    except Exception:
+        # Meta must redeliver if a routed OAuth event could not be made durable.
+        print("OAUTH INGRESS: persistence unavailable.")
+        return "Webhook ingress is temporarily unavailable.", 503
 
     worker = threading.Thread(
 
@@ -3710,6 +4754,11 @@ def receive_webhook():
             data,
             public_base_url
         ),
+
+        kwargs={
+            "process_oauth": False,
+            "process_durable_oauth": oauth_work_persisted > 0,
+        },
 
         daemon=True
     )
@@ -3862,7 +4911,7 @@ MUSIC SUGGESTIONS:
 
         print(
             "DASHBOARD GEMINI ERROR:",
-            error
+            type(error).__name__
         )
 
         return {
@@ -3963,7 +5012,7 @@ def approve_dashboard_draft():
         }, 200
 
     except Exception as error:
-        print("APPROVE DRAFT ERROR:", error)
+        print("APPROVE DRAFT ERROR:", type(error).__name__)
         return {"error": "Could not save the draft."}, 500
 
 
@@ -4059,10 +5108,10 @@ def get_instagram_published_posts():
         return {"posts": cleaned}, 200
 
     except requests.RequestException as error:
-        print("INSTAGRAM PUBLISHED POSTS ERROR:", error)
+        print("INSTAGRAM PUBLISHED POSTS ERROR:", type(error).__name__)
         return {"error": "Could not connect to Instagram."}, 502
     except Exception as error:
-        print("INSTAGRAM PUBLISHED POSTS ERROR:", error)
+        print("INSTAGRAM PUBLISHED POSTS ERROR:", type(error).__name__)
         return {"error": "Could not load Instagram posts."}, 500
 
 
@@ -4292,7 +5341,7 @@ Advanced analytics JSON:
         summary = re.sub(r"\s+", " ", str(response.text or "")).strip()
         return summary[:900] if summary else fallback
     except Exception as error:
-        print("ADVANCED ANALYTICS GEMINI ERROR:", error)
+        print("ADVANCED ANALYTICS GEMINI ERROR:", type(error).__name__)
         return fallback
 
 
@@ -4472,7 +5521,7 @@ def get_instagram_analytics():
                     try:
                         indexed_posts[index] = future.result()
                     except Exception as error:
-                        print("INSTAGRAM ANALYTICS MEDIA ERROR:", error)
+                        print("INSTAGRAM ANALYTICS MEDIA ERROR:", type(error).__name__)
                         indexed_posts[index] = build_post(raw_posts[index]) if False else {
                             "id": str(raw_posts[index].get("id", "") or ""),
                             "caption": str(raw_posts[index].get("caption", "") or ""),
@@ -4528,10 +5577,10 @@ def get_instagram_analytics():
         }, 200
 
     except requests.RequestException as error:
-        print("INSTAGRAM ANALYTICS CONNECTION ERROR:", error)
+        print("INSTAGRAM ANALYTICS CONNECTION ERROR:", type(error).__name__)
         return {"error": "Could not connect to Instagram analytics."}, 502
     except Exception as error:
-        print("INSTAGRAM ANALYTICS ERROR:", error)
+        print("INSTAGRAM ANALYTICS ERROR:", type(error).__name__)
         return {"error": "Could not load Instagram analytics."}, 500
 
 
@@ -4631,7 +5680,7 @@ Recent post data:
         return cleaned, 200
 
     except Exception as error:
-        print("CONTENT PLANNER GEMINI ERROR:", error)
+        print("CONTENT PLANNER GEMINI ERROR:", type(error).__name__)
         return {"error": "Gemini could not generate the content plan."}, 500
 
 
@@ -4689,7 +5738,7 @@ def get_published_permalink(draft_id):
         return {"success": True, "permalink": permalink}, 200
 
     except Exception as error:
-        print("INSTAGRAM PERMALINK ERROR:", error)
+        print("INSTAGRAM PERMALINK ERROR:", type(error).__name__)
         return {"error": "Could not get Instagram permalink."}, 500
 
 
@@ -4806,7 +5855,7 @@ def dashboard_draft_image(draft_id, filename):
 
         print(
             "DRAFT IMAGE ERROR:",
-            error
+            type(error).__name__
         )
 
         return Response(status=404)
@@ -4905,11 +5954,11 @@ def upload_draft_image_to_cloudinary(draft_id, image_number, file_path):
         return secure_url, ""
 
     except requests.RequestException as error:
-        print("CLOUDINARY REQUEST ERROR:", error)
+        print("CLOUDINARY REQUEST ERROR:", type(error).__name__)
         return None, "Cloudinary upload request failed: " + str(error)
 
     except Exception as error:
-        print("CLOUDINARY UPLOAD ERROR:", error)
+        print("CLOUDINARY UPLOAD ERROR:", type(error).__name__)
         return None, "Could not prepare the image for Cloudinary: " + str(error)
 
 
@@ -5029,7 +6078,7 @@ Post caption:
         if result:
             return result[:80]
     except Exception as error:
-        print("DAILY AUTO STORY GEMINI ERROR:", error)
+        print("DAILY AUTO STORY GEMINI ERROR:", type(error).__name__)
 
     return fallback
 
@@ -5362,7 +6411,7 @@ def instagram_archive_posts(limit=25):
             return []
         return [item for item in data.get("data", []) if isinstance(item, dict)]
     except Exception as error:
-        print("DAILY AUTO STORY MEDIA LOOKUP ERROR:", error)
+        print("DAILY AUTO STORY MEDIA LOOKUP ERROR:", type(error).__name__)
         return []
 
 
@@ -5454,7 +6503,7 @@ def _download_daily_archive_image(url):
         if response.ok and response.content:
             return response.content
     except Exception as error:
-        print("DAILY AUTO STORY DOWNLOAD ERROR:", error)
+        print("DAILY AUTO STORY DOWNLOAD ERROR:", type(error).__name__)
     return None
 
 
@@ -6012,7 +7061,7 @@ def publish_scheduled_story(story_id):
             save_stories(stories)
 
     except Exception as error:
-        print("SCHEDULED STORY ERROR:", error)
+        print("SCHEDULED STORY ERROR:", type(error).__name__)
 
         with STATE_LOCK:
             stories = load_stories()
@@ -6123,7 +7172,7 @@ def instagram_container_status(creation_id):
         return str(data.get("status_code", "") or "").upper()
 
     except Exception as error:
-        print("CONTAINER STATUS ERROR:", error)
+        print("CONTAINER STATUS ERROR:", type(error).__name__)
         return ""
 
 
@@ -6364,7 +7413,7 @@ def acquire_schedule_lock(draft_id):
     except FileExistsError:
         return None
     except Exception as error:
-        print("SCHEDULE LOCK ERROR:", error)
+        print("SCHEDULE LOCK ERROR:", type(error).__name__)
         return None
 
 
@@ -6374,7 +7423,7 @@ def release_schedule_lock(lock_path):
     try:
         Path(lock_path).unlink(missing_ok=True)
     except Exception as error:
-        print("SCHEDULE LOCK RELEASE ERROR:", error)
+        print("SCHEDULE LOCK RELEASE ERROR:", type(error).__name__)
 
 
 @app.route("/api/schedule-draft", methods=["POST"])
@@ -6501,7 +7550,7 @@ def publish_scheduled_draft(draft_id):
             save_json_file(DRAFTS_FILE, drafts)
 
     except Exception as error:
-        print("SCHEDULED PUBLISH ERROR:", error)
+        print("SCHEDULED PUBLISH ERROR:", type(error).__name__)
         with STATE_LOCK:
             drafts = load_dashboard_drafts()
             for item in drafts:
@@ -6540,16 +7589,41 @@ def process_due_scheduled_posts():
             publish_scheduled_draft(draft_id)
 
 
+def process_due_tenant_content():
+    from database.content_publishing import execute_due_scheduled_content
+    factory = _oauth_session_factory()
+    if factory is not None:
+        execute_due_scheduled_content(factory)
+
+
+_oauth_maintenance_last_run = 0
+
+
+def process_oauth_maintenance():
+    global _oauth_maintenance_last_run
+    if time.monotonic() - _oauth_maintenance_last_run < 3600:
+        return
+    factory = _oauth_session_factory()
+    if factory is not None:
+        from database.token_refresh import refresh_expiring_tokens
+        from billing import reconcile_subscriptions
+        refresh_expiring_tokens(factory)
+        reconcile_subscriptions(factory)
+    _oauth_maintenance_last_run = time.monotonic()
+
+
 def dashboard_scheduler_loop():
     print("Dashboard scheduler: ON", f"({SCHEDULER_POLL_SECONDS}s, Africa/Casablanca)")
     while True:
-        try:
-            # V0.2: Posts are manual-publish only. Keep Story automation active.
-            process_daily_auto_story()
-            process_due_scheduled_stories()
-            process_due_followups()
-        except Exception as error:
-            print("DASHBOARD SCHEDULER ERROR:", error)
+        # Keep legacy posts manual-only; tenant image posts use durable DB claims.
+        for job in (process_oauth_maintenance, process_daily_auto_story,
+                    process_due_scheduled_stories, process_due_followups,
+                    process_due_oauth_webhook_work, process_due_oauth_followups,
+                    process_due_tenant_content):
+            try:
+                job()
+            except Exception as error:
+                print("DASHBOARD SCHEDULER ERROR:", job.__name__, type(error).__name__)
         time.sleep(SCHEDULER_POLL_SECONDS)
 
 
@@ -6562,7 +7636,8 @@ def start_dashboard_scheduler():
     thread.start()
 
 
-start_dashboard_scheduler()
+if os.getenv("POSTENZA_EMBEDDED_SCHEDULER", "true").lower() == "true":
+    start_dashboard_scheduler()
 
 
 

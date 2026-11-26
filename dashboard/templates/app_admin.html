@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#101828">
+    <title>Admin | Postenza</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='brand/postenza-favicon-32.png') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='tenant_dashboard.css') }}">
+</head>
+<body class="tenant-dashboard admin-dashboard">
+    <a class="skip-link" href="#admin-content">Skip to content</a>
+    <main id="admin-content" class="admin-shell" tabindex="-1">
+        <header class="admin-header">
+            <div class="admin-header-copy"><p class="eyebrow">Internal operations</p><h1>Postenza Admin</h1><p class="muted">Read-only product visibility for {{ current_user.display_name }}.</p></div>
+            <a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_overview') }}">Back to workspace</a>
+        </header>
+
+        <dl class="summary-grid admin-summary" aria-label="Product summary">
+            <div class="summary-card card"><dt>Total registered users</dt><dd data-admin-metric="registered-users">{{ admin.total_registered_users }}</dd></div>
+            <div class="summary-card card"><dt>Connected Instagram accounts</dt><dd data-admin-metric="connected-instagram">{{ admin.connected_instagram_accounts }}</dd></div>
+            <div class="summary-card card"><dt>Active users</dt><dd data-admin-metric="active-users">Unavailable</dd><p class="helper-text">Active users are unavailable until a persisted activity definition exists.</p></div>
+        </dl>
+
+        <section class="card admin-section">
+            <div class="section-heading"><div><p class="eyebrow">Accounts</p><h2>Recent signups</h2></div><span class="status-pill status-neutral">Latest {{ admin.recent_signups | length }}</span></div>
+            <div class="admin-table-wrap">
+                <table class="admin-table">
+                    <thead><tr><th scope="col">User</th><th scope="col">Created</th><th scope="col">Instagram accounts</th></tr></thead>
+                    <tbody>{% for signup in admin.recent_signups %}<tr><td data-label="User"><span class="admin-user"><strong>{{ signup.display_name }}</strong><span>{{ signup.email }}</span></span></td><td data-label="Created" class="admin-td-time">{{ display_time(signup.created_at) }}</td><td data-label="Instagram accounts"><span class="admin-count-pill">{{ signup.owned_instagram_accounts }} owned / {{ signup.connected_instagram_accounts }} connected</span></td></tr>{% else %}<tr class="admin-empty"><td colspan="3">No registered users yet.</td></tr>{% endfor %}</tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="admin-future-grid" aria-label="Onboarding distributions">
+            <article class="card admin-section">
+                <div class="section-heading"><div><p class="eyebrow">Plans</p><h2>Plan distribution</h2></div></div>
+                {% set plan_total = admin.plan_distribution | sum(attribute='count') %}
+                <dl class="admin-distribution">{% for item in admin.plan_distribution %}{% set plan_pct = ((item.count * 100 / plan_total) | round | int) if plan_total else 0 %}<div class="admin-dist-row{% if item.value == 'unknown' %} admin-dist-unknown{% endif %}" style="--admin-bar: {{ plan_pct }}%;"><dt>{{ item.label }}{% if item.count %} <span class="admin-dist-pct">{{ plan_pct }}%</span>{% endif %}</dt><dd data-admin-plan="{{ item.value }}">{{ item.count }}</dd></div>{% endfor %}</dl>
+                <p class="helper-text">Selections are informational and do not represent billing or entitlements.</p>
+            </article>
+            <article class="card admin-section">
+                <div class="section-heading"><div><p class="eyebrow">Attribution</p><h2>Onboarding sources</h2></div></div>
+                {% set source_total = admin.onboarding_source_attribution | sum(attribute='count') %}
+                {% set ranked_sources = admin.onboarding_source_attribution | rejectattr('value', 'equalto', 'unknown') | sort(attribute='count', reverse=true) %}
+                {% set unknown_source = admin.onboarding_source_attribution | selectattr('value', 'equalto', 'unknown') | first %}
+                <dl class="admin-distribution">{% for item in ranked_sources %}{% set source_pct = ((item.count * 100 / source_total) | round | int) if source_total else 0 %}<div class="admin-dist-row" style="--admin-bar: {{ source_pct }}%;"><dt>{{ item.label }}{% if item.count %} <span class="admin-dist-pct">{{ source_pct }}%</span>{% endif %}</dt><dd data-admin-source="{{ item.value }}">{{ item.count }}</dd></div>{% endfor %}{% if unknown_source %}{% set unknown_pct = ((unknown_source.count * 100 / source_total) | round | int) if source_total else 0 %}<div class="admin-dist-row admin-dist-unknown" style="--admin-bar: {{ unknown_pct }}%;"><dt>{{ unknown_source.label }}{% if unknown_source.count %} <span class="admin-dist-pct">{{ unknown_pct }}%</span>{% endif %}</dt><dd data-admin-source="{{ unknown_source.value }}">{{ unknown_source.count }}</dd></div>{% endif %}</dl>
+            </article>
+        </section>
+    </main>
+</body>
+</html>

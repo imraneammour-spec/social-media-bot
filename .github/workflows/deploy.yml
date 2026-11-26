@@ -1,0 +1,35 @@
+name: Deploy validated staging image
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Immutable GHCR image tag or digest that passed CI
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: postenza-staging
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Configure SSH with a pinned host key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.POSTENZA_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.POSTENZA_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: Deploy after the database recovery gate
+        env:
+          IMAGE: ${{ inputs.image }}
+          DEPLOY_HOST: ${{ secrets.POSTENZA_SSH_HOST }}
+          DEPLOY_USER: ${{ secrets.POSTENZA_SSH_USER }}
+        run: |
+          python3 -c 'import os,re; assert re.fullmatch(r"ghcr.io/[a-z0-9_-]+/[a-z0-9_.-]+(?::[a-f0-9]{40}|@sha256:[a-f0-9]{64})",os.environ["IMAGE"])'
+          ssh -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" "POSTENZA_IMAGE='$IMAGE' bash /srv/postenza/deploy/update.sh"

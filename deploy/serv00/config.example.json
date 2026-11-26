@@ -1,0 +1,6 @@
+{
+  "DATABASE_URL": "postgresql+psycopg://LOGIN_staging:URL_ENCODED_PASSWORD@pgsqlX.serv00.com:5432/LOGIN_staging?sslmode=require",
+  "FLASK_SECRET_KEY": "REPLACE_WITH_A_FRESH_RANDOM_SECRET_AT_LEAST_32_CHARACTERS",
+  "PUBLIC_BASE_URL": "https://STAGING_HOST.serv00.net",
+  "POSTENZA_DATA_DIR": "/usr/home/LOGIN/postenza-shared/data"
+}

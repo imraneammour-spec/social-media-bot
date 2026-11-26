@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="{{ locale.code }}" dir="{{ locale.direction }}">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f7f8fc">
+    <title>{% block auth_title %}{{ t('product_name') }}{% endblock %}</title>
+    <link rel="icon" type="image/png" sizes="16x16" href="{{ url_for('static', filename='brand/postenza-favicon-16.png') }}">
+    <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='brand/postenza-favicon-32.png') }}">
+    <link rel="icon" type="image/png" sizes="48x48" href="{{ url_for('static', filename='brand/postenza-favicon-48.png') }}">
+    <link rel="icon" type="image/png" sizes="192x192" href="{{ url_for('static', filename='brand/postenza-icon-192.png') }}">
+    <link rel="icon" type="image/png" sizes="512x512" href="{{ url_for('static', filename='brand/postenza-favicon.png') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='auth.css') }}">
+</head>
+<body class="auth-page">
+    <a class="skip-link" href="#main-content">{{ t('Skip to content') }}</a>
+    <header class="auth-header">
+        <div class="auth-header-inner">
+            <a class="auth-brand" href="{{ auth_home_url }}"><img src="{{ url_for('static', filename='brand/postenza-logo-light.png') }}" alt="Postenza" width="132" height="34"></a>
+            <form class="auth-locale" method="post" action="{{ url_for('auth_locale') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="next" value="{{ request.path }}">
+                <label class="auth-locale-label" for="auth-locale-select">{{ t('language') }}</label>
+                <select id="auth-locale-select" name="locale">
+                    {% for code, details in locale_options.items() %}
+                    <option value="{{ code }}" {% if locale.code == code %}selected{% endif %}>{{ details.label }}</option>
+                    {% endfor %}
+                </select>
+                <button class="button button-secondary" type="submit">{{ t('Apply language') }}</button>
+            </form>
+        </div>
+    </header>
+    <main class="auth-main" id="main-content" tabindex="-1">
+        <div class="auth-card">
+            {% block auth_content %}{% endblock %}
+        </div>
+        <nav class="auth-footer-links">
+            <a href="{{ terms_url }}">{{ t('Terms of Service') }}</a>
+            <a href="{{ privacy_url }}">{{ t('Privacy Policy') }}</a>
+        </nav>
+    </main>
+    <script>document.addEventListener('submit', (event) => { const text = event.submitter?.dataset.confirm; if (text && !window.confirm(text)) event.preventDefault(); });</script>
+</body>
+</html>

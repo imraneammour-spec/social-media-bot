@@ -1,0 +1,14 @@
+[Unit]
+Description=Read-only Postenza readiness, containers, disk and backup checks
+After=docker.service
+ConditionPathExists=/srv/postenza/.env.production
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+SupplementaryGroups=docker
+WorkingDirectory=/srv/postenza
+EnvironmentFile=-/etc/postenza-operations.env
+ExecStart=/usr/bin/bash /srv/postenza/deploy/monitor.sh
+TimeoutStartSec=90

@@ -228,7 +228,7 @@ class LandingPageTest(unittest.TestCase):
 
         self.assertEqual(page.count(verification_tag), 1)
 
-    def test_sitemap_exposes_only_the_canonical_public_homepage(self):
+    def test_sitemap_exposes_all_canonical_public_pages(self):
         response = self.client.get("/sitemap.xml")
 
         self.assertEqual(response.status_code, 200)
@@ -238,7 +238,18 @@ class LandingPageTest(unittest.TestCase):
             element.text
             for element in root.findall("{http://www.sitemaps.org/schemas/sitemap/0.9}url/{http://www.sitemaps.org/schemas/sitemap/0.9}loc")
         ]
-        self.assertEqual(locations, ["https://postenza.app/"])
+        self.assertEqual(
+            locations,
+            [
+                "https://postenza.app/",
+                "https://postenza.app/features/instagram-scheduling",
+                "https://postenza.app/features/instagram-automation",
+                "https://postenza.app/pricing",
+                "https://postenza.app/privacy",
+                "https://postenza.app/terms",
+                "https://postenza.app/deletion",
+            ],
+        )
 
     def test_robots_allows_the_homepage_and_protects_private_routes(self):
         response = self.client.get("/robots.txt")
@@ -250,12 +261,16 @@ class LandingPageTest(unittest.TestCase):
             "Disallow: /login\n"
             "Disallow: /register\n"
             "Disallow: /logout\n"
+            "Disallow: /onboarding\n"
+            "Disallow: /auth/\n"
             "Disallow: /connect/\n"
             "Disallow: /disconnect/\n"
             "Disallow: /oauth/\n"
             "Disallow: /webhook\n"
+            "Disallow: /billing/\n"
             "Disallow: /api/\n"
             "Disallow: /health\n"
+            "Disallow: /ready\n"
             "Disallow: /p/\n"
             "\n"
             "Sitemap: https://postenza.app/sitemap.xml\n"

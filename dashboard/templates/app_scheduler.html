@@ -1,0 +1,27 @@
+{% extends "app_base.html" %}
+{% block title %}{{ t('Calendar') }}{% endblock %}
+{% block heading %}{{ t('Calendar') }}{% endblock %}
+{% block content %}
+<section class="page-intro"><p class="eyebrow">{{ t('Publishing calendar') }}</p><h2>{{ t('See what is scheduled, shared, and ready for review.') }}</h2><p class="muted">{{ t('Manage image publishing here. Automation follow-ups have their own space under Engagement.') }}</p></section>
+
+<section class="agenda-section" aria-label="{{ t('Content schedule') }}">
+  <div class="section-heading"><div><p class="eyebrow">{{ t('Publishing agenda') }}</p><h2>{{ t('Your image posts') }}</h2></div></div>
+  <nav class="segmented-nav" aria-label="{{ t('Publishing agenda filters') }}">
+    {% for value, label in (('all', 'All'), ('scheduled', 'Scheduled'), ('published', 'Published'), ('failed', 'Needs attention')) %}
+    <a href="{{ url_for('tenant_dashboard.app_scheduler', account=selected_account.selection_ref, content_status=value) }}" {% if selected_content_status == value %}aria-current="page"{% endif %}>{{ t(label) }}</a>
+    {% endfor %}
+  </nav>
+  <div class="agenda-list">
+    {% for agenda_day, items in agenda_content|groupby('agenda_day') %}
+    <section class="agenda-day-group"><h3>{{ t(agenda_day) }}</h3>{% for item in items %}
+    <article class="agenda-row card">
+      <div class="agenda-thumbnail">{% if item.media_url %}<img src="{{ item.media_url }}" alt="{{ t('Image post preview') }}" loading="lazy" referrerpolicy="no-referrer">{% else %}<span>{{ t('Image') }}</span>{% endif %}</div>
+      <div class="agenda-copy"><p class="agenda-date">{{ display_time(item.display_time) }}</p><h3>{{ item.caption_preview or t('Untitled image post') }}</h3><p class="muted">{% if item.status == 'scheduled' %}{{ t('Scheduled for') }} {{ display_time(item.display_time) }}{% elif item.status == 'published' %}{{ t('Published') }} {{ display_time(item.display_time) }}{% else %}{{ t('Instagram could not publish this image. Review the image and your Instagram connection before creating a new post.') }}{% endif %}</p></div>
+      <div class="agenda-actions"><span class="status-pill {% if item.status == 'scheduled' %}status-primary{% elif item.status == 'published' %}status-success{% else %}status-error{% endif %}">{% if item.status == 'failed' %}{{ t('Needs attention') }}{% else %}{{ t(item.status|capitalize) }}{% endif %}</span>{% if item.status == 'scheduled' %}<form method="post" action="{{ url_for('tenant_dashboard.app_content_unschedule_draft', account=selected_account.selection_ref) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="draft_ref" value="{{ item.unschedule_ref }}"><button class="button button-secondary" type="submit">{{ t('Return to draft') }}</button></form>{% endif %}</div>
+    </article>
+    {% endfor %}</section>{% else %}<p class="empty-state">{{ t('No image posts match this filter yet.') }}</p>{% endfor %}
+  </div>
+</section>
+
+<p><a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_followups', account=selected_account.selection_ref) }}">{{ t('Manage automation follow-ups') }}</a></p>
+{% endblock %}

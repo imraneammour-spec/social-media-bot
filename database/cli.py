@@ -10,6 +10,7 @@ from flask import Flask
 
 from .bootstrap import BootstrapConfigurationError, bootstrap_current_owner
 from .config import database_url_from_environment
+from .content_publishing import execute_due_scheduled_content
 from .runtime import create_session_factory
 
 
@@ -52,4 +53,19 @@ def register_database_commands(
         click.echo(
             "Bootstrap complete: "
             f"user_created={result.user_created}, account_created={result.account_created}."
+        )
+
+    @app.cli.command("publish-scheduled-content")
+    @click.option("--limit", type=click.IntRange(1, 100), default=25, show_default=True)
+    def publish_scheduled_content(limit: int) -> None:
+        """Execute a bounded batch of due scheduled content after Alembic has run."""
+
+        database_url = database_url_from_environment()
+        if database_url is None:
+            raise click.ClickException("DATABASE_URL is required for publish-scheduled-content.")
+        summary = execute_due_scheduled_content(create_session_factory(database_url), limit=limit)
+        click.echo(
+            "scheduled_content_execution "
+            f"claimed={summary.claimed} published={summary.published} "
+            f"failed={summary.failed} skipped={summary.skipped}"
         )

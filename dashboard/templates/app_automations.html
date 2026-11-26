@@ -1,0 +1,62 @@
+{% extends "app_base.html" %}
+{% block title %}{{ t('Automation') }}{% endblock %}
+{% block heading %}{{ t('Automation') }}{% endblock %}
+{% macro mode_fields(mode_name, prefix, values) %}
+<div class="automation-mode-panel" data-mode-panel="{{ mode_name }}">
+  <section class="settings-group card">
+    <h2>{{ t('Reply to matching comments') }}</h2>
+    <label for="{{ prefix }}_trigger_keywords">{{ t('Keywords that start the flow') }}<input id="{{ prefix }}_trigger_keywords" name="{{ prefix }}_trigger_keywords" type="text" value="{{ values.trigger_keywords | join(', ') }}"><span class="helper-text">{{ t('Separate keywords with commas.') }}</span></label>
+    <div class="checkbox-field setting-toggle"><input id="{{ prefix }}_public_reply_enabled" type="checkbox" name="{{ prefix }}_public_reply_enabled" value="on" {% if values.public_reply_enabled %}checked{% endif %}><input type="hidden" name="{{ prefix }}_public_reply_enabled" value="off"><label for="{{ prefix }}_public_reply_enabled">{{ t('Public reply') }}</label></div>
+    <label for="{{ prefix }}_public_reply_text">{{ t('Public reply text') }}<input id="{{ prefix }}_public_reply_text" name="{{ prefix }}_public_reply_text" type="text" value="{{ t(values.public_reply_text) if values.public_reply_text == values.defaults.public_reply_text else values.public_reply_text }}"></label>
+  </section>
+  <section class="settings-group card">
+    <h2>{{ t('Private message and follow-up') }}</h2>
+    <label for="{{ prefix }}_private_message_text">{{ t('Opening message') }}<textarea id="{{ prefix }}_private_message_text" name="{{ prefix }}_private_message_text" rows="3">{{ t(values.private_message_text) if values.private_message_text == values.defaults.private_message_text else values.private_message_text }}</textarea>{% if mode_name == 'link' %}<span class="helper-text">{{ t('The destination URL is sent below this message.') }}</span>{% elif mode_name == 'direct_message' %}<span class="helper-text">{{ t('The matching comment triggers this first message.') }}</span>{% else %}<span class="helper-text">{{ t('This message appears before the recipient requests the prompt.') }}</span>{% endif %}</label>
+    {% if mode_name == 'link' %}<label for="link_destination_url">{{ t('Destination URL') }}<input id="link_destination_url" name="link_destination_url" type="url" inputmode="url" value="{{ values.destination_url }}"><span class="helper-text">{{ t('Use a complete http:// or https:// URL. Postenza does not open or inspect it.') }}</span></label>{% endif %}
+    <div class="checkbox-field setting-toggle"><input id="{{ prefix }}_followup_enabled" type="checkbox" name="{{ prefix }}_followup_enabled" value="on" {% if values.followup_enabled %}checked{% endif %}><input type="hidden" name="{{ prefix }}_followup_enabled" value="off"><label for="{{ prefix }}_followup_enabled">{{ t('Enable follow-up') }}</label></div>
+    {% if mode_name in ('direct_message', 'link') %}<div class="helper-panel"><p>{{ t('The recipient must reply to your initial private message before a follow-up can be scheduled.') }}</p><p>{{ t('If the recipient never replies, no follow-up is sent.') }}</p><p>{{ t('The delay starts after the recipient replies.') }}</p></div>{% else %}<p class="helper-text">{{ t('Prompt follow-ups use the existing prompt-access flow and its own timing.') }}</p>{% endif %}
+    <label for="{{ prefix }}_followup_delay_minutes">{% if mode_name == 'prompt_request' %}{{ t('Prompt follow-up delay (minutes)') }}{% else %}{{ t('Delay after recipient reply (minutes)') }}{% endif %}<input id="{{ prefix }}_followup_delay_minutes" name="{{ prefix }}_followup_delay_minutes" type="number" min="5" max="{% if mode_name == 'prompt_request' %}10080{% else %}1439{% endif %}" value="{{ values.followup_delay_minutes }}"></label>
+    {% if mode_name in ('direct_message', 'link') %}<label for="{{ prefix }}_followup_message_text">{{ t('Follow-up message text') }}<textarea id="{{ prefix }}_followup_message_text" name="{{ prefix }}_followup_message_text" rows="3">{{ t(values.followup_message_text) if values.followup_message_text == values.defaults.followup_message_text else values.followup_message_text }}</textarea><span class="helper-text">{{ t('Leave empty to skip this follow-up.') }}</span></label>{% endif %}
+  </section>
+</div>
+{% endmacro %}
+{% block content %}
+{% if automation_saved %}<p class="alert" role="status">{{ t('Automation settings saved.') }}</p>{% endif %}
+{% if automation_error %}<p class="alert alert-error" role="alert">{{ t(automation_error) }}</p>{% endif %}
+<section class="page-intro"><p class="eyebrow">{{ t('Automation') }}</p><h2>{{ t('Choose how your account responds to people.') }}</h2><p class="muted">{{ t('Public replies appear on your Instagram post. Private messages go to the person who commented.') }}</p></section>
+<form method="post" class="settings-form">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<section class="settings-group card">
+  <h2>{{ t('Automation status') }}</h2>
+  <div class="checkbox-field setting-toggle"><input id="automation_enabled" type="checkbox" name="enabled" {% if automation.enabled %}checked{% endif %}><label for="automation_enabled">{{ t('Enable automation') }}</label></div>
+  <label for="delivery_mode">{{ t('Delivery mode') }}<select id="delivery_mode" name="delivery_mode">{% if internal_prompt_access %}<option value="prompt_request" {% if automation.delivery_mode == 'prompt_request' %}selected{% endif %}>{{ t('Prompt') }}</option>{% endif %}<option value="direct_message" {% if automation.delivery_mode == 'direct_message' %}selected{% endif %}>{{ t('Message') }}</option><option value="link" {% if automation.delivery_mode == 'link' %}selected{% endif %}>{{ t('Link') }}</option></select></label>
+  {% if internal_prompt_access %}<div data-mode-description="prompt_request"><p class="helper-text">{{ t('Send the prompt connected to this post.') }}</p></div>{% endif %}
+  <div data-mode-description="direct_message"><p class="helper-text">{{ t('Send a custom private message.') }}</p><ol class="automation-flow" aria-label="{{ t('Custom message flow') }}"><li>{{ t('Matching comment') }}</li><li>{{ t('Public reply (optional)') }}</li><li>{{ t('Initial private message') }}</li><li>{{ t('Recipient replies') }}</li><li>{{ t('Delayed follow-up') }}</li></ol></div>
+  <div data-mode-description="link"><p class="helper-text">{{ t('Send a link of your choice.') }}</p></div>
+</section>
+{% if internal_prompt_access %}{{ mode_fields('prompt_request', 'prompt', automation.modes.prompt_request) }}{% endif %}
+{{ mode_fields('direct_message', 'message', automation.modes.direct_message) }}
+{{ mode_fields('link', 'link', automation.modes.link) }}
+<section class="settings-group card">
+  <h2>{{ t('Smart replies') }}</h2><p class="muted">{{ t('Smart replies handle comments that do not match your keywords. These replies are public.') }}</p>
+  <div class="checkbox-field setting-toggle"><input id="smart_reply_enabled" type="checkbox" name="smart_reply_enabled" {% if automation.smart_reply_enabled %}checked{% endif %}><label for="smart_reply_enabled">{{ t('Enable smart replies') }}</label></div>
+  <div class="settings-fields"><label for="smart_reply_tone">{{ t('Tone') }}<select id="smart_reply_tone" name="smart_reply_tone">{% for tone in smart_reply_tones %}<option value="{{ tone }}" {% if automation.smart_reply_tone == tone %}selected{% endif %}>{{ t(tone|capitalize) }}</option>{% endfor %}</select></label><label for="smart_reply_max_per_hour">{{ t('Maximum replies per hour') }}<input id="smart_reply_max_per_hour" name="smart_reply_max_per_hour" type="number" min="1" max="100" value="{{ automation.smart_reply_max_per_hour }}"></label></div>
+</section>
+<div class="form-actions"><button class="button button-primary" type="submit">{{ t('Save automation settings') }}</button></div>
+</form>
+<script>
+(() => {
+  const mode = document.getElementById('delivery_mode');
+  const destination = document.getElementById('link_destination_url');
+  const update = () => {
+    document.querySelectorAll('[data-mode-panel], [data-mode-description]').forEach(panel => {
+      const panelMode = panel.dataset.modePanel || panel.dataset.modeDescription;
+      panel.hidden = panelMode !== mode.value;
+    });
+    destination.required = mode.value === 'link';
+  };
+  mode.addEventListener('change', update);
+  update();
+})();
+</script>
+{% endblock %}
