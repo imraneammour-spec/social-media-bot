@@ -1366,11 +1366,7 @@ Comment: {source_text}
 
                 contents=instructions,
 
-                config=
-                    types.GenerateContentConfig(
-
-                        temperature=0.7
-                    )
+                config=types.GenerateContentConfig()
             )
         )
 
@@ -2040,8 +2036,6 @@ If there are no real prompts:
 
                         response_mime_type=
                             "application/json",
-
-                        temperature=0
                     )
             )
         )
@@ -3846,7 +3840,7 @@ Comment: {source_text}
         response = GEMINI_CLIENT.models.generate_content(
             model=GEMINI_MODEL,
             contents=instructions,
-            config=types.GenerateContentConfig(temperature=0.7),
+            config=types.GenerateContentConfig(),
         )
         reply = re.sub(r"\s+", " ", str(response.text or "")).strip().strip('"\'')
         return reply[:SMART_REPLY_MAX_LENGTH].rstrip()
@@ -3869,7 +3863,6 @@ def generate_oauth_lead_intelligence(context):
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
-                        temperature=0,
                     ),
                 ).text
                 or ""
@@ -3914,7 +3907,7 @@ def extract_oauth_prompts(media):
         response = GEMINI_CLIENT.models.generate_content(
             model=GEMINI_MODEL,
             contents=contents,
-            config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0),
+            config=types.GenerateContentConfig(response_mime_type="application/json"),
         )
         return parse_gemini_json(str(response.text or ""))
     except Exception:
@@ -4877,7 +4870,6 @@ MUSIC SUGGESTIONS:
             contents=contents,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                temperature=0.7
             )
         )
 
@@ -5336,7 +5328,7 @@ Advanced analytics JSON:
         response = GEMINI_CLIENT.models.generate_content(
             model=GEMINI_MODEL,
             contents=prompt,
-            config=types.GenerateContentConfig(temperature=0.35),
+            config=types.GenerateContentConfig(),
         )
         summary = re.sub(r"\s+", " ", str(response.text or "")).strip()
         return summary[:900] if summary else fallback
@@ -5662,7 +5654,6 @@ Recent post data:
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                temperature=0.45
             )
         )
         result = json.loads(response.text or "{}")
@@ -6072,7 +6063,7 @@ Post caption:
         response = GEMINI_CLIENT.models.generate_content(
             model=GEMINI_MODEL,
             contents=prompt,
-            config=types.GenerateContentConfig(temperature=0.5),
+            config=types.GenerateContentConfig(),
         )
         result = re.sub(r"\s+", " ", str(response.text or "")).strip().strip('"\'')
         if result:
