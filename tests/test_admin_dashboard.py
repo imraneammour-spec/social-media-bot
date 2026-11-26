@@ -78,8 +78,8 @@ class AdminDashboardTest(unittest.TestCase):
         self.assertNotIn("registered-users", response.get_data(as_text=True))
         self.assertEqual(forged_form.status_code, 405)
 
-    def test_admin_link_and_prompt_capability_share_internal_owner_boundary(self):
-        """Admin visibility must track the established Prompt owner boundary."""
+    def test_admin_link_is_hidden_from_the_sidebar_for_everyone(self):
+        """The /app/admin route stays, but its sidebar link is hidden until Admin is a real tool."""
 
         self._login_as(self.owner_b)
         customer_page = self.client.get("/app/automations").get_data(as_text=True)
@@ -97,7 +97,7 @@ class AdminDashboardTest(unittest.TestCase):
             )
         self._login_as(self.owner_a)
         internal_page = self.client.get("/app/automations").get_data(as_text=True)
-        self.assertIn('href="/app/admin"', internal_page)
+        self.assertNotIn('href="/app/admin"', internal_page)
         self.assertIn('value="prompt_request"', internal_page)
 
     def test_recent_signups_are_newest_first_with_safe_account_counts(self):

@@ -21,12 +21,11 @@
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <input type="hidden" name="next" value="{{ request.path }}">
                 <label class="auth-locale-label" for="auth-locale-select">{{ t('language') }}</label>
-                <select id="auth-locale-select" name="locale">
+                <select id="auth-locale-select" name="locale" onchange="this.form.submit()">
                     {% for code, details in locale_options.items() %}
                     <option value="{{ code }}" {% if locale.code == code %}selected{% endif %}>{{ details.label }}</option>
                     {% endfor %}
                 </select>
-                <button class="button button-secondary" type="submit">{{ t('Apply language') }}</button>
             </form>
         </div>
     </header>

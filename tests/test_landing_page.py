@@ -100,6 +100,42 @@ class LandingPageTest(unittest.TestCase):
         )[0]
         self.assertNotIn("Social media, on autopilot.", hero)
 
+    def test_landing_footer_legal_column_is_not_labelled_faq(self):
+        page = self.client.get("/").get_data(as_text=True)
+        footer = page.split("<footer", 1)[1]
+        self.assertIn("<b>Legal</b>", footer)
+        self.assertNotIn("<b>FAQ</b>", footer)
+
+    def test_landing_tagline_is_the_same_english_line_in_every_locale(self):
+        for locale in ("en", "fr", "ar"):
+            with self.subTest(locale=locale):
+                page = self._page_for_locale(locale)
+                self.assertEqual(page.count("Social media, on autopilot."), 1)
+
+    def test_landing_hero_mock_is_a_labelled_example_without_an_ai_content_assistant_card(self):
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertIn("Example workspace with sample data.", page)
+        self.assertIn("Top post", page)
+        self.assertIn("248 likes", page)
+        self.assertNotIn("AI content assistant", page)
+        self.assertNotIn("content assistant", page.lower())
+
+    def test_unknown_pages_get_the_branded_postenza_404(self):
+        for path in ("/no-such-page", "/app/no-such-page"):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                page = response.get_data(as_text=True)
+                self.assertEqual(response.status_code, 404)
+                self.assertIn("Page not found", page)
+                self.assertIn("Back to Postenza", page)
+                self.assertIn('href="/"', page)
+                self.assertIn("postenza-logo-light.png", page)
+
+    def test_app_onboarding_redirects_to_onboarding(self):
+        response = self.client.get("/app/onboarding", follow_redirects=False)
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["Location"], "/onboarding")
+
     def test_health_is_a_safe_liveness_response(self):
         response = self.client.get("/health")
 

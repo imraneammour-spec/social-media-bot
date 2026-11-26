@@ -844,11 +844,14 @@ def _analyze_lead(user, selected):
 
 
 def _legacy_automation_presentation():
-    """Return the read-only disabled presentation for the legacy account.
+    """Return the read-only presentation for the legacy account.
 
     The server-managed account has no tenant automation row and its
     engagement automation runs through the legacy bot, so the tenant
-    settings page shows the defaults with automation off instead of 404.
+    settings page shows the legacy bot as active (see
+    ``database.tenant_dashboard.legacy_automation_status``) instead of 404.
+    The form itself is rendered disabled; this presentation only decides
+    which toggles appear on.
     """
 
     modes = {}
@@ -858,7 +861,9 @@ def _legacy_automation_presentation():
         modes[mode] = values
     active_values = modes["prompt_request"]
     return {
-        "enabled": False,
+        "enabled": tenant_data.resolve_automation_enabled(
+            is_legacy=True, config_enabled=False
+        ),
         "modes": modes,
         "trigger_keywords": active_values["trigger_keywords"],
         "public_reply_enabled": active_values["public_reply_enabled"],
@@ -869,7 +874,7 @@ def _legacy_automation_presentation():
         "followup_enabled": active_values["followup_enabled"],
         "followup_delay_minutes": active_values["followup_delay_minutes"],
         "followup_message_text": active_values["followup_message_text"],
-        "smart_reply_enabled": False,
+        "smart_reply_enabled": True,
         "smart_reply_tone": "friendly",
         "smart_reply_max_per_hour": 20,
     }
@@ -1238,6 +1243,12 @@ def register_tenant_dashboard(app) -> None:
             display_time=lambda value: display_time(value, "en"),
         )
 
+    @dashboard.get("/onboarding")
+    def app_onboarding():
+        """Redirect the legacy /app/onboarding URL to the real onboarding flow."""
+
+        return _cache_control(redirect(url_for("onboarding"), code=303))
+
     @dashboard.get("")
     @_require_tenant
     def app_overview(
@@ -1248,6 +1259,7 @@ def register_tenant_dashboard(app) -> None:
         data = _query(
             selected,
             tenant_data.overview,
+            is_legacy=getattr(selected, "is_legacy", False),
         )
 
         if data is _DATABASE_UNAVAILABLE:
@@ -2135,6 +2147,7 @@ def register_tenant_dashboard(app) -> None:
         data = _query(
             selected,
             tenant_data.overview,
+            is_legacy=getattr(selected, "is_legacy", False),
         )
 
         if data is _DATABASE_UNAVAILABLE:

@@ -128,6 +128,11 @@ class AuthShellPolishTest(unittest.TestCase):
         self.assertIn('href="/terms"', page)
         self.assertIn('href="/privacy"', page)
 
+    def test_language_selector_applies_on_selection_without_an_apply_button(self):
+        page = self._page("/login")
+        self.assertIn('onchange="this.form.submit()"', page)
+        self.assertNotIn("Apply language", page)
+
     # 4. Language selector on all three pages -----------------------------
 
     def test_language_selector_appears_on_all_three_pages(self):

@@ -361,6 +361,32 @@ def _activation_status(
     return labels.get(assessment.state, labels["temporarily_unavailable"])
 
 
+LEGACY_AUTOMATION_LABEL = "Active"
+LEGACY_AUTOMATION_DETAIL = "Instagram engagement automation is active."
+
+
+def legacy_automation_status() -> tuple[str, str]:
+    """Return the one automation status shown for the server-managed account.
+
+    The legacy bot is active for the owner's account, and tenant automation
+    config rows never apply to it, so its status must never be derived from
+    InstagramAutomationConfig. Overview, Automation, and Instagram pages
+    all derive the legacy status from this helper.
+    """
+
+    return LEGACY_AUTOMATION_LABEL, LEGACY_AUTOMATION_DETAIL
+
+
+def resolve_automation_enabled(*, is_legacy: bool, config_enabled: bool) -> bool:
+    """Return whether automation is on for an account.
+
+    The legacy bot is always active; every other account follows its own
+    tenant automation config.
+    """
+
+    return True if is_legacy else bool(config_enabled)
+
+
 def _is_legacy_account(
     account: InstagramAccount,
     legacy_instagram_user_id: object,
@@ -404,14 +430,15 @@ def list_tenant_accounts(
     result: list[TenantAccount] = []
     for account in accounts:
         if _is_legacy_account(account, legacy_id):
+            activation_label, activation_detail = legacy_automation_status()
             result.append(
                 TenantAccount(
                     instagram_account_id=account.id,
                     username=_username(account.username),
                     connection_label="Connected",
                     connection_detail="Managed by server configuration.",
-                    activation_label="Active",
-                    activation_detail="Instagram engagement automation is active.",
+                    activation_label=activation_label,
+                    activation_detail=activation_detail,
                     can_reconnect=False,
                     can_disconnect=False,
                     is_legacy=True,
@@ -440,7 +467,7 @@ def list_tenant_accounts(
     return result
 
 
-def overview(session: Session, *, instagram_account_id: uuid.UUID) -> dict[str, object]:
+def overview(session: Session, *, instagram_account_id: uuid.UUID, is_legacy: bool = False) -> dict[str, object]:
     """Return only aggregate, account-scoped tenant counts."""
 
     def count(model) -> int:
@@ -554,7 +581,10 @@ def overview(session: Session, *, instagram_account_id: uuid.UUID) -> dict[str, 
             else None
         ),
         "recent_activity": activity(session, instagram_account_id=instagram_account_id, limit=5),
-        "automation_enabled": bool(automation.enabled) if automation is not None else False,
+        "automation_enabled": resolve_automation_enabled(
+            is_legacy=is_legacy,
+            config_enabled=bool(automation.enabled) if automation is not None else False,
+        ),
     }
 
 

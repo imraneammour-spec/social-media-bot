@@ -271,6 +271,13 @@ class TenantDashboardTest(unittest.TestCase):
             b"Automation for the server-managed account is managed by the legacy bot.",
             response.data,
         )
+        self.assertIn(
+            b"It replies when a comment contains a trigger word "
+            b"(ai, prompt, prompts, send, access).",
+            response.data,
+        )
+        self.assertIn(b'<form method="post" class="settings-form is-readonly">', response.data)
+        self.assertIn(b"<fieldset disabled>", response.data)
         self.assertNotIn(b"Save automation settings", response.data)
         csrf_token = re.search(
             r'name="csrf_token" value="([^"]+)"', response.get_data(as_text=True)
@@ -292,6 +299,31 @@ class TenantDashboardTest(unittest.TestCase):
                 )
             )
         self.assertIsNone(config)
+
+    def test_legacy_automation_status_is_the_same_on_overview_accounts_and_automations(self):
+        """Overview, Instagram, and Automation must all show the legacy bot as active."""
+        self._login_as(self.legacy_owner)
+
+        overview = self.client.get("/app").get_data(as_text=True)
+        self.assertIn("Automation is on", overview)
+        self.assertIn("The server-managed legacy bot is active for this account.", overview)
+        self.assertNotIn("Automation is off", overview)
+
+        accounts = self.client.get("/app/accounts").get_data(as_text=True)
+        self.assertIn("Active", accounts)
+        self.assertIn("Instagram engagement automation is active.", accounts)
+
+        automations = self.client.get("/app/automations").get_data(as_text=True)
+        self.assertIn(
+            '<input id="automation_enabled" type="checkbox" name="enabled" checked>',
+            automations,
+        )
+
+    def test_app_onboarding_redirects_to_onboarding(self):
+        self._login_as(self.owner_a)
+        response = self.client.get("/app/onboarding", follow_redirects=False)
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["Location"], "/onboarding")
 
     def test_legacy_content_scheduling_is_disabled_but_drafts_save(self):
         self._login_as(self.legacy_owner)
@@ -1977,6 +2009,13 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertIn('lang="ar"', page)
         self.assertIn('dir="rtl"', page)
         self.assertIn("نظرة عامة", page)
+
+    def test_language_selector_applies_on_selection_without_an_apply_button(self):
+        """Picking a language in the sidebar applies it immediately."""
+        self._login_as(self.owner_a)
+        page = self.client.get("/app").get_data(as_text=True)
+        self.assertIn('onchange="this.form.submit()"', page)
+        self.assertNotIn("Apply language", page)
 
     def test_content_and_engagement_pages_use_general_product_copy(self):
         """Normal dashboard pages must not present Sociora as prompt delivery software."""

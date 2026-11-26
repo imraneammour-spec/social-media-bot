@@ -384,6 +384,19 @@ def home():
     )
 
 
+@app.errorhandler(404)
+def page_not_found(error):
+    """Return the branded Postenza 404 page instead of the bare Flask one."""
+
+    locale = locale_context(session_locale(session))
+    return render_template(
+        "not_found.html",
+        locale=locale,
+        locale_options=LOCALE_META,
+        t=lambda key: translate(locale["code"], key),
+    ), 404
+
+
 @app.route("/sitemap.xml", methods=["GET"])
 def sitemap():
     from seo import PUBLIC_PAGES, origin
