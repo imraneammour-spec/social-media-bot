@@ -236,6 +236,7 @@ PUBLIC_REPLY_MESSAGES = [
 ]
 
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.7-flash").strip()
 
 
 def _sanitized_gemini_error(error):
@@ -265,6 +266,32 @@ def _gemini_generate_with_retry(generate, *, attempts=3, base_delay=5.0):
             delay = base_delay * (2 ** attempt)
             print(f"GEMINI RETRY: attempt {attempt + 1} failed ({detail}); retrying in {delay:.0f}s")
             time.sleep(delay)
+    raise last_error
+
+
+def _gemini_generate_content(contents):
+    """Generate content, trying the primary model then the fallback model.
+
+    Each model gets up to 3 attempts with backoff on transient 503s
+    (via _gemini_generate_with_retry). Raises the last error if both fail.
+    """
+    models = [GEMINI_MODEL]
+    if GEMINI_FALLBACK_MODEL and GEMINI_FALLBACK_MODEL != GEMINI_MODEL:
+        models.append(GEMINI_FALLBACK_MODEL)
+    last_error = None
+    for model in models:
+        try:
+            return _gemini_generate_with_retry(
+                lambda m=model: GEMINI_CLIENT.models.generate_content(
+                    model=m,
+                    contents=contents,
+                    config=types.GenerateContentConfig(),
+                )
+            )
+        except Exception as error:
+            last_error = error
+            if model != models[-1]:
+                print(f"GEMINI: model {model} failed ({_sanitized_gemini_error(error)}); trying fallback {models[-1]}")
     raise last_error
 
 from filelock import FileLock
@@ -1387,13 +1414,7 @@ Comment: {source_text}
 
     try:
 
-        response = _gemini_generate_with_retry(
-            lambda: GEMINI_CLIENT.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=instructions,
-                config=types.GenerateContentConfig(),
-            )
-        )
+        response = _gemini_generate_content(instructions)
 
         reply = str(
             response.text or ""
@@ -3862,13 +3883,7 @@ Return only the reply text, under {SMART_REPLY_MAX_LENGTH} characters.
 Comment: {source_text}
 """
     try:
-        response = _gemini_generate_with_retry(
-            lambda: GEMINI_CLIENT.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=instructions,
-                config=types.GenerateContentConfig(),
-            )
-        )
+        response = _gemini_generate_content(instructions)
         reply = re.sub(r"\s+", " ", str(response.text or "")).strip().strip('"\'')
         return reply[:SMART_REPLY_MAX_LENGTH].rstrip()
     except Exception as error:
