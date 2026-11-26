@@ -21,6 +21,7 @@ from flask import (
 )
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from auth import (
     SUPPORT_EMAIL,
@@ -62,7 +63,7 @@ from database.content_media import (
     delete_content_image,
     upload_content_image,
 )
-from database.models import InstagramAutomationConfig, InstagramContentItem
+from database.models import InstagramAutomationConfig, InstagramContentItem, User
 from database.tenant_automation import (
     AUTOMATION_DELIVERY_MODES,
     SMART_REPLY_TONES,
@@ -197,16 +198,10 @@ def _tenant_context():
         )
 
     if not accounts:
-        if current_user_has_legacy_workspace_access():
-            return (
-                None,
-                None,
-                _cache_control(
-                    redirect(
-                        url_for("dashboard")
-                    )
-                ),
-            )
+        # The legacy /dashboard route is retired and redirects to /app,
+        # so sending a no-accounts user there would loop back here.
+        # Onboarding renders the Instagram connect step (200) for a
+        # profile-less legacy user, which is where an account gets added.
         return (
             None,
             None,
@@ -466,6 +461,7 @@ def _render_page(
     active_pages = {
         "tenant_dashboard.app_overview": "overview",
         "tenant_dashboard.app_accounts": "instagram",
+        "tenant_dashboard.app_engagement": "engagement",
         "tenant_dashboard.app_leads": "engagement",
         "tenant_dashboard.app_activity": "engagement",
         "tenant_dashboard.app_followups": "engagement",
@@ -473,7 +469,7 @@ def _render_page(
         "tenant_dashboard.app_messages": "engagement",
         "tenant_dashboard.app_content": "content",
         "tenant_dashboard.app_scheduler": "calendar",
-        "tenant_dashboard.app_analytics": "analytics",
+        "tenant_dashboard.app_settings": "settings",
         "tenant_dashboard.app_support": "support",
     }
 
@@ -610,7 +606,8 @@ def _cancel_scheduler_job(user, selected):
     return _cache_control(
         redirect(
             url_for(
-                "tenant_dashboard.app_followups",
+                "tenant_dashboard.app_engagement",
+                section="followups",
                 account=action_reference_for_account(
                     user.id,
                     selected.instagram_account_id,
@@ -732,7 +729,8 @@ def _lead_redirect():
 
     return redirect(
         url_for(
-            "tenant_dashboard.app_leads",
+            "tenant_dashboard.app_engagement",
+            section="leads",
             account=request.args.get(
                 ACCOUNT_REFERENCE_ARGUMENT
             ),
@@ -1198,6 +1196,40 @@ def _update_automation_config(selected, *, internal_prompt_access=False):
     return True
 
 
+def _settings_presentation(user):
+    """Return the stored profile and normalized notification preferences."""
+
+    defaults = {"new_lead_email": True, "weekly_summary": False}
+    fallback = (
+        {"display_name": user.display_name, "email": user.email},
+        dict(defaults),
+    )
+
+    session_factory = getattr(_auth_state(), "session_factory", None)
+    if session_factory is None:
+        return fallback
+
+    try:
+        with session_factory() as session:
+            stored_user = session.get(User, user.id)
+            if stored_user is None:
+                return fallback
+            stored = stored_user.notification_preferences
+            profile = {
+                "display_name": stored_user.display_name,
+                "email": stored_user.email,
+            }
+    except SQLAlchemyError:
+        return fallback
+
+    preferences = dict(defaults)
+    if isinstance(stored, dict):
+        for key in defaults:
+            if isinstance(stored.get(key), bool):
+                preferences[key] = stored[key]
+    return profile, preferences
+
+
 def register_tenant_dashboard(app) -> None:
     dashboard = Blueprint(
         "tenant_dashboard",
@@ -1265,12 +1297,31 @@ def register_tenant_dashboard(app) -> None:
         if data is _DATABASE_UNAVAILABLE:
             return _workspace_unavailable()
 
+        selected_range = tenant_data.analytics_range_filter(
+            request.args.get("range")
+        )
+        analytics_data = _query(
+            selected,
+            tenant_data.analytics,
+            range_key=selected_range,
+        )
+
+        if analytics_data is _DATABASE_UNAVAILABLE:
+            return _workspace_unavailable()
+
         return _render_page(
             "app_overview.html",
             user=user,
             accounts=accounts,
             selected=selected,
             overview=data,
+            analytics=analytics_data,
+            analytics_has_activity=tenant_data.analytics_has_activity(
+                analytics_data.metrics,
+                analytics_data.followup_breakdown,
+            ),
+            range_filters=tenant_data.ANALYTICS_RANGE_LABELS,
+            selected_range=selected_range,
         )
 
     @dashboard.get("/support")
@@ -1304,13 +1355,34 @@ def register_tenant_dashboard(app) -> None:
             deployment_readiness=oauth_deployment_readiness(),
         )
 
-    @dashboard.get("/leads")
+    def _engagement_redirect(section):
+        args = request.args.to_dict()
+        args["section"] = section
+        return _cache_control(
+            redirect(
+                url_for("tenant_dashboard.app_engagement", **args),
+                code=302,
+            )
+        )
+
+    @dashboard.get("/engagement")
     @_require_tenant
-    def app_leads(
+    def app_engagement(
         user,
         accounts,
         selected,
     ):
+        selected_section = str(
+            request.args.get("section") or "leads"
+        ).strip().lower()
+        if selected_section not in {
+            "leads",
+            "messages",
+            "activity",
+            "followups",
+        }:
+            selected_section = "leads"
+
         (
             view,
             stage,
@@ -1333,11 +1405,47 @@ def register_tenant_dashboard(app) -> None:
         if lead_page is _DATABASE_UNAVAILABLE or interactions is _DATABASE_UNAVAILABLE:
             return _workspace_unavailable()
 
+        selected_event_type = _activity_filter()
+        activity_rows = _query(
+            selected,
+            tenant_data.activity,
+            event_type=selected_event_type,
+        )
+
+        if activity_rows is _DATABASE_UNAVAILABLE:
+            return _workspace_unavailable()
+
+        followup_status = tenant_data.scheduler_status_filter(
+            request.args.get("status")
+        )
+        scheduler_page = _query(
+            selected,
+            tenant_data.scheduler_jobs,
+            status_filter=followup_status,
+            page=request.args.get("page"),
+        )
+        waiting = _query(selected, direct_interactions, waiting_only=True)
+
+        if scheduler_page is _DATABASE_UNAVAILABLE or waiting is _DATABASE_UNAVAILABLE:
+            return _workspace_unavailable()
+
+        selected_filter = tenant_data.message_filter(request.args.get("filter"))
+        message_page = _query(
+            selected,
+            tenant_data.messages,
+            filter_value=selected_filter,
+            page=request.args.get("page"),
+        )
+
+        if message_page is _DATABASE_UNAVAILABLE:
+            return _workspace_unavailable()
+
         return _render_page(
-            "app_leads.html",
+            "app_engagement.html",
             user=user,
             accounts=accounts,
             selected=selected,
+            selected_section=selected_section,
             leads=_lead_payload(
                 user,
                 selected,
@@ -1350,90 +1458,39 @@ def register_tenant_dashboard(app) -> None:
             selected_search=search,
             selected_sort=sort,
             lead_statuses=tenant_data.LEAD_STATUSES,
-        )
-
-    @dashboard.get("/activity")
-    @_require_tenant
-    def app_activity(
-        user,
-        accounts,
-        selected,
-    ):
-        selected_event_type = _activity_filter()
-        rows = _query(
-            selected,
-            tenant_data.activity,
-            event_type=selected_event_type,
-        )
-
-        if rows is _DATABASE_UNAVAILABLE:
-            return _workspace_unavailable()
-
-        return _render_page(
-            "app_activity.html",
-            user=user,
-            accounts=accounts,
-            selected=selected,
-            activity=rows,
+            activity=activity_rows,
             activity_filters=tenant_data.ACTIVITY_EVENT_TYPE_LABELS,
             selected_event_type=selected_event_type,
-        )
-
-    @dashboard.get("/followups")
-    @_require_tenant
-    def app_followups(
-        user,
-        accounts,
-        selected,
-    ):
-        status = tenant_data.scheduler_status_filter(request.args.get("status"))
-        page = _query(selected, tenant_data.scheduler_jobs, status_filter=status, page=request.args.get("page"))
-        waiting = _query(selected, direct_interactions, waiting_only=True)
-
-        if page is _DATABASE_UNAVAILABLE or waiting is _DATABASE_UNAVAILABLE:
-            return _workspace_unavailable()
-
-        return _render_page(
-            "app_followups.html",
-            user=user,
-            accounts=accounts,
-            selected=selected,
-            followups=_scheduler_jobs_with_actions(user, selected, page),
+            followups=_scheduler_jobs_with_actions(user, selected, scheduler_page),
             waiting=waiting,
-            scheduler_page=page,
-            selected_status=status,
+            scheduler_page=scheduler_page,
+            selected_status=followup_status,
             status_filters=tenant_data.SCHEDULER_STATUS_FILTER_LABELS,
-        )
-
-    @dashboard.get("/messages")
-    @_require_tenant
-    def app_messages(
-        user,
-        accounts,
-        selected,
-    ):
-        selected_filter = tenant_data.message_filter(request.args.get("filter"))
-        page = request.args.get("page")
-        message_page = _query(
-            selected,
-            tenant_data.messages,
-            filter_value=selected_filter,
-            page=page,
-        )
-
-        if message_page is _DATABASE_UNAVAILABLE:
-            return _workspace_unavailable()
-
-        return _render_page(
-            "app_messages.html",
-            user=user,
-            accounts=accounts,
-            selected=selected,
             messages=message_page.messages,
             message_page=message_page,
             message_filters=tenant_data.MESSAGE_FILTER_LABELS,
             selected_filter=selected_filter,
         )
+
+    @dashboard.get("/leads")
+    @_require_tenant
+    def app_leads(user, accounts, selected):
+        return _engagement_redirect("leads")
+
+    @dashboard.get("/activity")
+    @_require_tenant
+    def app_activity(user, accounts, selected):
+        return _engagement_redirect("activity")
+
+    @dashboard.get("/followups")
+    @_require_tenant
+    def app_followups(user, accounts, selected):
+        return _engagement_redirect("followups")
+
+    @dashboard.get("/messages")
+    @_require_tenant
+    def app_messages(user, accounts, selected):
+        return _engagement_redirect("messages")
 
     def _render_content_page(
         user,
@@ -2016,31 +2073,135 @@ def register_tenant_dashboard(app) -> None:
         accounts,
         selected,
     ):
-        selected_range = tenant_data.analytics_range_filter(
-            request.args.get("range")
-        )
-        data = _query(
-            selected,
-            tenant_data.analytics,
-            range_key=selected_range,
+        # Analytics now lives as a section on the Overview page.
+        return _cache_control(
+            redirect(
+                url_for(
+                    "tenant_dashboard.app_overview",
+                    account=request.args.get(
+                        ACCOUNT_REFERENCE_ARGUMENT
+                    ),
+                    range=request.args.get("range") or None,
+                ),
+                code=302,
+            )
         )
 
-        if data is _DATABASE_UNAVAILABLE:
-            return _workspace_unavailable()
+    @dashboard.route(
+        "/settings",
+        methods=[
+            "GET",
+            "POST",
+        ],
+    )
+    @_require_tenant
+    def app_settings(
+        user,
+        accounts,
+        selected,
+    ):
+        settings_error = None
+        settings_message = None
+        status = 200
 
-        return _render_page(
-            "app_analytics.html",
+        if request.method == "POST":
+            if not validate_csrf_token(request_csrf_token()):
+                return _safe_content_update_error()
+
+            form_kind = str(request.form.get("form") or "").strip().lower()
+            session_factory = getattr(_auth_state(), "session_factory", None)
+            if session_factory is None:
+                return _workspace_unavailable()
+
+            try:
+                with session_factory.begin() as session:
+                    stored_user = session.get(User, user.id)
+                    if stored_user is None:
+                        return _workspace_unavailable()
+
+                    if form_kind == "profile":
+                        display_name = str(
+                            request.form.get("display_name") or ""
+                        ).strip()
+                        if not display_name or len(display_name) > 80:
+                            settings_error = (
+                                "Enter a display name of 80 characters or fewer."
+                            )
+                            status = 400
+                        else:
+                            stored_user.display_name = display_name
+                            settings_message = "Profile saved."
+
+                    elif form_kind == "password":
+                        current = str(
+                            request.form.get("current_password") or ""
+                        )
+                        new_password = str(
+                            request.form.get("new_password") or ""
+                        )
+                        confirm = str(
+                            request.form.get("confirm_password") or ""
+                        )
+                        if (
+                            not stored_user.password_hash
+                            or not check_password_hash(
+                                stored_user.password_hash, current
+                            )
+                        ):
+                            settings_error = (
+                                "Current password is incorrect."
+                            )
+                            status = 400
+                        elif len(new_password) < 12:
+                            settings_error = (
+                                "Use a password with at least 12 characters."
+                            )
+                            status = 400
+                        elif new_password != confirm:
+                            settings_error = "New passwords do not match."
+                            status = 400
+                        else:
+                            stored_user.password_hash = (
+                                generate_password_hash(new_password)
+                            )
+                            settings_message = "Password changed."
+
+                    elif form_kind == "notifications":
+                        stored_user.notification_preferences = {
+                            "new_lead_email": request.form.get(
+                                "notify_new_lead_email"
+                            )
+                            == "on",
+                            "weekly_summary": request.form.get(
+                                "notify_weekly_summary"
+                            )
+                            == "on",
+                        }
+                        settings_message = (
+                            "Notification preferences saved."
+                        )
+
+                    else:
+                        settings_error = "Workspace temporarily unavailable."
+                        status = 400
+            except SQLAlchemyError:
+                return _workspace_unavailable()
+
+        profile, preferences = _settings_presentation(user)
+
+        response = _render_page(
+            "app_settings.html",
             user=user,
             accounts=accounts,
             selected=selected,
-            analytics=data,
-            analytics_has_activity=tenant_data.analytics_has_activity(
-                data.metrics,
-                data.followup_breakdown,
-            ),
-            range_filters=tenant_data.ANALYTICS_RANGE_LABELS,
-            selected_range=selected_range,
+            include_disconnect_actions=True,
+            settings_profile=profile,
+            notification_preferences=preferences,
+            settings_error=settings_error,
+            settings_message=settings_message,
         )
+        response.status_code = status
+        return response
 
     @dashboard.post("/scheduler/cancel")
     @_require_tenant

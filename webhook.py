@@ -1139,6 +1139,13 @@ def aggregate_lead_profiles(leads):
     return profiles
 
 
+# In-memory cache for the /api/leads Instagram media fetch only (the endpoint
+# serves the single legacy account). Local requests/pending reads are NOT
+# cached. TTL: 60 seconds.
+_LEADS_MEDIA_CACHE = {"fetched_at": 0.0, "media_map": {}}
+_LEADS_MEDIA_CACHE_TTL_SECONDS = 60
+
+
 @app.route("/api/leads", methods=["GET"])
 def get_dashboard_leads():
     """Return recent prompt requests enriched with Instagram post details.
@@ -1154,29 +1161,39 @@ def get_dashboard_leads():
         pending_data = {}
 
     # Read recent Instagram media once so every lead can show the post that
-    # generated it without making one API request per row.
+    # generated it without making one API request per row. The media fetch
+    # is cached for 60 seconds; local requests/pending reads run every load.
     media_map = {}
     if INSTAGRAM_ACCESS_TOKEN:
-        try:
-            media_response = requests.get(
-                f"https://graph.instagram.com/{API_VERSION}/{INSTAGRAM_USER_ID}/media",
-                params={
-                    "fields": "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp",
-                    "limit": 50,
-                    "access_token": INSTAGRAM_ACCESS_TOKEN
-                },
-                timeout=30
-            )
-            media_data = media_response.json()
-            if media_response.ok and isinstance(media_data, dict):
-                for item in media_data.get("data", []):
-                    if not isinstance(item, dict):
-                        continue
-                    media_id = str(item.get("id", "") or "")
-                    if media_id:
-                        media_map[media_id] = item
-        except Exception as error:
-            print("LEADS MEDIA LOOKUP ERROR:", type(error).__name__)
+        now = time.time()
+        if (
+            _LEADS_MEDIA_CACHE["media_map"]
+            and now - _LEADS_MEDIA_CACHE["fetched_at"] < _LEADS_MEDIA_CACHE_TTL_SECONDS
+        ):
+            media_map = _LEADS_MEDIA_CACHE["media_map"]
+        else:
+            try:
+                media_response = requests.get(
+                    f"https://graph.instagram.com/{API_VERSION}/{INSTAGRAM_USER_ID}/media",
+                    params={
+                        "fields": "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp",
+                        "limit": 50,
+                        "access_token": INSTAGRAM_ACCESS_TOKEN
+                    },
+                    timeout=30
+                )
+                media_data = media_response.json()
+                if media_response.ok and isinstance(media_data, dict):
+                    for item in media_data.get("data", []):
+                        if not isinstance(item, dict):
+                            continue
+                        media_id = str(item.get("id", "") or "")
+                        if media_id:
+                            media_map[media_id] = item
+                    _LEADS_MEDIA_CACHE["media_map"] = media_map
+                    _LEADS_MEDIA_CACHE["fetched_at"] = time.time()
+            except Exception as error:
+                print("LEADS MEDIA LOOKUP ERROR:", type(error).__name__)
 
     leads = []
     for item in reversed(requests_data[-200:]):
@@ -3904,9 +3921,8 @@ def generate_oauth_lead_intelligence(context):
         return analyze_lead_intelligence(
             context,
             lambda prompt: str(
-                GEMINI_CLIENT.models.generate_content(
-                    model=GEMINI_MODEL,
-                    contents=prompt,
+                _gemini_generate_content(
+                    prompt,
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
                     ),
@@ -5383,6 +5399,13 @@ Advanced analytics JSON:
         return fallback
 
 
+# In-memory cache for the /api/instagram-analytics success payload only
+# (the endpoint serves the single legacy account). Error responses are NOT
+# cached, so a transient Graph failure does not linger. TTL: 5 minutes.
+_INSTAGRAM_ANALYTICS_CACHE = {"fetched_at": 0.0, "payload": None}
+_INSTAGRAM_ANALYTICS_CACHE_TTL_SECONDS = 300
+
+
 @app.route("/api/instagram-analytics", methods=["GET"])
 def get_instagram_analytics():
     """Return resilient Instagram analytics without blocking Railway.
@@ -5399,6 +5422,12 @@ def get_instagram_analytics():
     """
     if not INSTAGRAM_ACCESS_TOKEN:
         return {"error": "Instagram access token is missing."}, 500
+
+    if (
+        _INSTAGRAM_ANALYTICS_CACHE["payload"] is not None
+        and time.time() - _INSTAGRAM_ANALYTICS_CACHE["fetched_at"] < _INSTAGRAM_ANALYTICS_CACHE_TTL_SECONDS
+    ):
+        return _INSTAGRAM_ANALYTICS_CACHE["payload"]
 
     def as_int(value):
         try:
@@ -5601,18 +5630,24 @@ def get_instagram_analytics():
         advanced = build_advanced_analytics(posts, account.get("followers_count", 0))
         advanced["ai_summary"] = generate_advanced_analytics_summary(advanced)
 
-        return {
-            "account": account,
-            "totals": totals,
-            "posts": posts,
-            "top_posts": ranked[:6],
-            "advanced": advanced,
-            "note": (
-                "Reach, saves, shares and views depend on the Instagram media type "
-                "and permissions available to this account. Analytics now uses a "
-                "bounded concurrent fetch to avoid web-request timeouts."
-            ),
-        }, 200
+        payload = (
+            {
+                "account": account,
+                "totals": totals,
+                "posts": posts,
+                "top_posts": ranked[:6],
+                "advanced": advanced,
+                "note": (
+                    "Reach, saves, shares and views depend on the Instagram media type "
+                    "and permissions available to this account. Analytics now uses a "
+                    "bounded concurrent fetch to avoid web-request timeouts."
+                ),
+            },
+            200,
+        )
+        _INSTAGRAM_ANALYTICS_CACHE["payload"] = payload
+        _INSTAGRAM_ANALYTICS_CACHE["fetched_at"] = time.time()
+        return payload
 
     except requests.RequestException as error:
         print("INSTAGRAM ANALYTICS CONNECTION ERROR:", type(error).__name__)
@@ -7943,12 +7978,8 @@ app.static_folder = "dashboard/static"
 
 @app.route("/dashboard", methods=["GET"])
 def dashboard():
-    """
-    Main Social Media Bot Dashboard
-    """
-    return render_template(
-        "dashboard.html", current_user=get_current_user(), csrf_token=csrf_token()
-    )
+    """Legacy dashboard retired: /dashboard now redirects to /app."""
+    return redirect("/app")
 
 
 # ============================================================

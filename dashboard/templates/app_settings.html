@@ -1,0 +1,54 @@
+{% extends "app_base.html" %}
+{% block title %}{{ t('Settings') }}{% endblock %}
+{% block heading %}{{ t('Settings') }}{% endblock %}
+{% block content %}
+<section class="page-intro"><p class="eyebrow">{{ t('Settings') }}</p><h2>{{ t('Settings') }}</h2><p class="muted">{{ t('Manage your profile, password, and notification preferences.') }}</p></section>
+{% if settings_message %}<section class="alert" role="status"><strong>{{ settings_message }}</strong></section>{% endif %}
+{% if settings_error %}<section class="alert alert-error" role="alert"><strong>{{ settings_error }}</strong></section>{% endif %}
+<section class="card" aria-label="{{ t('Profile') }}">
+    <h2>{{ t('Profile') }}</h2>
+    <form method="post" action="{{ url_for('tenant_dashboard.app_settings', account=selected_account.selection_ref) }}" class="settings-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="form" value="profile">
+        <label>{{ t('Display name') }} <input type="text" name="display_name" maxlength="80" value="{{ settings_profile.display_name or '' }}" required></label>
+        <label>{{ t('Email') }} <input type="email" name="email" value="{{ settings_profile.email or '' }}" readonly disabled></label>
+        <p class="helper-text">{{ t('Your email address cannot be changed here.') }}</p>
+        <div class="form-actions"><button class="button button-primary" type="submit">{{ t('Save profile') }}</button></div>
+    </form>
+</section>
+<section class="card" aria-label="{{ t('Password') }}">
+    <h2>{{ t('Password') }}</h2>
+    <form method="post" action="{{ url_for('tenant_dashboard.app_settings', account=selected_account.selection_ref) }}" class="settings-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="form" value="password">
+        <label>{{ t('Current password') }} <input type="password" name="current_password" autocomplete="current-password" required></label>
+        <label>{{ t('New password') }} <input type="password" name="new_password" autocomplete="new-password" minlength="12" required></label>
+        <label>{{ t('Confirm new password') }} <input type="password" name="confirm_password" autocomplete="new-password" minlength="12" required></label>
+        <p class="helper-text">{{ t('Use a password with at least 12 characters.') }}</p>
+        <div class="form-actions"><button class="button button-primary" type="submit">{{ t('Change password') }}</button></div>
+    </form>
+</section>
+<section class="card" aria-label="{{ t('Notifications') }}">
+    <h2>{{ t('Notifications') }}</h2>
+    <form method="post" action="{{ url_for('tenant_dashboard.app_settings', account=selected_account.selection_ref) }}" class="settings-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="form" value="notifications">
+        <div class="checkbox-field setting-toggle"><input type="checkbox" id="notify_new_lead_email" name="notify_new_lead_email" {% if notification_preferences.new_lead_email %}checked{% endif %}><label for="notify_new_lead_email">{{ t('Email me about new leads') }}</label></div>
+        <div class="checkbox-field setting-toggle"><input type="checkbox" id="notify_weekly_summary" name="notify_weekly_summary" {% if notification_preferences.weekly_summary %}checked{% endif %}><label for="notify_weekly_summary">{{ t('Weekly summary email') }}</label></div>
+        <div class="form-actions"><button class="button button-primary" type="submit">{{ t('Save notification preferences') }}</button></div>
+    </form>
+</section>
+{% if selected_account.can_disconnect %}
+<section class="card" aria-label="{{ t('Disconnect Instagram') }}">
+    <h2>{{ t('Disconnect Instagram') }}</h2>
+    <p class="muted">{{ t('Disconnecting removes the stored Instagram connection for the selected account.') }}</p>
+    <details class="disconnect-confirm"><summary>{{ t('Disconnect this Instagram account') }}</summary>
+    <form method="post" action="{{ url_for('disconnect_instagram_connection') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="account_action" value="{{ selected_account.disconnect_action }}">
+        <button class="button button-destructive" type="submit" data-confirm="{{ t('Disconnect this Instagram account') }}">{{ t('Disconnect Instagram') }}</button>
+    </form>
+    </details>
+</section>
+{% endif %}
+{% endblock %}

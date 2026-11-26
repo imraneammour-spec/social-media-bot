@@ -169,7 +169,11 @@ class TenantLeadManagementTest(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 303)
         self.assertEqual(self._lead(self.lead_a1.id).internal_note, "<script>private note</script>")
-        page = self.client.get("/app/leads").get_data(as_text=True)
+        # /app/leads redirects to the merged engagement view (section=leads).
+        page = self.client.get(
+            f"/app/leads?account={self._account_reference(self.owner_a, self.account_a1)}",
+            follow_redirects=True,
+        ).get_data(as_text=True)
         self.assertIn("&lt;script&gt;private note&lt;/script&gt;", page)
         self.assertNotIn("<script>private note</script>", page)
 
@@ -253,7 +257,8 @@ class TenantLeadManagementTest(unittest.TestCase):
         self.assertEqual([lead["username"] for lead in active["leads"]], ["lead_alpha"])
         self.assertEqual([lead["username"] for lead in archived["leads"]], ["lead_alpha_two"])
         page = self.client.get(
-            f"/app/leads?account={self._account_reference(self.owner_a, self.account_a1)}"
+            f"/app/leads?account={self._account_reference(self.owner_a, self.account_a1)}",
+            follow_redirects=True,
         ).get_data(as_text=True)
         for forbidden in (
             str(self.account_a1.id), str(self.lead_a1.id), "10000000000000001",

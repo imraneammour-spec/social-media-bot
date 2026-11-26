@@ -1,0 +1,135 @@
+{% extends "app_base.html" %}
+{% block title %}{{ t('Engagement') }}{% endblock %}
+{% block heading %}{{ t('Engagement') }}{% endblock %}
+{% block content %}
+{% set engagement_section = selected_section %}{% include "_engagement_tabs.html" %}
+{% if selected_section == 'leads' %}
+<section class="page-intro"><p class="eyebrow">{{ t('Engagement') }}</p><h2>{{ t('Contacts who engaged with your account') }}</h2><p class="muted">{{ t('Contacts who requested prompts from your prompt-enabled Instagram posts.') }}</p></section>
+<form method="get" action="{{ url_for('tenant_dashboard.app_engagement') }}" class="card lead-filters" aria-label="{{ t('Lead filters') }}">
+    <input type="hidden" name="account" value="{{ selected_account.selection_ref }}">
+    <input type="hidden" name="section" value="leads">
+    <label>{{ t('View') }}
+        <select name="view">
+            <option value="active" {% if selected_view == 'active' %}selected{% endif %}>{{ t('Active') }}</option>
+            <option value="archived" {% if selected_view == 'archived' %}selected{% endif %}>{{ t('Archived') }}</option>
+            <option value="all" {% if selected_view == 'all' %}selected{% endif %}>{{ t('All') }}</option>
+        </select>
+    </label>
+    <label>{{ t('Stage') }}
+        <select name="stage">
+            <option value="">{{ t('All stages') }}</option>
+            {% for status in lead_statuses %}<option value="{{ status }}" {% if selected_stage == status %}selected{% endif %}>{{ t(status|capitalize) }}</option>{% endfor %}
+        </select>
+    </label>
+    <label>{{ t('Search username') }}
+        <input type="search" name="q" maxlength="80" value="{{ selected_search }}">
+    </label>
+    <label>{{ t('Sort') }}
+        <select name="sort">
+            <option value="newest" {% if selected_sort == 'newest' %}selected{% endif %}>{{ t('Newest') }}</option>
+            <option value="oldest" {% if selected_sort == 'oldest' %}selected{% endif %}>{{ t('Oldest') }}</option>
+        </select>
+    </label>
+    <button class="button button-primary" type="submit">{{ t('Apply filters') }}</button>
+</form>
+<section class="card"><h2>{{ t('Custom-message interactions') }}</h2><p class="helper-text">{{ t('Latest 25 interactions') }}</p><p class="muted">{{ t('Read-only interaction history. Notes, stages and analysis are available only for lead records that support them.') }}</p>{% for interaction in direct_interactions %}<article class="list-row"><div><strong>{{ t(interaction.source_type) }}</strong><p>{{ t(interaction.status) }}</p><time>{{ display_time(interaction.created_at) }}</time></div></article>{% else %}<p class="empty-state">{{ t('No custom-message interactions yet.') }}</p>{% endfor %}</section>
+<h2>{{ t('Managed lead records') }}</h2>
+{% for lead in leads %}
+<article class="card lead-card">
+    <h2>{{ display_username(lead.username) }}</h2>
+    {% if lead.cover_url %}<img class="lead-source-preview" src="{{ lead.cover_url }}" alt="{{ t('Source Instagram post preview') }}" loading="lazy" referrerpolicy="no-referrer">{% endif %}
+    <details><summary>{{ t('Interaction details') }}</summary><p>{{ t('Recorded at') }} {{ display_time(lead.requested_at) }}.</p>{% if lead.internal_note %}<p>{{ t('Internal note saved.') }}</p>{% endif %}</details>
+    <p>{{ t(lead.prompt_state) }} · {{ t(lead.base_stage_label) }} · {{ t(lead.archived_label) }}</p>
+    <p class="muted">{{ display_time(lead.requested_at) }}</p>
+    <section class="lead-intelligence" aria-label="{{ t('Lead intelligence') }}">
+        <h3>{{ t('Lead intelligence') }}</h3>
+        {% if lead.ai_intent %}
+        <p>{{ t('Intent:') }} {{ t(lead.ai_intent|replace('_', ' ')|title) }} {{ t('· Priority:') }} {{ t(lead.ai_priority|title) }}</p>
+        <p>{{ t(lead.ai_summary) if lead.ai_summary == 'Limited recorded interaction is available for this lead.' else lead.ai_summary }}</p>
+        <p class="muted">{{ t('Suggested next action:') }} {{ t(lead.ai_suggested_followup) if lead.ai_suggested_followup == 'Wait for another interaction before following up.' else lead.ai_suggested_followup }}</p>
+        {% else %}<p class="muted">{{ t('Not analyzed') }}</p>{% endif %}
+        <form method="post" class="lead-action" action="{{ url_for('tenant_dashboard.app_lead_analyze', account=selected_account.selection_ref) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="lead_action" value="{{ lead.analysis_action }}">
+            <button class="button button-secondary" type="submit">{{ t('Refresh analysis') if lead.ai_intent else t('Analyze lead') }}</button>
+        </form>
+    </section>
+    {% if lead.post_permalink %}<p><a class="button button-secondary" href="{{ lead.post_permalink }}" target="_blank" rel="noopener noreferrer">{{ t('View Instagram post') }}</a></p>{% endif %}
+    <form method="post" class="lead-action" action="{{ url_for('tenant_dashboard.app_lead_status', account=selected_account.selection_ref) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="lead_action" value="{{ lead.status_action }}">
+        <label>{{ t('Stage') }} <select name="lead_status">{% for status in lead_statuses %}<option value="{{ status }}" {% if lead.base_stage == status %}selected{% endif %}>{{ t(status|capitalize) }}</option>{% endfor %}</select></label>
+        <button class="button button-secondary" type="submit">{{ t('Save stage') }}</button>
+    </form>
+    <form method="post" class="lead-action" action="{{ url_for('tenant_dashboard.app_lead_note', account=selected_account.selection_ref) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="lead_action" value="{{ lead.note_action }}">
+        <label>{{ t('Internal note') }} <textarea name="internal_note" maxlength="2000">{{ lead.internal_note or '' }}</textarea></label>
+        <button class="button button-secondary" type="submit">{{ t('Save note') }}</button>
+    </form>
+    <form method="post" class="lead-action" action="{{ url_for('tenant_dashboard.app_lead_archive', account=selected_account.selection_ref) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="lead_action" value="{{ lead.archive_action }}">
+        <input type="hidden" name="operation" value="{{ 'unarchive' if lead.archived else 'archive' }}">
+        <button class="button button-destructive" type="submit" {% if not lead.archived %}data-confirm="{{ t('Archive this lead?') }}"{% endif %}>{{ t('Unarchive lead') if lead.archived else t('Archive lead') }}</button>
+    </form>
+</article>
+{% else %}<p class="empty-state">{{ t('No leads yet. Contacts will appear here after a prompt request is recorded.') }}</p>{% endfor %}
+<nav aria-label="{{ t('Lead pagination') }}">
+    {% if lead_page.has_previous %}<a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_engagement', account=selected_account.selection_ref, section='leads', view=selected_view, stage=selected_stage, q=selected_search or None, sort=selected_sort, page=lead_page.page - 1) }}">{{ t('Previous') }}</a>{% endif %}
+    <span>{{ t('Page') }} {{ lead_page.page }}</span>
+    {% if lead_page.has_next %}<a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_engagement', account=selected_account.selection_ref, section='leads', view=selected_view, stage=selected_stage, q=selected_search or None, sort=selected_sort, page=lead_page.page + 1) }}">{{ t('Next') }}</a>{% endif %}
+</nav>
+{% elif selected_section == 'messages' %}
+<section class="page-intro"><p class="eyebrow">{{ t('Engagement') }}</p><h2>{{ t('Message activity') }}</h2><p class="muted">{{ t('Recent messages and interactions for the selected Instagram account.') }}</p></section>
+<form method="get" action="{{ url_for('tenant_dashboard.app_engagement') }}" class="card activity-filters" aria-label="{{ t('Message filters') }}">
+    <input type="hidden" name="account" value="{{ selected_account.selection_ref }}">
+    <input type="hidden" name="section" value="messages">
+    <label>{{ t('Show') }}
+        <select name="filter">
+            {% for value, label in message_filters %}<option value="{{ value }}" {% if selected_filter == value %}selected{% endif %}>{{ t(label) }}</option>{% endfor %}
+        </select>
+    </label>
+    <button class="button button-primary" type="submit">{{ t('Apply filter') }}</button>
+</form>
+<section class="page-stack" aria-label="{{ t('Account messages') }}">
+{% for item in messages %}
+<article class="card activity-card activity-feed-item"><span class="activity-icon" aria-hidden="true">◆</span><div><h2>{{ t(item.type) }}</h2><p class="muted">{% if item.username %}{{ display_username(item.username) }} · {% endif %}{{ t(item.detail or item.status) }}</p><p class="muted">{{ display_time(item.occurred_at) }}</p></div></article>
+{% else %}<p class="empty-state">{{ t('No message activity yet. Recorded comment interactions, messages, smart replies, and follow-ups will appear here.') }}</p>{% endfor %}
+</section>
+<nav aria-label="{{ t('Message pagination') }}">
+    {% if message_page.has_previous %}<a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_engagement', account=selected_account.selection_ref, section='messages', filter=selected_filter, page=message_page.page - 1) }}">{{ t('Previous') }}</a>{% endif %}
+    <span>{{ t('Page') }} {{ message_page.page }}</span>
+    {% if message_page.has_next %}<a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_engagement', account=selected_account.selection_ref, section='messages', filter=selected_filter, page=message_page.page + 1) }}">{{ t('Next') }}</a>{% endif %}
+</nav>
+{% elif selected_section == 'activity' %}
+<section class="page-intro"><p class="eyebrow">{{ t('Engagement') }}</p><h2>{{ t('Engagement activity') }}</h2><p class="muted">{{ t('Comments, messages, smart replies, and follow-up events for the selected Instagram account.') }}</p></section>
+<form method="get" action="{{ url_for('tenant_dashboard.app_engagement') }}" class="card activity-filters" aria-label="{{ t('Activity filters') }}">
+    <input type="hidden" name="account" value="{{ selected_account.selection_ref }}">
+    <input type="hidden" name="section" value="activity">
+    <label>{{ t('Show') }}
+        <select name="event_type">
+            {% for value, label in activity_filters %}<option value="{{ value }}" {% if selected_event_type == value %}selected{% endif %}>{{ t(label) }}</option>{% endfor %}
+        </select>
+    </label>
+    <button class="button button-primary" type="submit">{{ t('Apply filter') }}</button>
+</form>
+<section class="page-stack" aria-label="{{ t('Account activity') }}">
+{% for item in activity %}<article class="card activity-card activity-feed-item"><span class="activity-icon" aria-hidden="true">{% if 'Comment' in item.type %}◆{% elif 'Message' in item.type %}✦{% elif 'Follow-up' in item.type %}→{% else %}✺{% endif %}</span><div><h2>{{ t(item.type) }}</h2><p class="muted">{% if item.username %}{{ display_username(item.username) }} · {% endif %}<span class="status-pill {% if item.state == 'Completed' %}status-success{% elif item.state == 'Waiting' %}status-warning{% elif item.state == 'Unavailable' or item.state == 'Failed' %}status-error{% else %}status-neutral{% endif %}">{{ t(item.state) }}</span></p><p class="muted">{{ display_time(item.occurred_at) }}</p></div></article>{% else %}<p class="empty-state">{{ t('No activity yet. New Instagram activity will appear here when engagement automation is activated.') }}</p>{% endfor %}
+</section>
+{% elif selected_section == 'followups' %}
+<section class="page-intro"><h2>{{ t('Follow-up activity') }}</h2><p class="muted">{{ t('Track waiting interactions and delivery for this account. Only pending jobs can be cancelled.') }}</p></section>
+<section class="card"><h2>{{ t('Waiting for recipient reply') }}</h2><p class="helper-text">{{ t('Latest 25 waiting interactions') }}</p><p class="muted">{{ t('No job is scheduled while waiting. A recipient reply and enabled follow-up settings are required; eligibility is checked afterward.') }}</p>
+{% for interaction in waiting %}<div class="list-row"><strong>{{ t(interaction.source_type) }}</strong><time>{{ display_time(interaction.created_at) }}</time></div>{% else %}<p class="empty-state">{{ t('No interactions waiting for a reply.') }}</p>{% endfor %}
+</section>
+<form method="get" action="{{ url_for('tenant_dashboard.app_engagement') }}" class="card compact-filters"><input type="hidden" name="account" value="{{ selected_account.selection_ref }}"><input type="hidden" name="section" value="followups"><label>{{ t('Status') }}<select name="status">{% for value, label in status_filters %}<option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{{ t(label) }}</option>{% endfor %}</select></label><button class="button button-secondary" type="submit">{{ t('Apply filters') }}</button></form>
+<section class="page-stack" aria-label="{{ t('Account follow-ups') }}">
+{% for followup in followups %}
+<article class="card followup-card"><div class="section-heading"><h2>{{ t(followup.source_type) }}</h2><span class="status-pill {% if followup.status == 'Sent' %}status-success{% elif followup.status == 'Scheduled' %}status-warning{% elif followup.status == 'Processing' %}status-primary{% elif followup.status == 'Failed' or followup.status == 'Expired' or followup.status == 'Unavailable' %}status-error{% else %}status-neutral{% endif %}">{{ t(followup.status) }}</span></div><p>{{ t('Scheduled:') }} {{ display_time(followup.scheduled_at) }}</p>{% if followup.updated_at %}<p class="muted">{{ t('Updated:') }} {{ display_time(followup.updated_at) }}</p>{% endif %}{% if followup.explanation %}<p>{{ t(followup.explanation) }}</p>{% endif %}
+{% if followup.can_cancel %}<form method="post" action="{{ url_for('tenant_dashboard.app_scheduler_cancel', account=selected_account.selection_ref, status=selected_status) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="scheduler_action" value="{{ followup.cancel_action }}"><button class="button button-destructive" type="submit" data-confirm="{{ t('Cancel this follow-up?') }}">{{ t('Cancel follow-up') }}</button></form>{% endif %}
+</article>
+{% else %}<p class="empty-state">{{ t('No follow-ups yet. Scheduled and sent follow-ups will appear here.') }}</p>{% endfor %}
+</section>
+<nav aria-label="{{ t('Follow-up pagination') }}">{% if scheduler_page.has_previous %}<a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_engagement', account=selected_account.selection_ref, section='followups', status=selected_status, page=scheduler_page.page - 1) }}">{{ t('Previous') }}</a>{% endif %}<span>{{ t("Page {number}", number=scheduler_page.page) }}</span>{% if scheduler_page.has_next %}<a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_engagement', account=selected_account.selection_ref, section='followups', status=selected_status, page=scheduler_page.page + 1) }}">{{ t('Next') }}</a>{% endif %}</nav>
+{% endif %}
+{% endblock %}

@@ -701,7 +701,8 @@ class TenantDashboardTest(unittest.TestCase):
         self._login_as(self.owner_a)
         html_responses = []
         for path in ("/app", "/app/accounts", "/app/leads", "/app/activity", "/app/followups", "/app/messages", "/app/content"):
-            response = self.client.get(path)
+            # Leads/Activity/Follow-ups/Messages redirect to the merged engagement view.
+            response = self.client.get(path, follow_redirects=True)
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.headers["Cache-Control"], "no-store")
             html_responses.append(response)
@@ -875,7 +876,8 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertEqual(bounded_page["leads"], [])
 
         page = self.client.get(
-            f"/app/leads?account={account}&q=search_me&sort=oldest&page=1"
+            f"/app/leads?account={account}&q=search_me&sort=oldest&page=1",
+            follow_redirects=True,
         ).get_data(as_text=True)
         self.assertIn("q=search_me", page)
         self.assertIn("sort=oldest", page)
@@ -948,7 +950,8 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertIsNone(leads["lead_cross_account"].get("cover_url"))
 
         page = self.client.get(
-            f"/app/leads?account={account}&view=all"
+            f"/app/leads?account={account}&view=all",
+            follow_redirects=True,
         ).get_data(as_text=True)
         self.assertNotIn('href="/p/o/opaque-prompt-a"', page)
         self.assertIn('href="https://www.instagram.com/p/public-alpha/"', page)
@@ -983,7 +986,8 @@ class TenantDashboardTest(unittest.TestCase):
             (f"/app/activity?account={account_a2}", "No activity yet."),
             (f"/app/followups?account={account_a2}", "No follow-ups yet."),
         ):
-            response = self.client.get(path)
+            # Leads/Activity/Follow-ups redirect to the merged engagement view.
+            response = self.client.get(path, follow_redirects=True)
             self.assertEqual(response.status_code, 200)
             self.assertIn(message, response.get_data(as_text=True))
 
@@ -1010,7 +1014,8 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertTrue(all(not item["username"] for item in activity))
 
         rendered = self.client.get(
-            f"/app/activity?account={account}&event_type=followups"
+            f"/app/activity?account={account}&event_type=followups",
+            follow_redirects=True,
         ).get_data(as_text=True)
         self.assertIn("Follow-ups", rendered)
         self.assertIn('value="followups" selected', rendered)
@@ -1060,9 +1065,9 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertIn('/static/tenant_dashboard.css', page)
         self.assertIn('aria-label="Primary navigation"', page)
         self.assertIn('aria-current="page"><svg', page)
-        for label in ("Content", "Calendar", "Engagement", "Automation", "Instagram", "Analytics"):
+        for label in ("Content", "Calendar", "Engagement", "Automation", "Instagram", "Settings"):
             self.assertIn(f">{label}</a>", page)
-        for legacy_label in ("Home", "Leads", "Messages", "Scheduler", "Accounts", "Activity", "Follow-ups"):
+        for legacy_label in ("Home", "Leads", "Messages", "Scheduler", "Accounts", "Activity", "Follow-ups", "Analytics"):
             self.assertNotIn(f">{legacy_label}</a>", page)
         self.assertIn('aria-label="Open navigation"', page)
         self.assertIn('action="/logout"', page)
@@ -1114,10 +1119,14 @@ class TenantDashboardTest(unittest.TestCase):
         primary_navigation = page.split('aria-label="Primary navigation">', 1)[1].split(
             "</nav>", 1
         )[0]
-        self.assertTrue(primary_navigation.strip().endswith("</svg>Support</a>"))
+        self.assertTrue(primary_navigation.strip().endswith("</svg>Settings</a>"))
         self.assertLess(
             primary_navigation.index("</svg>Instagram</a>"),
             primary_navigation.index("</svg>Support</a>"),
+        )
+        self.assertLess(
+            primary_navigation.index("</svg>Support</a>"),
+            primary_navigation.index("</svg>Settings</a>"),
         )
         for internal_value in (
             "Internal administration",
@@ -1164,7 +1173,8 @@ class TenantDashboardTest(unittest.TestCase):
         self._login_as(self.owner_a)
 
         overview = self.client.get("/app").get_data(as_text=True)
-        activity = self.client.get("/app/activity").get_data(as_text=True)
+        # /app/activity redirects to the merged engagement view (section=activity).
+        activity = self.client.get("/app/activity", follow_redirects=True).get_data(as_text=True)
 
         self.assertNotIn("Times shown in Africa/Casablanca.", overview)
         self.assertIn("Times shown in Africa/Casablanca.", activity)
@@ -1212,7 +1222,7 @@ class TenantDashboardTest(unittest.TestCase):
         self._login_as(self.owner_a)
         selected = self._reference(self.owner_a, self.account_a2)
 
-        leads = self.client.get(f"/app/leads?account={selected}").get_data(as_text=True)
+        leads = self.client.get(f"/app/leads?account={selected}", follow_redirects=True).get_data(as_text=True)
         accounts = self.client.get(f"/app/accounts?account={selected}").get_data(as_text=True)
 
         self.assertIn('aria-current="page"><svg aria-hidden="true"', leads)
@@ -1228,9 +1238,11 @@ class TenantDashboardTest(unittest.TestCase):
         selected = self._reference(self.owner_a, self.account_a1)
         other = self._reference(self.owner_a, self.account_a2)
 
-        page = self.client.get(f"/app/leads?account={selected}").get_data(as_text=True)
+        # /app/leads redirects to the merged engagement view, so the account
+        # switcher keeps the user on Engagement, not Home.
+        page = self.client.get(f"/app/leads?account={selected}", follow_redirects=True).get_data(as_text=True)
 
-        self.assertIn(f'href="/app/leads?account={other}"', page)
+        self.assertIn(f'href="/app/engagement?account={other}"', page)
         self.assertNotIn(f'href="/app?account={other}"', page)
 
     def test_automations_uses_one_page_heading_and_labeled_checkboxes(self):
@@ -1483,7 +1495,9 @@ class TenantDashboardTest(unittest.TestCase):
         selected = self._reference(self.owner_a, self.account_a1)
 
         for path in ("leads", "messages", "activity", "followups"):
-            page = self.client.get(f"/app/{path}?account={selected}").get_data(as_text=True)
+            # Each old route redirects to the merged engagement view, which
+            # provides the same route-preserving subnavigation.
+            page = self.client.get(f"/app/{path}?account={selected}", follow_redirects=True).get_data(as_text=True)
             self.assertIn('class="engagement-tabs"', page)
             self.assertIn('aria-label="Engagement sections"', page)
             for label in ("Leads", "Message activity", "Activity", "Follow-ups"):
@@ -1760,7 +1774,8 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertEqual(config.public_reply_text, "Internal prompt public reply")
         self.assertEqual(config.prompt_opening_message_text, "Internal prompt opening")
         internal_analytics = self.client.get(
-            f"/app/analytics?account={selected}"
+            f"/app/analytics?account={selected}",
+            follow_redirects=True,
         ).get_data(as_text=True)
         self.assertIn("Prompt delivery details", internal_analytics)
 
@@ -2057,14 +2072,16 @@ class TenantDashboardTest(unittest.TestCase):
         for path in ("automations", "content", "", "scheduler", "leads", "messages", "activity", "accounts"):
             with self.subTest(path=path or "overview"):
                 route = "/app" if not path else f"/app/{path}"
-                page = self.client.get(f"{route}?account={selected}").get_data(as_text=True)
+                # Leads/messages/activity redirect to the merged engagement view.
+                page = self.client.get(f"{route}?account={selected}", follow_redirects=True).get_data(as_text=True)
                 self.assertIn("Postenza", page)
                 self.assertNotIn("Sociora", page)
 
     def test_activity_feed_uses_readable_time_without_exposing_raw_timestamp(self):
         """Activity presentation must not render the database ISO timestamp directly."""
         self._login_as(self.owner_a)
-        page = self.client.get("/app/activity").get_data(as_text=True)
+        # /app/activity redirects to the merged engagement view (section=activity).
+        page = self.client.get("/app/activity", follow_redirects=True).get_data(as_text=True)
 
         self.assertIn("Times shown in Africa/Casablanca.", page)
         activity_markup = page.split('aria-label="Account activity"', 1)[1].split("</section>", 1)[0]

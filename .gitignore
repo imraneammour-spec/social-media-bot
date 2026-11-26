@@ -19,3 +19,6 @@ backups/
 *.sqlite*
 .env.*
 !.env.example
+
+.venv-global/
+.venv-test/

@@ -268,7 +268,8 @@ class LeadIntelligenceTest(unittest.TestCase):
         calls = []
         self.app.extensions["lead_intelligence_analyzer"] = lambda context: calls.append(context)
         url = f"/app/leads?account={self._account_reference(self.account_a)}"
-        before = self.client.get(url).get_data(as_text=True)
+        # /app/leads redirects to the merged engagement view (section=leads).
+        before = self.client.get(url, follow_redirects=True).get_data(as_text=True)
         self.assertIn("Not analyzed", before)
         self.assertIn("Analyze lead", before)
         self.assertEqual(calls, [])
@@ -280,7 +281,7 @@ class LeadIntelligenceTest(unittest.TestCase):
             lead.ai_summary = "Safe summary <script>must be escaped</script>."
             lead.ai_suggested_followup = "Wait for another interaction."
             lead.ai_analyzed_at = datetime.now(timezone.utc)
-        after = self.client.get(url).get_data(as_text=True)
+        after = self.client.get(url, follow_redirects=True).get_data(as_text=True)
         self.assertIn("Prompt Request", after)
         self.assertIn("Medium", after)
         self.assertIn("Safe summary &lt;script&gt;must be escaped&lt;/script&gt;.", after)

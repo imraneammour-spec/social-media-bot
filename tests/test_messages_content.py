@@ -341,7 +341,8 @@ class MessagesContentDashboardTest(unittest.TestCase):
                 "tenant-dashboard-select",
                 secret_key=self.app.secret_key,
             )
-        response = self.client.get(f"/app/messages?account={empty_ref}")
+        # /app/messages redirects to the merged engagement view (section=messages).
+        response = self.client.get(f"/app/messages?account={empty_ref}", follow_redirects=True)
         self.assertEqual(response.status_code, 200)
         self.assertIn(
             "No message activity yet. Recorded comment interactions, messages, smart replies, and follow-ups will appear here.",
@@ -1508,7 +1509,9 @@ class MessagesContentDashboardTest(unittest.TestCase):
         """17. Messages link is enabled."""
         self._login_as(self.owner_a)
         page = self.client.get("/app").get_data(as_text=True)
-        self.assertIn('href="/app/leads', page)
+        # Messages now live in the merged Engagement view.
+        self.assertIn('href="/app/engagement', page)
+        self.assertNotIn('href="/app/messages', page)
         self.assertNotIn(">Engagement <small>Coming soon</small>", page)
 
     def test_content_link_is_enabled_in_sidebar(self):
@@ -1526,8 +1529,10 @@ class MessagesContentDashboardTest(unittest.TestCase):
         for label in ("Calendar", "Overview"):
             self.assertIn(f">{label}</a>", page)
             self.assertNotIn(f">{label} <small>Coming soon</small>", page)
-        # Existing nav links still present
-        self.assertIn('href="/app/leads', page)
+        # Existing nav links still present; Analytics folded into Overview.
+        self.assertIn('href="/app/engagement', page)
+        self.assertNotIn('href="/app/analytics', page)
+        self.assertIn('id="analytics"', page)
         self.assertIn('href="/app/automations', page)
         self.assertIn('href="/app/accounts', page)
 
@@ -1541,14 +1546,16 @@ class MessagesContentDashboardTest(unittest.TestCase):
         ref = self._reference(self.owner_a, self.account_a)
         for path in ("/app", f"/app/accounts?account={ref}", f"/app/leads?account={ref}",
                      f"/app/activity?account={ref}", f"/app/followups?account={ref}"):
-            response = self.client.get(path)
+            # Leads/Activity/Follow-ups redirect to the merged engagement view.
+            response = self.client.get(path, follow_redirects=True)
             self.assertEqual(response.status_code, 200, f"Failed for {path}")
 
     def test_messages_active_navigation_marker(self):
         """Messages page shows active nav marker."""
         self._login_as(self.owner_a)
         ref = self._reference(self.owner_a, self.account_a)
-        page = self.client.get(f"/app/messages?account={ref}").get_data(as_text=True)
+        # /app/messages redirects to the merged engagement view (section=messages).
+        page = self.client.get(f"/app/messages?account={ref}", follow_redirects=True).get_data(as_text=True)
         self.assertIn('aria-current="page"><svg aria-hidden="true"', page)
         self.assertIn('</svg>Engagement</a>', page)
 

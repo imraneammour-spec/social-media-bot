@@ -98,9 +98,13 @@ class WebhookAuthenticationIntegrationTest(unittest.TestCase):
 
         response = self.client.get("/dashboard")
 
-        self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Legacy Owner", response.data)
-        self.assertIn(csrf_value.encode("utf-8"), response.data)
+        # The legacy /dashboard route is retired and redirects to /app.
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["Location"], "/app")
+        followed = self.client.get("/dashboard", follow_redirects=True)
+        self.assertEqual(followed.status_code, 200)
+        self.assertIn(b"Legacy Owner", followed.data)
+        self.assertIn(csrf_value.encode("utf-8"), followed.data)
         with self.session_factory() as db_session:
             self.assertEqual(len(db_session.scalars(select(User)).all()), 1)
 

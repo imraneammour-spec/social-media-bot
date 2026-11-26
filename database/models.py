@@ -35,6 +35,9 @@ class User(TimestampMixin, Base):
     email: Mapped[str | None] = mapped_column(String(320), unique=True, index=True)
     display_name: Mapped[str | None] = mapped_column(String(255))
     password_hash: Mapped[str | None] = mapped_column(String(255))
+    notification_preferences: Mapped[dict[str, object] | None] = mapped_column(
+        JSON, default=dict, server_default=text("'{}'")
+    )
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
 
     instagram_accounts: Mapped[list["InstagramAccount"]] = relationship(

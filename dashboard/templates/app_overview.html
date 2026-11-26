@@ -4,7 +4,7 @@
 {% block timezone_helper %}{% endblock %}
 {% block content %}
 <section class="connection-card card" aria-label="{{ t('Your Instagram connection') }}"><div><p class="eyebrow">{{ t('Your Instagram connection') }}</p><h2>{{ display_username(selected_account.username) }}</h2><p class="muted">{{ t(selected_account.connection_detail) }}</p></div><div class="connection-status"><span class="status-pill {% if selected_account.connection_label == 'Connected' %}status-success{% else %}status-warning{% endif %}">{{ t(selected_account.connection_label) }}</span>{% if selected_account.connection_label != 'Connected' %}<a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_accounts', account=selected_account.selection_ref) }}">{{ t('Review connection') }}</a>{% endif %}</div></section>
-{% if is_legacy_account %}<section class="card" aria-label="{{ t('Instagram snapshot') }}"><div class="section-heading"><div><p class="eyebrow">{{ t('Instagram snapshot') }}</p><h2>{{ t('Live performance') }}</h2></div></div><p class="muted" id="legacySnapshotStatus">{{ t('Loading live performance...') }}</p><dl class="metric-grid"><div><dt>{{ t('Followers') }}</dt><dd id="legacySnapshotFollowers">—</dd></div><div><dt>{{ t('Likes') }}</dt><dd id="legacySnapshotLikes">—</dd></div><div><dt>{{ t('Views') }}</dt><dd id="legacySnapshotViews">—</dd></div><div><dt>{{ t('Shares') }}</dt><dd id="legacySnapshotShares">—</dd></div></dl><div id="legacySnapshotBest"></div></section>
+{% if is_legacy_account %}<section class="card" aria-label="{{ t('Instagram snapshot') }}"><div class="section-heading"><div><p class="eyebrow">{{ t('Instagram snapshot') }}</p><h2>{{ t('Live performance') }}</h2></div></div><p class="muted" id="legacySnapshotStatus">{{ t('Loading live performance...') }}</p><dl class="metric-grid"><div><dt>{{ t('Followers') }}</dt><dd id="legacySnapshotFollowers" class="skeleton">—</dd></div><div><dt id="legacySnapshotLikesLabel" data-label-template="{{ t('Likes (latest {count} posts)', count='{count}') }}">{{ t('Likes (latest {count} posts)', count='…') }}</dt><dd id="legacySnapshotLikes" class="skeleton">—</dd></div><div><dt id="legacySnapshotViewsLabel" data-label-template="{{ t('Views (latest {count} posts)', count='{count}') }}">{{ t('Views (latest {count} posts)', count='…') }}</dt><dd id="legacySnapshotViews" class="skeleton">—</dd></div><div><dt id="legacySnapshotSharesLabel" data-label-template="{{ t('Shares (latest {count} posts)', count='{count}') }}">{{ t('Shares (latest {count} posts)', count='…') }}</dt><dd id="legacySnapshotShares" class="skeleton">—</dd></div><div><dt id="legacySnapshotCommentsLabel" data-label-template="{{ t('Comments (latest {count} posts)', count='{count}') }}">{{ t('Comments (latest {count} posts)', count='…') }}</dt><dd id="legacySnapshotComments" class="skeleton">—</dd></div></dl><div id="legacySnapshotBest"></div></section>
 <script>
 (function () {
   var status = document.getElementById("legacySnapshotStatus");
@@ -25,11 +25,31 @@
       var account = data.account || {};
       var totals = data.totals || {};
       var topPosts = Array.isArray(data.top_posts) ? data.top_posts : [];
+      var postCount = metric(totals.posts);
+      function setLabel(id) {
+        var label = document.getElementById(id);
+        if (label && label.dataset.labelTemplate) {
+          label.textContent = label.dataset.labelTemplate.replace("{count}", postCount);
+        }
+      }
+      function clearSkeleton(id) {
+        var value = document.getElementById(id);
+        if (value) value.classList.remove("skeleton");
+      }
+      var comments = topPosts.reduce(function (sum, post) {
+        return sum + Number(post.comments_count || 0);
+      }, 0);
       document.getElementById("legacySnapshotFollowers").textContent = metric(account.followers_count);
       document.getElementById("legacySnapshotLikes").textContent = metric(totals.likes);
       document.getElementById("legacySnapshotViews").textContent = metric(totals.views || totals.impressions);
       document.getElementById("legacySnapshotShares").textContent = metric(totals.shares);
-      status.textContent = (account.username ? "@" + account.username : "Instagram") + " • latest " + metric(totals.posts) + " posts";
+      document.getElementById("legacySnapshotComments").textContent = metric(comments);
+      setLabel("legacySnapshotLikesLabel");
+      setLabel("legacySnapshotViewsLabel");
+      setLabel("legacySnapshotSharesLabel");
+      setLabel("legacySnapshotCommentsLabel");
+      ["legacySnapshotFollowers", "legacySnapshotLikes", "legacySnapshotViews", "legacySnapshotShares", "legacySnapshotComments"].forEach(clearSkeleton);
+      status.textContent = (account.username ? "@" + account.username : "Instagram") + " • latest " + postCount + " posts";
       var best = topPosts[0];
       if (!best) return;
       var container = document.getElementById("legacySnapshotBest");
@@ -55,6 +75,10 @@
     })
     .catch(function (error) {
       status.textContent = (error && error.message) || "Could not load live performance.";
+      ["legacySnapshotFollowers", "legacySnapshotLikes", "legacySnapshotViews", "legacySnapshotShares", "legacySnapshotComments"].forEach(function (id) {
+        var value = document.getElementById(id);
+        if (value) value.classList.remove("skeleton");
+      });
     });
 })();
 </script>{% endif %}
@@ -63,5 +87,61 @@
 <section class="card" aria-label="{{ t('Content at a glance') }}"><div class="section-heading"><div><p class="eyebrow">{{ t('Content at a glance') }}</p><h2>{{ t('Your publishing workflow') }}</h2></div><a class="text-link" href="{{ url_for('tenant_dashboard.app_content', account=selected_account.selection_ref) }}">{{ t('View content') }}</a></div><dl class="metric-grid"><div><dt>{{ t('Drafts') }}</dt><dd>{{ overview.content_state_counts.draft + overview.content_state_counts.ready }}</dd></div><div><dt>{{ t('Scheduled') }}</dt><dd>{{ overview.content_state_counts.scheduled }}</dd></div><div><dt>{{ t('Published') }}</dt><dd>{{ overview.content_state_counts.published }}</dd></div><div><dt>{{ t('Needs attention') }}</dt><dd>{{ overview.content_state_counts.failed }}</dd></div></dl></section>
 {% if overview.content_state_counts.failed or selected_account.connection_label != 'Connected' %}<section class="alert alert-warning" aria-label="{{ t('Needs attention') }}"><strong>{{ t('Needs attention') }}</strong><span>{% if overview.content_state_counts.failed %}{{ t('Some posts need review before you create another version.') }}{% else %}{{ t('Reconnect Instagram before publishing or automation can continue.') }}{% endif %}</span></section>{% endif %}
 <section class="card" aria-label="{{ t('Recent activity') }}"><div class="section-heading"><div><p class="eyebrow">{{ t('Recent activity') }}</p><h2>{{ t('What happened recently') }}</h2></div></div><div class="activity-list">{% for item in overview.recent_activity %}<div class="activity-feed-item"><span class="activity-icon" aria-hidden="true">◆</span><div><strong>{{ t(item.type) }}</strong><p class="muted">{% if item.username %}{{ display_username(item.username) }} · {% endif %}<span class="status-pill {% if item.state == 'Completed' %}status-success{% elif item.state == 'Waiting' %}status-warning{% elif item.state == 'Unavailable' or item.state == 'Failed' %}status-error{% else %}status-neutral{% endif %}">{{ t(item.state) }}</span></p><p class="muted">{{ display_time(item.occurred_at) }}</p></div></div>{% else %}<p class="empty-state">{{ t('Activity will appear here when your account is used.') }}</p>{% endfor %}</div></section>
-<section class="card"><h2>{{ t('Engagement at a glance') }}</h2><p class="helper-text">{{ t('All time') }}</p><dl class="metric-grid"><div><dt>{{ t('Message interactions') }}</dt><dd>{{ overview.direct_private_replies }}</dd></div><div><dt>{{ t('Eligible replies') }}</dt><dd>{{ overview.qualifying_recipient_replies }}</dd></div><div><dt>{{ t('Follow-ups') }}</dt><dd>{{ overview.followup_count }}</dd></div><div><dt>{{ t('Lead records') }}</dt><dd>{{ overview.lead_count }}</dd></div></dl><a class="text-link" href="{{ url_for('tenant_dashboard.app_analytics', account=selected_account.selection_ref) }}">{{ t('View analytics') }}</a></section>
+<section class="card"><h2>{{ t('Engagement at a glance') }}</h2><p class="helper-text">{{ t('All time') }}</p><dl class="metric-grid"><div><dt>{{ t('Message interactions') }}</dt><dd>{{ overview.direct_private_replies }}</dd></div><div><dt>{{ t('Eligible replies') }}</dt><dd>{{ overview.qualifying_recipient_replies }}</dd></div><div><dt>{{ t('Follow-ups') }}</dt><dd>{{ overview.followup_count }}</dd></div><div><dt>{{ t('Lead records') }}</dt><dd>{{ overview.lead_count }}</dd></div></dl><a class="text-link" href="#analytics">{{ t('View analytics') }}</a></section>
+<section class="card" id="analytics" aria-label="{{ t('Analytics') }}"><div class="section-heading"><div><p class="eyebrow">{{ t('Analytics') }}</p><h2>{{ t('Analytics') }}</h2></div></div>
+<p class="muted">{{ t('Operational analytics for the selected account, derived from persisted data.') }}</p>
+<form method="get" action="{{ url_for('tenant_dashboard.app_overview') }}" class="card activity-filters" aria-label="{{ t('Analytics time range') }}">
+    <input type="hidden" name="account" value="{{ selected_account.selection_ref }}">
+    <label>{{ t('Time range') }}
+        <select name="range">
+            {% for value, label in range_filters %}<option value="{{ value }}" {% if selected_range == value %}selected{% endif %}>{{ t(label) }}</option>{% endfor %}
+        </select>
+    </label>
+    <button class="button button-primary" type="submit">{{ t('Apply range') }}</button>
+</form>
+{% if not analytics_has_activity %}
+<p class="empty-state">{{ t('No activity in this time range.') }}</p>
+{% endif %}
+<section class="summary-grid" aria-label="{{ t('Key metrics') }}">
+    <dl class="summary-card card"><dt>{{ t('Comment events') }}</dt><dd>{{ analytics.metrics.comments_handled }}</dd></dl>
+    <dl class="summary-card card"><dt>{{ t('Message events') }}</dt><dd>{{ analytics.metrics.messages_handled }}</dd></dl>
+    <dl class="summary-card card"><dt>{{ t('Custom-message interactions') }}</dt><dd>{{ analytics.metrics.direct_private_replies }}</dd></dl>
+    <dl class="summary-card card"><dt>{{ t('Smart replies sent') }}</dt><dd>{{ analytics.metrics.smart_replies_sent }}</dd></dl>
+    <dl class="summary-card card"><dt>{{ t('Follow-ups queued') }}</dt><dd>{{ analytics.metrics.followups_scheduled }}</dd></dl>
+</section>
+<section class="summary-grid" aria-label="{{ t('Delivery metrics') }}">
+    <dl class="summary-card card"><dt>{{ t('Follow-ups sent') }}</dt><dd>{{ analytics.metrics.followups_sent }}</dd></dl>
+    <dl class="summary-card card"><dt>{{ t('Follow-ups failed') }}</dt><dd>{{ analytics.metrics.followups_failed }}</dd></dl>
+    <dl class="summary-card card"><dt>{{ t('Qualifying recipient replies') }}</dt><dd>{{ analytics.metrics.qualifying_recipient_replies }}</dd></dl>
+    <dl class="summary-card card"><dt>{{ t('Failed events') }}</dt><dd>{{ analytics.metrics.failed_events }}</dd></dl>
+    <dl class="summary-card card"><dt>{{ t('Completed events') }}</dt><dd>{{ analytics.metrics.completed_events }}</dd></dl>
+</section>
+<section class="card detail-card">
+    <h2>{{ t('Follow-up delivery') }}</h2>
+    <p>{{ t('Scheduled') }} {{ analytics.followup_breakdown.scheduled }} {{ t('· Processing') }} {{ analytics.followup_breakdown.processing }} {{ t('· Sent') }} {{ analytics.followup_breakdown.sent }} {{ t('· Cancelled') }} {{ analytics.followup_breakdown.cancelled }} {{ t('· Failed') }} {{ analytics.followup_breakdown.failed }}</p>
+</section>
+<section class="card detail-card">
+    <h2>{{ t('Engagement reliability') }}</h2>
+    <p>{{ t('Completed') }} {{ analytics.engagement_breakdown.done }} {{ t('· Processing') }} {{ analytics.engagement_breakdown.processing }} {{ t('· Failed') }} {{ analytics.engagement_breakdown.failed }}</p>
+    {% if analytics.metrics.total_events > 0 %}
+    <p class="muted">{{ t('Failure rate:') }} {{ "%.1f" | format((analytics.metrics.failed_events / analytics.metrics.total_events) * 100) }}%</p>
+    {% else %}
+    <p class="muted">{{ t('No engagement events in this range.') }}</p>
+    {% endif %}
+</section>
+<section class="card detail-card">
+    <h2>{{ t('Lead activity') }}</h2>
+    <p>{{ t('Total') }} {{ analytics.metrics.leads_total }} {{ t('· Active') }} {{ analytics.metrics.leads_active }} {{ t('· Archived') }} {{ analytics.metrics.leads_archived }}</p>
+    <p class="muted">{{ t('New') }} {{ analytics.lead_breakdown.new }} {{ t('· Contacted') }} {{ analytics.lead_breakdown.contacted }} {{ t('· Qualified') }} {{ analytics.lead_breakdown.qualified }} {{ t('· Won') }} {{ analytics.lead_breakdown.won }} {{ t('· Lost') }} {{ analytics.lead_breakdown.lost }}</p>
+</section>
+{% if analytics.recent_failures %}
+<section class="card detail-card">
+    <h2>{{ t('Recent failures') }}</h2>
+    {% for failure in analytics.recent_failures %}
+    <p>{{ t(failure.type) }} &middot; {{ t(failure.state) }} &middot; {{ display_time(failure.occurred_at) }}</p>
+    {% endfor %}
+</section>
+{% endif %}
+<section class="card detail-card"><h2>{{ t('About these metrics') }}</h2><p class="muted">{{ t('Counts come from recorded account activity, not Instagram reach or impressions. Comment events are not a count of successful public replies. Qualifying replies are those linked to an initial custom message.') }}</p><p class="muted">{{ t('Counts include saved custom-message follow-up interactions, not every private message sent.') }}</p><p class="muted">{{ t('Time ranges select records created in that period and show their current status. Recipient replies use reply time.') }}</p>{% if internal_prompt_access %}<details><summary>{{ t('Prompt delivery details') }}</summary><p>{{ t("Prompt requests") }}: {{ analytics.metrics.prompt_requests }} · {{ t("Prompt-enabled content") }}: {{ analytics.metrics.prompt_enabled_content }}</p></details>{% endif %}</section>
+</section>
 {% endblock %}

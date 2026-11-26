@@ -542,8 +542,10 @@ def post_login_destination(user: User | None) -> str:
         return url_for("onboarding")
     if current_user_has_legacy_workspace_access():
         # The server-managed legacy workspace is now a tenant workspace:
-        # send the owner to the new tenant dashboard. The legacy dashboard
-        # stays available directly at /dashboard.
+        # send the owner to the new tenant dashboard. The legacy /dashboard
+        # route is retired and redirects to /app, so the /dashboard URL is
+        # kept only as the fallback destination for apps without the tenant
+        # dashboard registered (it still lands on /app via the redirect).
         if "tenant_dashboard.app_overview" in current_app.view_functions:
             return url_for("tenant_dashboard.app_overview")
         return url_for("dashboard")
@@ -904,6 +906,9 @@ def install_auth_route_guard(app) -> None:
         endpoint = request.endpoint
         if endpoint is None or endpoint in public_endpoints or endpoint in disabled_post_endpoints:
             return None
+        # /dashboard stays guarded even though it now redirects to /app:
+        # unauthenticated visitors go to login and non-legacy users go to
+        # onboarding instead of reaching the app overview.
         protected_path = (
             request.path == "/dashboard"
             or request.path.startswith("/api/")

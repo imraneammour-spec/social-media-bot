@@ -422,7 +422,8 @@ class SchedulerAnalyticsDashboardTest(unittest.TestCase):
         action_ref = self._scheduler_cancel_reference(
             self.owner_a, self.account_a, "followup-a-pending-secret"
         )
-        page = self.client.get(f"/app/followups?account={account_ref}").get_data(as_text=True)
+        # /app/followups redirects to the merged engagement view (section=followups).
+        page = self.client.get(f"/app/followups?account={account_ref}", follow_redirects=True).get_data(as_text=True)
         self.assertIn("Cancel follow-up", page)
         self.assertNotIn("followup-a-pending-secret", page)
         csrf_match = re.search(r'name="csrf_token" value="([^"]+)"', page)
@@ -662,11 +663,14 @@ class SchedulerAnalyticsDashboardTest(unittest.TestCase):
         self.assertNotIn(">Scheduler <small>Coming soon</small>", page)
 
     def test_analytics_link_enabled_in_sidebar(self):
-        """23. Analytics sidebar link enabled."""
+        """23. Analytics folded into Overview: no sidebar link, section on /app."""
         self._login_as(self.owner_a)
         page = self.client.get("/app").get_data(as_text=True)
-        self.assertIn('href="/app/analytics', page)
+        self.assertNotIn('href="/app/analytics', page)
+        self.assertNotIn('data-nav="analytics"', page)
         self.assertNotIn(">Analytics <small>Coming soon</small>", page)
+        self.assertIn('id="analytics"', page)
+        self.assertIn("About these metrics", page)
 
     def test_no_coming_soon_badges_for_scheduler_analytics(self):
         """24. No remaining Coming soon badges for implemented pages."""
@@ -688,11 +692,16 @@ class SchedulerAnalyticsDashboardTest(unittest.TestCase):
         self.assertRegex(page, r'<a href="/app/scheduler[^"\s]*" aria-current="page"><svg[^>]*>.*?</svg>Calendar</a>')
 
     def test_analytics_active_navigation_marker(self):
-        """Analytics page shows active nav marker."""
+        """Analytics now renders as a section on Overview, so Overview is active."""
         self._login_as(self.owner_a)
         ref = self._reference(self.owner_a, self.account_a)
-        page = self.client.get(f"/app/analytics?account={ref}").get_data(as_text=True)
-        self.assertRegex(page, r'<a href="/app/analytics[^"\s]*" data-nav="analytics" aria-current="page"><svg[^>]*>.*?</svg>Analytics</a>')
+        # /app/analytics redirects to /app (account + range preserved).
+        response = self.client.get(f"/app/analytics?account={ref}")
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.headers["Location"].startswith("/app?"), response.headers["Location"])
+        page = self.client.get(f"/app/analytics?account={ref}", follow_redirects=True).get_data(as_text=True)
+        self.assertRegex(page, r'<a href="/app\?account=[^"]*" aria-current="page"><svg[^>]*>.*?</svg>Overview</a>')
+        self.assertIn('id="analytics"', page)
 
     # ==================================================================
     # REGRESSION — existing pages still work
@@ -712,7 +721,9 @@ class SchedulerAnalyticsDashboardTest(unittest.TestCase):
             f"/app/messages?account={ref}",
             f"/app/content?account={ref}",
         ):
-            response = self.client.get(path)
+            # Leads/Activity/Follow-ups/Messages redirect to the merged
+            # engagement view; each must still resolve to a 200 page.
+            response = self.client.get(path, follow_redirects=True)
             self.assertEqual(response.status_code, 200, f"Failed for {path}")
 
     def test_scheduler_page_renders(self):
@@ -729,7 +740,9 @@ class SchedulerAnalyticsDashboardTest(unittest.TestCase):
         """Analytics page renders correctly."""
         self._login_as(self.owner_a)
         ref = self._reference(self.owner_a, self.account_a)
-        response = self.client.get(f"/app/analytics?account={ref}")
+        # /app/analytics redirects to the Overview page, where analytics now
+        # renders as the #analytics section.
+        response = self.client.get(f"/app/analytics?account={ref}", follow_redirects=True)
         self.assertEqual(response.status_code, 200)
         page = response.get_data(as_text=True)
         self.assertIn("Comment events", page)
@@ -762,7 +775,9 @@ class SchedulerAnalyticsDashboardTest(unittest.TestCase):
                 secret_key=self.app.secret_key,
             )
 
-        page = self.client.get(f"/app/analytics?account={empty_ref}").get_data(as_text=True)
+        # /app/analytics redirects to the Overview page, where the analytics
+        # section shows the empty state for an account with no activity.
+        page = self.client.get(f"/app/analytics?account={empty_ref}", follow_redirects=True).get_data(as_text=True)
 
         self.assertIn('class="empty-state">No activity in this time range.</p>', page)
 

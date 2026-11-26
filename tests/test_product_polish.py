@@ -22,11 +22,11 @@ class ProductPolishTest(unittest.TestCase):
     tearDown = fixture.TenantDashboardTest.tearDown
     _seed = fixture.TenantDashboardTest._seed
 
-    def get(self, path):
+    def get(self, path, follow_redirects=False):
         from auth import action_reference_for_account
         reference = action_reference_for_account(self.owner_a.id, self.account_a1.id,
                                                 "tenant-dashboard-select", secret_key=self.app.secret_key)
-        return self.client.get(path, query_string={"account": reference})
+        return self.client.get(path, query_string={"account": reference}, follow_redirects=follow_redirects)
 
     def login(self, locale="en", legacy=False):
         from auth import USER_SESSION_KEY
@@ -47,12 +47,15 @@ class ProductPolishTest(unittest.TestCase):
     def test_navigation_and_locale_session_fallback(self):
         for locale, label, direction in (("en", "Analytics", "ltr"), ("fr", "Statistiques", "ltr"), ("ar", "التحليلات", "rtl")):
             self.login(locale, legacy=True)
-            response = self.get("/app/analytics")
+            # /app/analytics redirects to the Overview page, where analytics
+            # now renders as the #analytics section.
+            response = self.get("/app/analytics", follow_redirects=True)
             self.assertEqual(response.status_code, 200)
             page = response.get_data(as_text=True)
             self.assertIn(f'dir="{direction}"', page)
             self.assertIn(label, page)
-            self.assertIn('data-nav="analytics" aria-current="page"', page)
+            self.assertIn('id="analytics"', page)
+            self.assertNotIn('data-nav="analytics"', page)
             if locale != "en":
                 self.assertNotIn("Operational analytics for the selected account", page)
 
@@ -70,7 +73,8 @@ class ProductPolishTest(unittest.TestCase):
                 run_at=now-timedelta(days=1), state="failed", last_error_code="outside_provider_window",
                 provider_window_expires_at=now-timedelta(hours=1), failed_at=now,
             ))
-        page = self.get("/app/followups").get_data(as_text=True)
+        # /app/followups redirects to the merged engagement view (section=followups).
+        page = self.get("/app/followups", follow_redirects=True).get_data(as_text=True)
         self.assertIn("Waiting for recipient reply", page)
         self.assertIn("Expired", page)
         for private in ("secret-source", "secret-recipient", "secret-reply", "secret-message", str(self.account_a1.id)):
@@ -114,7 +118,9 @@ class ProductPolishTest(unittest.TestCase):
                 return routes._DATABASE_UNAVAILABLE
             return real_query(selected, reader, **kwargs)
         with patch.object(routes, "_query", side_effect=query):
-            self.assertEqual(self.get("/app/leads").status_code, 503)
+            # /app/leads redirects to the merged engagement view, which fails
+            # safely (503) once the direct history query is unavailable.
+            self.assertEqual(self.get("/app/leads", follow_redirects=True).status_code, 503)
 
     def test_direct_metrics_are_account_scoped_and_use_reply_time(self):
         from database.tenant_insights import direct_metrics, direct_interactions
@@ -171,7 +177,9 @@ class ProductPolishTest(unittest.TestCase):
             with patch.object(routes, "translate", side_effect=checked):
                 for path in ("/app", "/app/accounts", "/app/automations", "/app/leads", "/app/messages",
                              "/app/activity", "/app/followups", "/app/analytics", "/app/content", "/app/scheduler"):
-                    response = self.get(path)
+                    # Leads/messages/activity/followups redirect to the merged
+                    # engagement view; analytics redirects to the Overview page.
+                    response = self.get(path, follow_redirects=True)
                     self.assertEqual(response.status_code, 200, (locale, path))
                     self.assertNotIn("Sociora", response.get_data(as_text=True))
             # Date group headings are numeric, not translatable messages.
@@ -180,7 +188,9 @@ class ProductPolishTest(unittest.TestCase):
 
     def test_analytics_range_action_uses_the_primary_button_component(self):
         self.login()
-        page = self.get("/app/analytics").get_data(as_text=True)
+        # /app/analytics redirects to the Overview page, where the analytics
+        # range form now renders as part of the #analytics section.
+        page = self.get("/app/analytics", follow_redirects=True).get_data(as_text=True)
         self.assertIn('<button class="button button-primary" type="submit">Apply range</button>', page)
 
     def test_image_form_rejects_invalid_url_without_creating_content(self):
@@ -227,7 +237,7 @@ class ProductPolishTest(unittest.TestCase):
 
     def test_followup_states_are_allowlisted_and_only_pending_is_cancellable(self):
         self.login()
-        pending_before = self.get("/app/followups").get_data(as_text=True).count('name="scheduler_action"')
+        pending_before = self.get("/app/followups", follow_redirects=True).get_data(as_text=True).count('name="scheduler_action"')
         now = datetime.now(timezone.utc)
         with self.Session.begin() as session:
             for state in ("pending", "processing", "sent", "failed", "cancelled"):
@@ -235,7 +245,7 @@ class ProductPolishTest(unittest.TestCase):
                     instagram_account_id=self.account_a1.id, source_message_id="private-source-"+state,
                     recipient_id="private-recipient-"+state, message_text="private-body", state=state,
                     run_at=now, last_error_code="untrusted error credential=secret"))
-        page = self.get("/app/followups").get_data(as_text=True)
+        page = self.get("/app/followups", follow_redirects=True).get_data(as_text=True)
         for state in ("Scheduled", "Processing", "Sent", "Failed", "Cancelled"):
             self.assertIn(state, page)
         for status, css_class in (
@@ -256,14 +266,15 @@ class ProductPolishTest(unittest.TestCase):
         from auth import action_reference_for_account
 
         self.login()
-        activity = self.get("/app/activity").get_data(as_text=True)
+        # The old per-section routes redirect to the merged engagement view.
+        activity = self.get("/app/activity", follow_redirects=True).get_data(as_text=True)
         self.assertIn(
             "Comments, messages, smart replies, and follow-up events for the selected Instagram account.",
             activity,
         )
         self.assertNotRegex(activity, r"status-(?:pending|danger|info)")
 
-        leads = self.get("/app/leads").get_data(as_text=True)
+        leads = self.get("/app/leads", follow_redirects=True).get_data(as_text=True)
         self.assertIn("Contacts who engaged with your account", leads)
         self.assertIn(
             "Contacts who requested prompts from your prompt-enabled Instagram posts.",
@@ -277,21 +288,21 @@ class ProductPolishTest(unittest.TestCase):
             secret_key=self.app.secret_key,
         )
         empty_leads = self.client.get(
-            "/app/leads", query_string={"account": empty_account}
+            "/app/leads", query_string={"account": empty_account}, follow_redirects=True
         ).get_data(as_text=True)
         self.assertIn(
             "No leads yet. Contacts will appear here after a prompt request is recorded.",
             empty_leads,
         )
         empty_messages = self.client.get(
-            "/app/messages", query_string={"account": empty_account}
+            "/app/messages", query_string={"account": empty_account}, follow_redirects=True
         ).get_data(as_text=True)
         self.assertIn(
             "No message activity yet. Recorded comment interactions, messages, smart replies, and follow-ups will appear here.",
             empty_messages,
         )
         empty_followups = self.client.get(
-            "/app/followups", query_string={"account": empty_account}
+            "/app/followups", query_string={"account": empty_account}, follow_redirects=True
         ).get_data(as_text=True)
         self.assertIn(
             "No follow-ups yet. Scheduled and sent follow-ups will appear here.",
@@ -323,7 +334,7 @@ class ProductPolishTest(unittest.TestCase):
                     state="pending",
                     run_at=now + timedelta(minutes=index),
                 ))
-        page = self.get("/app/followups").get_data(as_text=True)
+        page = self.get("/app/followups", follow_redirects=True).get_data(as_text=True)
         self.assertRegex(
             page,
             r'<a class="button button-secondary" href="[^"]*page=2[^"]*">Next</a>',
