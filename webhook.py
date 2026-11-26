@@ -8,6 +8,7 @@ import threading
 import uuid
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 from io import BytesIO
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
@@ -16,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 
 from dotenv import load_dotenv
-from flask import Flask, request, send_file, Response, url_for, render_template
+from flask import Flask, redirect, request, send_file, Response, session, url_for, render_template
 from werkzeug.utils import secure_filename
 
 from database.cli import register_database_commands
@@ -27,8 +28,17 @@ from auth import (
     get_current_user,
     install_auth_route_guard,
     register_auth_routes,
+    validate_csrf_token,
     verify_meta_signature,
     webhook_signature_verification_active,
+)
+from dashboard.i18n import (
+    LOCALE_META,
+    LOCALE_SESSION_KEY,
+    locale_context,
+    normalize_locale,
+    session_locale,
+    translate,
 )
 
 from google import genai
@@ -121,6 +131,29 @@ APP_ENVIRONMENT = os.getenv("APP_ENV", os.getenv("FLASK_ENV", "")).strip().lower
 IS_PRODUCTION = APP_ENVIRONMENT in {"production", "prod"} or bool(
     os.getenv("RAILWAY_ENVIRONMENT_NAME", "").strip()
 )
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip()
+
+
+def validated_public_origin(value):
+    """Accept only the exact canonical public origin, without forwarded-host trust."""
+
+    try:
+        parsed = urlsplit(str(value or "").strip())
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "postenza.app"
+        or port not in (None, 443)
+        or parsed.username
+        or parsed.password
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    return "https://postenza.app"
 configure_auth(
     app,
     database_url=DATABASE_URL,
@@ -171,13 +204,13 @@ MEDIA_LOCKS = {}
 # ==================================================
 
 print("========================================")
-print("Imran Social Media Bot")
+print("Postenza")
 print("========================================")
 
 if INSTAGRAM_ACCESS_TOKEN:
     print("Instagram access token: OK")
 else:
-    print("ERROR: INSTAGRAM_ACCESS_TOKEN missing")
+    print("Optional legacy Instagram integration: not configured")
 
 if GEMINI_API_KEY:
     print("Gemini API key: OK")
@@ -219,10 +252,84 @@ else:
 
 @app.route("/", methods=["GET"])
 def home():
+    locale = locale_context(session_locale(session))
+    public_origin = validated_public_origin(PUBLIC_BASE_URL)
+    if public_origin is None and IS_PRODUCTION:
+        public_origin = "https://postenza.app"
+    canonical_url = (
+        f"{public_origin}/"
+        if public_origin is not None
+        else url_for("home", _external=True)
+    )
+    og_image_url = (
+        f"{public_origin}/static/brand/postenza-logo-light.png"
+        if public_origin is not None
+        else url_for(
+            "static",
+            filename="brand/postenza-logo-light.png",
+            _external=True,
+        )
+    )
+    return render_template(
+        "landing.html",
+        canonical_url=canonical_url,
+        csrf_token=csrf_token(),
+        locale=locale,
+        locale_options=LOCALE_META,
+        og_image_url=og_image_url,
+        t=lambda key: translate(locale["code"], key),
+    )
 
-    return (
-        "Imran Social Media Bot is running!",
-        200
+
+@app.route("/locale", methods=["POST"])
+def landing_locale():
+    """Store only an allowlisted public UI locale and return to the landing page."""
+
+    if not validate_csrf_token(request.form.get("csrf_token")):
+        return "Invalid form token.", 400
+    session[LOCALE_SESSION_KEY] = normalize_locale(request.form.get("locale"))
+    return redirect(url_for("home"), code=303)
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    """Return a constant liveness response without touching application state."""
+
+    return {"status": "ok"}, 200
+
+
+@app.route("/sitemap.xml", methods=["GET"])
+def sitemap():
+    origin = validated_public_origin(PUBLIC_BASE_URL) or "https://postenza.app"
+    return Response(
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        f"<url><loc>{origin}/</loc></url>"
+        "</urlset>",
+        mimetype="application/xml",
+    )
+
+
+@app.route("/robots.txt", methods=["GET"])
+def robots():
+    return Response(
+        "User-agent: *\n"
+        "Allow: /\n"
+        "Disallow: /app\n"
+        "Disallow: /dashboard\n"
+        "Disallow: /login\n"
+        "Disallow: /register\n"
+        "Disallow: /logout\n"
+        "Disallow: /connect/\n"
+        "Disallow: /disconnect/\n"
+        "Disallow: /oauth/\n"
+        "Disallow: /webhook\n"
+        "Disallow: /api/\n"
+        "Disallow: /health\n"
+        "Disallow: /p/\n"
+        "\n"
+        "Sitemap: https://postenza.app/sitemap.xml\n",
+        mimetype="text/plain",
     )
 
 
