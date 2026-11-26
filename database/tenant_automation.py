@@ -20,6 +20,17 @@ CURRENT_DEFAULT_TRIGGER_KEYWORDS = (
     "send",
     "info",
 )
+# Trigger words the server-managed legacy bot matches, hard-coded in
+# ``legacy_bot.TRIGGER_WORDS``. The legacy automation row stores the same
+# set so the settings page shows the words the bot actually answers to.
+# Keep the two in sync; tests assert they match.
+LEGACY_TRIGGER_KEYWORDS = (
+    "access",
+    "ai",
+    "prompt",
+    "prompts",
+    "send",
+)
 DEFAULT_FOLLOWUP_DELAY_MINUTES = 360
 DEFAULT_FOLLOWUP_ENABLED = True
 DEFAULT_PROMPT_OPENING_MESSAGE = (
@@ -511,6 +522,56 @@ def ensure_initial_oauth_automation_config(
     except IntegrityError:
         return session.scalar(select(InstagramAutomationConfig).where(
             InstagramAutomationConfig.instagram_account_id == account.id
+        ))
+
+
+def ensure_legacy_automation_config(
+    session: Session,
+    *,
+    instagram_account_id: object,
+) -> InstagramAutomationConfig | None:
+    """Create the legacy account's automation row without changing an existing one.
+
+    The server-managed account never gets an OAuth config (it has no stored
+    credential), so this is the only creation path for its row. Defaults
+    mirror the legacy bot's current behavior: prompt delivery, the legacy
+    trigger words, and the presentation the settings page showed before the
+    row existed. The legacy bot reads only the delivery-mode fields from
+    this row; ``enabled`` stays True because the legacy bot has no off
+    switch (see ``resolve_automation_enabled``).
+    """
+
+    existing = session.scalar(select(InstagramAutomationConfig).where(
+        InstagramAutomationConfig.instagram_account_id == instagram_account_id
+    ))
+    if existing is not None:
+        return existing
+
+    config = InstagramAutomationConfig(
+        instagram_account_id=instagram_account_id,
+        enabled=True,
+        trigger_keywords=list(LEGACY_TRIGGER_KEYWORDS),
+        public_reply_enabled=True,
+        public_reply_text=DEFAULT_PROMPT_PUBLIC_REPLY,
+        delivery_mode="prompt_request",
+        private_message_text=DEFAULT_CUSTOM_MESSAGE,
+        prompt_opening_message_text=DEFAULT_PROMPT_OPENING_MESSAGE,
+        destination_url="",
+        followup_enabled=DEFAULT_FOLLOWUP_ENABLED,
+        followup_delay_minutes=DEFAULT_FOLLOWUP_DELAY_MINUTES,
+        followup_message_text="",
+        smart_reply_enabled=True,
+        smart_reply_tone=DEFAULT_SMART_REPLY_TONE,
+        smart_reply_max_per_hour=DEFAULT_SMART_REPLY_MAX_PER_HOUR,
+    )
+    try:
+        with session.begin_nested():
+            session.add(config)
+            session.flush()
+        return config
+    except IntegrityError:
+        return session.scalar(select(InstagramAutomationConfig).where(
+            InstagramAutomationConfig.instagram_account_id == instagram_account_id
         ))
 
 
