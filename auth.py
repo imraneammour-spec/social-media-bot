@@ -541,9 +541,11 @@ def post_login_destination(user: User | None) -> str:
     if not user_has_completed_onboarding(user):
         return url_for("onboarding")
     if current_user_has_legacy_workspace_access():
-        # The server-managed legacy workspace (environment_managed) has no
-        # tenant account and its onboarding page has no continue action, so
-        # send the owner straight to the legacy dashboard.
+        # The server-managed legacy workspace is now a tenant workspace:
+        # send the owner to the new tenant dashboard. The legacy dashboard
+        # stays available directly at /dashboard.
+        if "tenant_dashboard.app_overview" in current_app.view_functions:
+            return url_for("tenant_dashboard.app_overview")
         return url_for("dashboard")
     if user_has_connected_instagram_account(user):
         if "tenant_dashboard.app_overview" in current_app.view_functions:

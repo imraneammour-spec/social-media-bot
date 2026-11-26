@@ -94,6 +94,13 @@ AUTOMATION_UPDATE_ERROR_MESSAGE = "Automation update could not be completed."
 AUTOMATION_DESTINATION_URL_ERROR_MESSAGE = (
     "Enter a valid http:// or https:// destination URL."
 )
+LEGACY_AUTOMATION_READONLY_MESSAGE = (
+    "Automation settings cannot be changed for the server-managed account."
+)
+LEGACY_SCHEDULING_UNAVAILABLE_MESSAGE = (
+    "Scheduling is not available for the server-managed account. "
+    "Save the draft here, then publish it manually in Instagram."
+)
 CONTENT_UPDATE_ERROR_MESSAGE = "Draft update could not be completed."
 CONTENT_IMAGE_TOO_LARGE_MESSAGE = "Choose a JPEG or JPG image that is 8 MB or smaller."
 CONTENT_IMAGE_INVALID_MESSAGE = "Choose a valid JPEG or JPG image."
@@ -480,6 +487,8 @@ def _render_page(
     if "internal_prompt_access" not in context:
         context["internal_prompt_access"] = current_user_has_legacy_workspace_access()
     context["internal_admin_access"] = bool(context["internal_prompt_access"])
+    if "is_legacy_account" not in context:
+        context["is_legacy_account"] = bool(getattr(selected, "is_legacy", False))
     return _cache_control(
         render_template(
             template_name,
@@ -834,6 +843,38 @@ def _analyze_lead(user, selected):
     return _lead_redirect()
 
 
+def _legacy_automation_presentation():
+    """Return the read-only disabled presentation for the legacy account.
+
+    The server-managed account has no tenant automation row and its
+    engagement automation runs through the legacy bot, so the tenant
+    settings page shows the defaults with automation off instead of 404.
+    """
+
+    modes = {}
+    for mode in ("prompt_request", "direct_message", "link"):
+        values = automation_mode_defaults(mode)
+        values["defaults"] = automation_mode_defaults(mode)
+        modes[mode] = values
+    active_values = modes["prompt_request"]
+    return {
+        "enabled": False,
+        "modes": modes,
+        "trigger_keywords": active_values["trigger_keywords"],
+        "public_reply_enabled": active_values["public_reply_enabled"],
+        "public_reply_text": active_values["public_reply_text"],
+        "delivery_mode": "prompt_request",
+        "private_message_text": active_values["private_message_text"],
+        "destination_url": active_values["destination_url"],
+        "followup_enabled": active_values["followup_enabled"],
+        "followup_delay_minutes": active_values["followup_delay_minutes"],
+        "followup_message_text": active_values["followup_message_text"],
+        "smart_reply_enabled": False,
+        "smart_reply_tone": "friendly",
+        "smart_reply_max_per_hour": 20,
+    }
+
+
 def _automation_config(selected, *, internal_prompt_access=False):
     session_factory = getattr(
         _auth_state(),
@@ -856,6 +897,8 @@ def _automation_config(selected, *, internal_prompt_access=False):
             )
 
             if config is None:
+                if getattr(selected, "is_legacy", False):
+                    return _legacy_automation_presentation()
                 return None
 
             saved_delivery_mode = (
@@ -1507,6 +1550,18 @@ def register_tenant_dashboard(app) -> None:
             return _safe_content_update_error()
         if not caption_value.strip() or len(caption_value.strip()) > MAX_CAPTION_LENGTH:
             return _safe_content_update_error()
+        if submit_action == "schedule" and getattr(selected, "is_legacy", False):
+            # Publishing a scheduled post needs a stored OAuth credential,
+            # which the server-managed account never has; the scheduler
+            # would mark the post failed. Drafts stay available.
+            return _render_content_page(
+                user,
+                accounts,
+                selected,
+                content_error=LEGACY_SCHEDULING_UNAVAILABLE_MESSAGE,
+                content_form=content_form,
+                status=400,
+            )
 
         scheduled_for = None
         if submit_action == "schedule":
@@ -1818,6 +1873,14 @@ def register_tenant_dashboard(app) -> None:
     def app_content_schedule_draft(user, accounts, selected):
         if not validate_csrf_token(request_csrf_token()):
             return _safe_content_update_error()
+        if getattr(selected, "is_legacy", False):
+            return _render_content_page(
+                user,
+                accounts,
+                selected,
+                content_error=LEGACY_SCHEDULING_UNAVAILABLE_MESSAGE,
+                status=400,
+            )
         draft_ref = str(request.form.get("draft_ref") or "").strip()
         try:
             local_time = datetime.fromisoformat(f"{request.form.get('date', '')}T{request.form.get('time', '')}")
@@ -1995,22 +2058,28 @@ def register_tenant_dashboard(app) -> None:
             ):
                 return _safe_automation_update_error()
 
-            updated = _update_automation_config(
-                selected,
-                internal_prompt_access=internal_prompt_access,
-            )
+            if getattr(selected, "is_legacy", False):
+                # Tenant automation settings never apply to the
+                # server-managed account, so never create a config row
+                # the tenant scheduler could pick up without a credential.
+                automation_error = LEGACY_AUTOMATION_READONLY_MESSAGE
+            else:
+                updated = _update_automation_config(
+                    selected,
+                    internal_prompt_access=internal_prompt_access,
+                )
 
-            if updated is _DATABASE_UNAVAILABLE:
-                return _workspace_unavailable()
+                if updated is _DATABASE_UNAVAILABLE:
+                    return _workspace_unavailable()
 
-            if updated is None:
-                return _safe_account_unavailable()
+                if updated is None:
+                    return _safe_account_unavailable()
 
-            if updated is _INVALID_DESTINATION_URL:
-                automation_error = AUTOMATION_DESTINATION_URL_ERROR_MESSAGE
+                if updated is _INVALID_DESTINATION_URL:
+                    automation_error = AUTOMATION_DESTINATION_URL_ERROR_MESSAGE
 
-            if updated is False:
-                automation_error = AUTOMATION_UPDATE_ERROR_MESSAGE
+                if updated is False:
+                    automation_error = AUTOMATION_UPDATE_ERROR_MESSAGE
 
         automation = _automation_config(
             selected,
@@ -2023,7 +2092,7 @@ def register_tenant_dashboard(app) -> None:
         if automation is None:
             return _safe_account_unavailable()
 
-        if automation_error is not None:
+        if automation_error is not None and not getattr(selected, "is_legacy", False):
             automation = _submitted_automation_presentation(automation)
 
         response = _render_page(

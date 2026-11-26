@@ -24,6 +24,7 @@
 {% if automation_saved %}<p class="alert" role="status">{{ t('Automation settings saved.') }}</p>{% endif %}
 {% if automation_error %}<p class="alert alert-error" role="alert">{{ t(automation_error) }}</p>{% endif %}
 <section class="page-intro"><p class="eyebrow">{{ t('Automation') }}</p><h2>{{ t('Choose how your account responds to people.') }}</h2><p class="muted">{{ t('Public replies appear on your Instagram post. Private messages go to the person who commented.') }}</p></section>
+{% if is_legacy_account %}<p class="alert alert-warning" role="note">{{ t('Automation for the server-managed account is managed by the legacy bot. These tenant automation settings do not apply to this account.') }}</p>{% endif %}
 <form method="post" class="settings-form">
 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 <section class="settings-group card">
@@ -42,7 +43,7 @@
   <div class="checkbox-field setting-toggle"><input id="smart_reply_enabled" type="checkbox" name="smart_reply_enabled" {% if automation.smart_reply_enabled %}checked{% endif %}><label for="smart_reply_enabled">{{ t('Enable smart replies') }}</label></div>
   <div class="settings-fields"><label for="smart_reply_tone">{{ t('Tone') }}<select id="smart_reply_tone" name="smart_reply_tone">{% for tone in smart_reply_tones %}<option value="{{ tone }}" {% if automation.smart_reply_tone == tone %}selected{% endif %}>{{ t(tone|capitalize) }}</option>{% endfor %}</select></label><label for="smart_reply_max_per_hour">{{ t('Maximum replies per hour') }}<input id="smart_reply_max_per_hour" name="smart_reply_max_per_hour" type="number" min="1" max="100" value="{{ automation.smart_reply_max_per_hour }}"></label></div>
 </section>
-<div class="form-actions"><button class="button button-primary" type="submit">{{ t('Save automation settings') }}</button></div>
+{% if not is_legacy_account %}<div class="form-actions"><button class="button button-primary" type="submit">{{ t('Save automation settings') }}</button></div>{% endif %}
 </form>
 <script>
 (() => {

@@ -525,6 +525,18 @@ _MESSAGES = (
     ("No tracked Instagram posts yet.", "Aucune publication Instagram suivie pour le moment.", "لا توجد منشورات Instagram متتبعة بعد."),
     ("Image preview ready.", "Aperçu de l’image prêt.", "معاينة الصورة جاهزة."),
     ("The selected image could not be previewed.", "L’image sélectionnée n’a pas pu être prévisualisée.", "تعذرت معاينة الصورة المحددة."),
+    ("Managed by server configuration.", "Géré par la configuration du serveur.", "يُدار عبر إعدادات الخادم."),
+    ("Instagram snapshot", "Aperçu Instagram", "لمحة إنستغرام"),
+    ("Live performance", "Performance en direct", "الأداء المباشر"),
+    ("Followers", "Abonnés", "المتابعون"),
+    ("Likes", "Mentions J’aime", "الإعجابات"),
+    ("Views", "Vues", "المشاهدات"),
+    ("Shares", "Partages", "المشاركات"),
+    ("Loading live performance...", "Chargement des performances en direct…", "جارٍ تحميل الأداء المباشر…"),
+    ("Could not load live performance.", "Impossible de charger les performances en direct.", "تعذّر تحميل الأداء المباشر."),
+    ("Scheduling is not available for the server-managed account. Save the draft here, then publish it manually in Instagram.", "La planification n’est pas disponible pour le compte géré par le serveur. Enregistrez le brouillon ici, puis publiez-le manuellement dans Instagram.", "الجدولة غير متاحة للحساب المُدار عبر الخادم. احفظ المسودة هنا، ثم انشرها يدويًا في إنستغرام."),
+    ("Automation settings cannot be changed for the server-managed account.", "Les paramètres d’automatisation ne peuvent pas être modifiés pour le compte géré par le serveur.", "لا يمكن تغيير إعدادات الأتمتة للحساب المُدار عبر الخادم."),
+    ("Automation for the server-managed account is managed by the legacy bot. These tenant automation settings do not apply to this account.", "L’automatisation du compte géré par le serveur est assurée par le bot existant. Ces paramètres d’automatisation ne s’appliquent pas à ce compte.", "تتم إدارة أتمتة الحساب المُدار عبر الخادم بواسطة البوت الحالي. لا تنطبق إعدادات الأتمتة هذه على هذا الحساب."),
 )
 
 APP_TRANSLATIONS = {

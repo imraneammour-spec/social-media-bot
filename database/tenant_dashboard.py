@@ -72,6 +72,7 @@ class TenantAccount:
     activation_detail: str
     can_reconnect: bool
     can_disconnect: bool
+    is_legacy: bool = False
 
 
 @dataclass(frozen=True)
@@ -360,24 +361,36 @@ def _activation_status(
     return labels.get(assessment.state, labels["temporarily_unavailable"])
 
 
+def _is_legacy_account(
+    account: InstagramAccount,
+    legacy_instagram_user_id: object,
+) -> bool:
+    """Return whether the row is the server-managed legacy account."""
+
+    legacy_id = str(legacy_instagram_user_id or "").strip()
+    return bool(
+        legacy_id
+        and account.connection_status == LEGACY_CONNECTION_STATUS
+        and hmac.compare_digest(str(account.instagram_user_id), legacy_id)
+    )
+
+
 def list_tenant_accounts(
     session: Session,
     *,
     user_id: object,
     legacy_instagram_user_id: object,
 ) -> list[TenantAccount]:
-    """List a user's tenant-managed accounts in existing deterministic order."""
+    """List a user's tenant-managed accounts in existing deterministic order.
+
+    The server-managed legacy account is included as the owner's tenant
+    workspace account: its connection is the environment token, so it is
+    presented as Connected with no reconnect/disconnect actions and no
+    stored OAuth credential is ever required for it.
+    """
 
     legacy_id = str(legacy_instagram_user_id or "").strip()
-    accounts = [
-        account
-        for account in list_owned_instagram_accounts(session, user_id=user_id)
-        if not (
-            legacy_id
-            and account.connection_status == LEGACY_CONNECTION_STATUS
-            and hmac.compare_digest(str(account.instagram_user_id), legacy_id)
-        )
-    ]
+    accounts = list_owned_instagram_accounts(session, user_id=user_id)
     if not accounts:
         return []
     credentials = {
@@ -390,6 +403,21 @@ def list_tenant_accounts(
     }
     result: list[TenantAccount] = []
     for account in accounts:
+        if _is_legacy_account(account, legacy_id):
+            result.append(
+                TenantAccount(
+                    instagram_account_id=account.id,
+                    username=_username(account.username),
+                    connection_label="Connected",
+                    connection_detail="Managed by server configuration.",
+                    activation_label="Active",
+                    activation_detail="Instagram engagement automation is active.",
+                    can_reconnect=False,
+                    can_disconnect=False,
+                    is_legacy=True,
+                )
+            )
+            continue
         label, detail, can_reconnect, can_disconnect = _connection(account)
         activation_label, activation_detail = _activation_status(
             account,

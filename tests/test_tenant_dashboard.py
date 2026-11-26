@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from flask import Flask
+from flask import Flask, session
 from cryptography.fernet import Fernet
 from sqlalchemy import create_engine, select
 from sqlalchemy.exc import SQLAlchemyError
@@ -18,6 +18,7 @@ from auth import (
     action_reference_for_account,
     configure_auth,
     install_auth_route_guard,
+    post_login_destination,
     register_auth_routes,
 )
 from database.models import (
@@ -226,15 +227,17 @@ class TenantDashboardTest(unittest.TestCase):
             now=now,
         )
 
-    def test_unauthenticated_and_legacy_requests_stay_outside_tenant_dashboard(self):
+    def test_unauthenticated_and_accountless_requests_stay_outside_tenant_dashboard(self):
         response = self.client.get("/app")
         self.assertEqual(response.status_code, 302)
         self.assertIn("/login", response.headers["Location"])
 
         self._login_as(self.legacy_owner)
         response = self.client.get("/app")
-        self.assertEqual(response.status_code, 302)
-        self.assertTrue(response.headers["Location"].endswith("/dashboard"))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"legacy_private", response.data)
+        self.assertIn(b"Managed by server configuration.", response.data)
+        self.assertIn(b"legacySnapshotStatus", response.data)
 
         with self.Session.begin() as session:
             no_account_user = User(email="no-account@example.invalid", display_name="No Account")
@@ -244,6 +247,112 @@ class TenantDashboardTest(unittest.TestCase):
         response = self.client.get("/app")
         self.assertEqual(response.status_code, 302)
         self.assertTrue(response.headers["Location"].endswith("/onboarding"))
+
+    def test_legacy_owner_login_destination_is_tenant_overview(self):
+        with self.app.test_request_context("/login"):
+            session["user_id"] = str(self.legacy_owner.id)
+            self.assertEqual(post_login_destination(self.legacy_owner), "/app")
+
+    def test_legacy_account_api_presentation_is_connected_without_reconnect(self):
+        self._login_as(self.legacy_owner)
+        response = self.client.get("/app/api/accounts")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual([item["username"] for item in payload["accounts"]], ["legacy_private"])
+        self.assertEqual(payload["accounts"][0]["connection_label"], "Connected")
+        self.assertEqual(payload["accounts"][0]["activation_label"], "Active")
+        self.assertTrue(payload["accounts"][0]["is_selected"])
+
+    def test_legacy_automations_page_shows_disabled_defaults_and_rejects_saves(self):
+        self._login_as(self.legacy_owner)
+        response = self.client.get("/app/automations")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            b"Automation for the server-managed account is managed by the legacy bot.",
+            response.data,
+        )
+        self.assertNotIn(b"Save automation settings", response.data)
+        csrf_token = re.search(
+            r'name="csrf_token" value="([^"]+)"', response.get_data(as_text=True)
+        ).group(1)
+
+        response = self.client.post(
+            "/app/automations",
+            data={"csrf_token": csrf_token},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(
+            b"Automation settings cannot be changed for the server-managed account.",
+            response.data,
+        )
+        with self.Session.begin() as session:
+            config = session.scalar(
+                select(InstagramAutomationConfig).where(
+                    InstagramAutomationConfig.instagram_account_id == self.legacy_account.id
+                )
+            )
+        self.assertIsNone(config)
+
+    def test_legacy_content_scheduling_is_disabled_but_drafts_save(self):
+        self._login_as(self.legacy_owner)
+        response = self.client.get("/app/content")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            b"Scheduling is not available for the server-managed account.",
+            response.data,
+        )
+        self.assertNotIn(b"schedule-controls", response.data)
+        self.assertNotIn(b"Schedule post", response.data)
+        csrf_token = re.search(
+            r'name="csrf_token" value="([^"]+)"', response.get_data(as_text=True)
+        ).group(1)
+
+        response = self.client.post(
+            "/app/content/drafts/create",
+            data={
+                "csrf_token": csrf_token,
+                "submit_action": "schedule",
+                "caption": "Legacy scheduled caption",
+                "media_url": "https://example.invalid/legacy.jpg",
+                "date": "2030-01-01",
+                "time": "09:00",
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(
+            b"Scheduling is not available for the server-managed account.",
+            response.data,
+        )
+
+        response = self.client.post(
+            "/app/content/drafts/schedule",
+            data={"csrf_token": csrf_token, "draft_ref": "opaque"},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(
+            b"Scheduling is not available for the server-managed account.",
+            response.data,
+        )
+
+        response = self.client.post(
+            "/app/content/drafts/create",
+            data={
+                "csrf_token": csrf_token,
+                "submit_action": "save",
+                "caption": "Legacy draft caption",
+                "media_url": "https://example.invalid/legacy.jpg",
+            },
+        )
+        self.assertIn(response.status_code, (302, 303))
+        with self.Session.begin() as session:
+            draft = session.scalar(
+                select(InstagramContentItem).where(
+                    InstagramContentItem.instagram_account_id == self.legacy_account.id
+                )
+            )
+        self.assertIsNotNone(draft)
+        self.assertEqual(draft.caption, "Legacy draft caption")
+        self.assertEqual(draft.status, "draft")
 
     def test_incomplete_profile_blocks_tenant_entry_before_account_selection(self):
         with self.Session.begin() as session:
@@ -347,8 +456,8 @@ class TenantDashboardTest(unittest.TestCase):
         automation_page = automation_response.get_data(as_text=True)
         self.assertNotIn('value="prompt_request"', automation_page)
 
-    def test_environment_managed_legacy_account_remains_outside_tenant_listing(self):
-        """The true environment-managed workspace stays separate from OAuth accounts."""
+    def test_environment_managed_legacy_account_appears_as_server_managed_tenant_account(self):
+        """The environment-managed workspace is the owner's tenant workspace account."""
 
         with self.Session.begin() as session:
             legacy = session.get(InstagramAccount, self.legacy_account.id)
@@ -363,12 +472,14 @@ class TenantDashboardTest(unittest.TestCase):
 
         self.assertEqual(
             [item["username"] for item in payload["accounts"]],
-            ["alpha_first", "alpha_second"],
+            ["alpha_first", "alpha_second", "legacy_private"],
         )
-        self.assertNotIn(
-            "legacy_private",
-            self.client.get("/app/accounts").get_data(as_text=True),
-        )
+        legacy_entry = payload["accounts"][2]
+        self.assertEqual(legacy_entry["connection_label"], "Connected")
+        self.assertEqual(legacy_entry["activation_label"], "Active")
+        accounts_page = self.client.get("/app/accounts").get_data(as_text=True)
+        self.assertIn("legacy_private", accounts_page)
+        self.assertIn("Managed by server configuration.", accounts_page)
 
         selected = self._reference(self.owner_a, self.account_a1)
         automation_response = self.client.get(
