@@ -235,7 +235,14 @@ PUBLIC_REPLY_MESSAGES = [
     "Check your DMs 🚀 Your AI prompts are waiting."
 ]
 
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
+
+
+def _sanitized_gemini_error(error):
+    """Return a short, safe Gemini error summary for logs (no credentials)."""
+    detail = str(error or "")[:300]
+    detail = re.sub(r"AIza[0-9A-Za-z_\-]{20,}", "[API_KEY_REDACTED]", detail)
+    return f"{type(error).__name__}: {detail}" if detail else type(error).__name__
 
 from filelock import FileLock
 STATE_LOCK = FileLock(str(DATA_DIR / ".state.lock"), timeout=60)
@@ -1393,7 +1400,7 @@ Comment: {source_text}
 
         print(
             "SMART REPLY GEMINI ERROR:",
-            type(error).__name__
+            _sanitized_gemini_error(error)
         )
 
         return ""
@@ -3844,8 +3851,8 @@ Comment: {source_text}
         )
         reply = re.sub(r"\s+", " ", str(response.text or "")).strip().strip('"\'')
         return reply[:SMART_REPLY_MAX_LENGTH].rstrip()
-    except Exception:
-        print("OAUTH ENGAGEMENT: smart reply unavailable.")
+    except Exception as error:
+        print("OAUTH ENGAGEMENT: smart reply unavailable.", _sanitized_gemini_error(error))
         return ""
 
 
@@ -5333,7 +5340,7 @@ Advanced analytics JSON:
         summary = re.sub(r"\s+", " ", str(response.text or "")).strip()
         return summary[:900] if summary else fallback
     except Exception as error:
-        print("ADVANCED ANALYTICS GEMINI ERROR:", type(error).__name__)
+        print("ADVANCED ANALYTICS GEMINI ERROR:", _sanitized_gemini_error(error))
         return fallback
 
 
