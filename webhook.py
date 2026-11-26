@@ -269,12 +269,14 @@ def _gemini_generate_with_retry(generate, *, attempts=3, base_delay=5.0):
     raise last_error
 
 
-def _gemini_generate_content(contents):
+def _gemini_generate_content(contents, config=None):
     """Generate content, trying the primary model then the fallback model.
 
     Each model gets up to 3 attempts with backoff on transient 503s
     (via _gemini_generate_with_retry). Raises the last error if both fail.
     """
+    if config is None:
+        config = types.GenerateContentConfig()
     models = [GEMINI_MODEL]
     if GEMINI_FALLBACK_MODEL and GEMINI_FALLBACK_MODEL != GEMINI_MODEL:
         models.append(GEMINI_FALLBACK_MODEL)
@@ -285,7 +287,7 @@ def _gemini_generate_content(contents):
                 lambda m=model: GEMINI_CLIENT.models.generate_content(
                     model=m,
                     contents=contents,
-                    config=types.GenerateContentConfig(),
+                    config=config,
                 )
             )
         except Exception as error:
@@ -2068,22 +2070,11 @@ If there are no real prompts:
 
     try:
 
-        response = (
-            GEMINI_CLIENT
-            .models
-            .generate_content(
-
-                model=GEMINI_MODEL,
-
-                contents=contents,
-
-                config=
-                    types.GenerateContentConfig(
-
-                        response_mime_type=
-                            "application/json",
-                    )
-            )
+        response = _gemini_generate_content(
+            contents,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+            ),
         )
 
         prompts = parse_gemini_json(
