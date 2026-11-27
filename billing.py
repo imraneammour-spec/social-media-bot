@@ -23,6 +23,17 @@ class BillingProviderError(ValueError):
     pass
 
 
+class BillingProviderAmbiguousError(BillingProviderError):
+    """The provider request may have reached Lemon Squeezy.
+
+    Raised for timeouts after the request was sent and for 5xx responses,
+    where the checkout may or may not have been created server-side.
+    Callers must NOT assume the provider-side operation did not happen
+    (in particular, they must not free a pending checkout intent for
+    immediate retry, or a duplicate checkout could be created).
+    """
+
+
 def mode():
     value = os.getenv("BILLING_MODE", "disabled")
     if value == "live" and os.getenv("BILLING_LIVE_APPROVED") != "true":
@@ -59,7 +70,24 @@ def provider_request(method, path, **kwargs):
         if not isinstance(payload, dict) or "data" not in payload:
             raise ValueError
         return payload["data"]
-    except (requests.RequestException, ValueError):
+    except requests.HTTPError as exc:
+        # The provider answered: a 4xx means it rejected the request, so no
+        # checkout was created. A 5xx may have failed after creating it.
+        status = exc.response.status_code if exc.response is not None else None
+        if status is not None and status < 500:
+            raise BillingProviderError("The payment provider is temporarily unavailable. Please try again.") from None
+        raise BillingProviderAmbiguousError("The payment provider is temporarily unavailable. Please try again.") from None
+    except requests.ConnectTimeout:
+        # The connection never opened, so the request was never sent.
+        raise BillingProviderError("The payment provider is temporarily unavailable. Please try again.") from None
+    except requests.Timeout:
+        # Includes read timeouts: the request was sent, the answer is unknown.
+        raise BillingProviderAmbiguousError("The payment provider is temporarily unavailable. Please try again.") from None
+    except requests.RequestException:
+        # A dropped connection mid-flight: the request may have been sent.
+        raise BillingProviderAmbiguousError("The payment provider is temporarily unavailable. Please try again.") from None
+    except ValueError:
+        # The provider answered, but not with a usable checkout payload.
         raise BillingProviderError("The payment provider is temporarily unavailable. Please try again.") from None
 
 
@@ -231,7 +259,26 @@ def register_billing(app):
         payload = {"data": {"type": "checkouts", "attributes": attributes, "relationships": {
             "store": {"data": {"type": "stores", "id": os.environ["LEMON_STORE_ID"]}},
             "variant": {"data": {"type": "variants", "id": variant}}}}}
-        result = provider_request("POST", "checkouts", json=payload)
+        try:
+            result = provider_request("POST", "checkouts", json=payload)
+        except BillingProviderAmbiguousError:
+            # The checkout may have been created server-side; keep the intent
+            # pending so the user cannot immediately create a duplicate.
+            raise
+        except BillingProviderError:
+            # Definitive failure: the provider never created a checkout, so
+            # the intent would otherwise block retries with 409 for an hour.
+            # Remove it (only while still unconsumed) so the user can retry.
+            with factory().begin() as db:
+                stale = db.get(BillingCheckout, uuid.UUID(intent_id))
+                if stale is not None and stale.consumed_by is None:
+                    db.delete(stale)
+            raise
+        # NOTE: the test_mode mismatch check below deliberately stays outside
+        # the try above: a mismatched response means the provider DID create
+        # a checkout, so this is not a "nothing happened" failure. The intent
+        # stays as the record linking that checkout to the user, and a retry
+        # would fail the same way until the configuration is fixed.
         if result.get("attributes", {}).get("test_mode") != (mode() == "test"):
             raise BillingProviderError("Checkout environment mismatch.")
         return redirect(hosted_url(result["attributes"]["url"]), 303)

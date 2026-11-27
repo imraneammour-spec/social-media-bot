@@ -41,7 +41,14 @@ def test_native_fresh_migration_probe_and_lease_recovery(tmp_path):
         config.chmod(0o600)
         assert migrate_fresh(config, name)["railway_recovery"] is False
         engine = create_engine(target)
-        assert len(inspect(engine).get_table_names()) == 20
+        tables = inspect(engine).get_table_names()
+        # Migration 20261126_02 added five tables (four legacy-state tables
+        # plus the per-account Gemini key table); keep the count in step with
+        # the migration chain and name the additions so the next table
+        # addition fails with a readable message instead of a bare count.
+        assert len(tables) == 25
+        assert {"legacy_processed_comments", "legacy_prompt_requests", "legacy_pending_access",
+                "legacy_prompt_posts", "user_gemini_keys"} <= set(tables)
         with engine.connect() as db:
             assert db.scalar(text("SELECT count(*) FROM users")) == 0
         with pytest.raises(ValueError, match="nonempty"):
