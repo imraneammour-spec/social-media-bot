@@ -288,20 +288,24 @@ class WebhookByokThreadingTest(unittest.TestCase):
         self.assertEqual(created["api_key"], "AIzaUserKey")
         fake_client.models.generate_content.assert_called_once()
 
-    def test_oauth_smart_reply_works_with_only_a_user_key(self):
-        # Shared client absent, user key present: the guard must not block.
+    def test_oauth_smart_reply_returns_generic_reply_without_gemini(self):
+        # Postenza v2: no Gemini smart replies. The reply is the ready
+        # generic text with a user key, with the shared client, or with
+        # neither — and no Gemini client is ever built for it.
+        from comment_pipeline import DEFAULT_GENERIC_REPLY
+
         self.module.GEMINI_CLIENT = None
-        fake_response = MagicMock()
-        fake_response.text = "Thanks so much!"
         fake_client = MagicMock()
-        fake_client.models.generate_content.return_value = fake_response
         with patch.object(gemini_client.genai, "Client", return_value=fake_client):
             reply = self.module.generate_oauth_smart_reply(
                 "Beautiful work!", api_key="AIzaUserKey"
             )
-        self.assertEqual(reply, "Thanks so much!")
-        # And with neither a client nor a key it stays empty.
-        self.assertEqual(self.module.generate_oauth_smart_reply("Hi"), "")
+        self.assertEqual(reply, DEFAULT_GENERIC_REPLY)
+        fake_client.models.generate_content.assert_not_called()
+        # And with neither a client nor a key it still replies.
+        self.assertEqual(
+            self.module.generate_oauth_smart_reply("Hi"), DEFAULT_GENERIC_REPLY
+        )
 
 
 if __name__ == "__main__":

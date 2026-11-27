@@ -84,7 +84,7 @@ class LandingPageTest(unittest.TestCase):
         page = response.get_data(as_text=True)
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("Put your Instagram on autopilot.", page)
+        self.assertIn("Your Instagram replies itself.", page)
         self.assertIn("Postenza", page)
         self.assertIn('href="/register"', page)
         self.assertIn('href="/login"', page)
@@ -108,11 +108,44 @@ class LandingPageTest(unittest.TestCase):
         self.assertIn("<b>Legal</b>", footer)
         self.assertNotIn("<b>FAQ</b>", footer)
 
-    def test_landing_tagline_is_the_same_english_line_in_every_locale(self):
+    def test_landing_tagline_is_localized_per_locale(self):
+        expected = {
+            "en": "Social media, on autopilot.",
+            "fr": "Les réseaux sociaux, en pilote automatique.",
+            "ar": "وسائل التواصل الاجتماعي على الطيار الآلي.",
+        }
+        for locale, tagline in expected.items():
+            with self.subTest(locale=locale):
+                page = self._page_for_locale(locale)
+                self.assertEqual(page.count(tagline), 1)
+                for other in expected.values():
+                    if other != tagline:
+                        self.assertNotIn(other, page)
+
+    def test_landing_pages_do_not_mix_languages(self):
+        en = self.client.get("/").get_data(as_text=True)
+        self.assertNotIn("إنستغرام ديالك", en)
+        self.assertNotIn("كيجاوب", en)
+        self.assertNotIn("reply-line", en)
+        fr = self._page_for_locale("fr")
+        self.assertNotIn("Your Instagram replies itself.", fr)
+        self.assertNotIn("إنستغرام ديالك", fr)
+        self.assertIn("Votre Instagram répond tout seul.", fr)
+        ar = self._page_for_locale("ar")
+        self.assertNotIn("Your Instagram replies itself.", ar)
+        self.assertNotIn("Votre Instagram", ar)
+        self.assertIn("إنستغرام يردّ بنفسه.", ar)
+
+    def test_landing_and_pricing_have_no_competitor_comparison(self):
         for locale in ("en", "fr", "ar"):
             with self.subTest(locale=locale):
                 page = self._page_for_locale(locale)
-                self.assertEqual(page.count("Social media, on autopilot."), 1)
+                self.assertNotIn("ManyChat", page)
+                self.assertNotIn("manychat", page)
+                self.assertNotIn('id="compare"', page)
+        pricing = self.client.get("/pricing").get_data(as_text=True)
+        self.assertNotIn("ManyChat", pricing)
+        self.assertNotIn("manychat", pricing)
 
     def test_landing_hero_mock_is_a_labelled_example_without_an_ai_content_assistant_card(self):
         page = self.client.get("/").get_data(as_text=True)
@@ -170,7 +203,7 @@ class LandingPageTest(unittest.TestCase):
 
         self.assertIn('lang="ar" dir="rtl"', page)
         self.assertIn("Postenza", page)
-        self.assertIn("ضع إنستغرام الخاص بك على الطيار الآلي.", page)
+        self.assertIn("إنستغرام يردّ بنفسه.", page)
 
     def test_public_locale_handler_rejects_bad_csrf_and_normalizes_unknown_locales(self):
         rejected = self.client.post("/locale", data={"locale": "ar", "csrf_token": "bad"})
@@ -188,11 +221,12 @@ class LandingPageTest(unittest.TestCase):
     def test_landing_includes_real_capabilities_and_safe_ctas(self):
         page = self.client.get("/").get_data(as_text=True)
 
-        for text in ("Schedule content", "Automate replies", "Private follow-ups", "Smart replies"):
+        for text in ("Schedule content", "Automate replies", "Private follow-ups", "Ready replies"):
             self.assertIn(text, page)
         self.assertNotIn("TikTok", page)
         self.assertNotIn("Sociora", page)
-        self.assertIn("Image publishing is supported today.", page)
+        self.assertIn("Reels are supported.", page)
+        self.assertIn("Image posts and Reels", page)
 
     def test_landing_has_accessible_mobile_navigation_and_seo_metadata(self):
         page = self.client.get("/").get_data(as_text=True)
@@ -323,14 +357,14 @@ class LandingPageTest(unittest.TestCase):
         page = self._page_for_locale("fr")
 
         self.assertIn('lang="fr" dir="ltr"', page)
-        self.assertIn("Mettez votre Instagram en pilote automatique.", page)
+        self.assertIn("Votre Instagram répond tout seul.", page)
         self.assertIn("Postenza", page)
 
     def test_landing_describes_message_activity_without_claiming_an_inbox(self):
         expected = {
             "en": "manage message activity",
             "fr": "suivez l’activité des messages",
-            "ar": "وتابع نشاط الرسائل",
+            "ar": "تابع نشاط الرسائل",
         }
         for locale, wording in expected.items():
             with self.subTest(locale=locale):

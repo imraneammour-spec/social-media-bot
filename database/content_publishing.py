@@ -27,10 +27,17 @@ LOGGER = logging.getLogger(__name__)
 API_VERSION = "v25.0"
 GRAPH_ROOT = "https://graph.instagram.com"
 IMAGE_CONTENT_TYPE = "image"
+REEL_CONTENT_TYPE = "reel"
 CONTAINER_STATUS_MAX_ATTEMPTS = 6
 CONTAINER_STATUS_POLL_INTERVAL_SECONDS = 2
+# Video containers take far longer to process than images (Meta's guides
+# say 30 seconds to several minutes), so Reels get a longer poll budget:
+# 30 attempts x 10 seconds = up to 5 minutes before giving up.
+CONTAINER_STATUS_MAX_ATTEMPTS_REEL = 30
+CONTAINER_STATUS_POLL_INTERVAL_SECONDS_REEL = 10
 SAFE_ERROR_CODES = {
     "unsupported_content_type",
+    "instagram_account_not_professional",
     "instagram_connection_unavailable",
     "tenant_identity_mismatch",
     "provider_rejected",
@@ -73,6 +80,7 @@ class ClaimedScheduledContent:
     content_type: str
     caption: str
     media_url: str
+    cover_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -220,6 +228,7 @@ def claim_due_scheduled_content(
                 content_type=str(item.content_type),
                 caption=str(item.caption),
                 media_url=str(item.media_url),
+                cover_url=str(item.cover_url) if item.cover_url else None,
             )
         )
         LOGGER.info("scheduled_content_selected", extra={"content_id": str(item.id), "instagram_account_id": str(item.instagram_account_id)})
@@ -340,11 +349,17 @@ def _container_status(response: object) -> str | None:
     return value if isinstance(value, str) and value in _SAFE_CONTAINER_STATUSES else None
 
 
-def _wait_for_container_ready(runtime: InstagramAccountRuntime, creation_id: str) -> None:
+def _wait_for_container_ready(
+    runtime: InstagramAccountRuntime,
+    creation_id: str,
+    *,
+    max_attempts: int = CONTAINER_STATUS_MAX_ATTEMPTS,
+    poll_interval_seconds: int = CONTAINER_STATUS_POLL_INTERVAL_SECONDS,
+) -> None:
     """Poll one existing container with fixed bounds; never create another."""
 
     last_status: str | None = None
-    for attempt in range(CONTAINER_STATUS_MAX_ATTEMPTS):
+    for attempt in range(max_attempts):
         response = _provider_get(creation_id, runtime, {"fields": "status_code"})
         if not bool(getattr(response, "ok", False)):
             raise _provider_rejection("container_status", response)
@@ -361,8 +376,8 @@ def _wait_for_container_ready(runtime: InstagramAccountRuntime, creation_id: str
                 request_may_have_been_sent=False,
                 safe_diagnostics=diagnostics,
             )
-        if attempt + 1 < CONTAINER_STATUS_MAX_ATTEMPTS:
-            time.sleep(CONTAINER_STATUS_POLL_INTERVAL_SECONDS)
+        if attempt + 1 < max_attempts:
+            time.sleep(poll_interval_seconds)
     raise InstagramPublishError(
         "provider_container_not_ready",
         request_may_have_been_sent=False,
@@ -371,6 +386,34 @@ def _wait_for_container_ready(runtime: InstagramAccountRuntime, creation_id: str
             "provider_container_status": last_status,
         },
     )
+
+
+def _require_professional_account(runtime: InstagramAccountRuntime) -> None:
+    """Reject personal accounts before creating a Reel container.
+
+    The Instagram Graph API publishes only to Professional accounts
+    (Business or Creator). A failed or unparseable account-type read is
+    not fatal: the container request will surface the provider's own
+    rejection instead, so a read hiccup never blocks a valid account.
+    """
+
+    try:
+        response = _provider_get(
+            runtime.instagram_user_id, runtime, {"fields": "account_type"}
+        )
+    except InstagramPublishError:
+        return
+    if not bool(getattr(response, "ok", False)):
+        return
+    try:
+        payload = response.json()
+    except (AttributeError, TypeError, ValueError):
+        return
+    account_type = payload.get("account_type") if isinstance(payload, Mapping) else None
+    if isinstance(account_type, str) and account_type.strip().upper() == "PERSONAL":
+        raise InstagramPublishError(
+            "instagram_account_not_professional", request_may_have_been_sent=False
+        )
 
 
 def publish_instagram_image(runtime: InstagramAccountRuntime, item: ClaimedScheduledContent) -> str:
@@ -406,6 +449,61 @@ def publish_instagram_image(runtime: InstagramAccountRuntime, item: ClaimedSched
     return media_id
 
 
+def publish_instagram_reel(runtime: InstagramAccountRuntime, item: ClaimedScheduledContent) -> str:
+    """Publish one Reel through the tenant-bound Graph API runtime.
+
+    Same two-step container flow as images, with the Reel differences
+    from Meta's IG User media reference (Graph API v25.0):
+    ``media_type=REELS`` with a public HTTPS ``video_url``, an optional
+    JPEG ``cover_url`` (Instagram uses the first frame without one), and
+    ``share_to_feed=true`` so the Reel also appears in the Feed tab.
+    Video containers process far slower than images, so the readiness
+    poll gets the longer Reel budget. Personal accounts are rejected
+    before any container is created. A timeout or malformed response
+    after the publish request is deliberately ambiguous: the caller
+    records that state but never automatically resends.
+    """
+
+    _require_professional_account(runtime)
+    container_data: dict[str, str] = {
+        "media_type": "REELS",
+        "video_url": item.media_url,
+        "caption": item.caption,
+        "share_to_feed": "true",
+    }
+    if item.cover_url and item.cover_url != item.media_url:
+        container_data["cover_url"] = item.cover_url
+    container = _provider_post(
+        f"{runtime.instagram_user_id}/media",
+        runtime,
+        container_data,
+    )
+    if not bool(getattr(container, "ok", False)):
+        raise _provider_rejection("container_create", container)
+    creation_id = _payload_id(container)
+    if creation_id is None:
+        raise InstagramPublishError("provider_response_invalid", request_may_have_been_sent=False)
+
+    _wait_for_container_ready(
+        runtime,
+        creation_id,
+        max_attempts=CONTAINER_STATUS_MAX_ATTEMPTS_REEL,
+        poll_interval_seconds=CONTAINER_STATUS_POLL_INTERVAL_SECONDS_REEL,
+    )
+
+    published = _provider_post(
+        f"{runtime.instagram_user_id}/media_publish",
+        runtime,
+        {"creation_id": creation_id},
+    )
+    if not bool(getattr(published, "ok", False)):
+        raise _provider_rejection("media_publish", published)
+    media_id = _payload_id(published)
+    if media_id is None:
+        raise InstagramPublishError("provider_response_invalid", request_may_have_been_sent=True)
+    return media_id
+
+
 def _record_failure(
     session_factory: Callable[[], Session], item: ClaimedScheduledContent, error_code: str, ambiguous: bool
 ) -> bool:
@@ -426,6 +524,7 @@ def execute_due_scheduled_content(
     limit: int = 25,
     runtime_resolver: Callable[..., InstagramAccountRuntime] = resolve_oauth_instagram_account_runtime,
     publisher: Callable[[InstagramAccountRuntime, ClaimedScheduledContent], str] = publish_instagram_image,
+    reel_publisher: Callable[[InstagramAccountRuntime, ClaimedScheduledContent], str] = publish_instagram_reel,
 ) -> ContentPublishingSummary:
     """Claim then execute a bounded batch without automatically retrying failures."""
 
@@ -436,10 +535,15 @@ def execute_due_scheduled_content(
     published_count = failed_count = skipped_count = 0
     for item in claimed:
         LOGGER.info("scheduled_content_publishing_started", extra={"content_id": str(item.id), "instagram_account_id": str(item.instagram_account_id)})
-        if item.content_type != IMAGE_CONTENT_TYPE:
+        # Postenza v2 publishes images and Reels (see database/content.py
+        # CONTENT_TYPES). Any other type — possible only from a legacy row
+        # — is marked failed with an explicit error code, never published
+        # and never dropped silently.
+        if item.content_type not in {IMAGE_CONTENT_TYPE, REEL_CONTENT_TYPE}:
             failed_count += int(_record_failure(session_factory, item, "unsupported_content_type", False))
             LOGGER.info("scheduled_content_publishing_failed", extra={"content_id": str(item.id), "error_code": "unsupported_content_type", "provider_request_may_have_been_sent": False})
             continue
+        item_publisher = publisher if item.content_type == IMAGE_CONTENT_TYPE else reel_publisher
         try:
             with session_factory() as session:
                 runtime = runtime_resolver(
@@ -454,7 +558,7 @@ def execute_due_scheduled_content(
                 or runtime.connection_mode != "oauth"
             ):
                 raise InstagramPublishError("tenant_identity_mismatch", request_may_have_been_sent=False)
-            provider_media_id = publisher(runtime, item)
+            provider_media_id = item_publisher(runtime, item)
             with session_factory.begin() as session:
                 completed = mark_content_published(
                     session,

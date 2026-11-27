@@ -44,9 +44,8 @@ from database.admin_dashboard import (
     set_user_status,
 )
 from database.tenant_insights import direct_interactions
-from dashboard.presentation import display_time, public_image_url
+from dashboard.presentation import display_time, public_image_url, public_video_url
 from dashboard.i18n import LOCALE_META, LOCALE_SESSION_KEY, locale_context, normalize_locale, translate, session_locale
-from database.lead_intelligence import LeadIntelligence, lead_analysis_context
 from database.oauth_deployment import oauth_deployment_readiness
 from database.onboarding import user_onboarding_is_complete
 from database.content import (
@@ -54,6 +53,7 @@ from database.content import (
     MAX_CAPTION_LENGTH,
     create_content_draft,
     delete_content_draft,
+    normalize_content_type,
     recover_failed_content_draft,
     schedule_content_draft,
     transition_content_status,
@@ -66,7 +66,9 @@ from database.content_media import (
     ContentMediaValidationError,
     content_media_is_configured,
     delete_content_image,
+    delete_content_video,
     upload_content_image,
+    upload_content_video,
 )
 from database.models import InstagramAutomationConfig, InstagramContentItem, User
 from database.tenant_automation import (
@@ -111,7 +113,35 @@ CONTENT_IMAGE_TOO_LARGE_MESSAGE = "Choose a JPEG or JPG image that is 8 MB or sm
 CONTENT_IMAGE_INVALID_MESSAGE = "Choose a valid JPEG or JPG image."
 CONTENT_UPLOAD_UNAVAILABLE_MESSAGE = "Image upload is temporarily unavailable. You can use a public HTTPS image link instead."
 CONTENT_UPLOAD_FAILED_MESSAGE = "Image upload could not be completed. Try again or use a public HTTPS image link."
+CONTENT_VIDEO_TOO_LARGE_MESSAGE = "Choose an MP4 or MOV video that is 300 MB or smaller."
+CONTENT_VIDEO_INVALID_MESSAGE = "Choose a valid MP4 or MOV video file."
+CONTENT_VIDEO_TOO_SHORT_MESSAGE = "Reels must be at least 3 seconds long."
+CONTENT_VIDEO_TOO_LONG_MESSAGE = "Reels can be up to 15 minutes long."
+CONTENT_VIDEO_DIMENSIONS_MESSAGE = "Reel video is too wide or has an unsupported shape. Use a video up to 1920 pixels wide."
+CONTENT_VIDEO_CODEC_MESSAGE = "Reels need an MP4 or MOV video using the H.264 or HEVC codec."
+CONTENT_VIDEO_UNREADABLE_MESSAGE = "Choose a valid MP4 or MOV video file."
+CONTENT_VIDEO_UPLOAD_UNAVAILABLE_MESSAGE = "Video upload is temporarily unavailable. You can use a public HTTPS video link instead."
+CONTENT_VIDEO_UPLOAD_FAILED_MESSAGE = "Video upload could not be completed. Try again or use a public HTTPS video link."
+CONTENT_VIDEO_URL_MESSAGE = "Enter a public HTTPS MP4 or MOV video link without embedded credentials."
+CONTENT_VIDEO_COVER_MESSAGE = "Enter a public HTTPS JPEG cover image link without embedded credentials."
+CONTENT_VIDEO_VALIDATION_MESSAGES = {
+    "video_too_large": CONTENT_VIDEO_TOO_LARGE_MESSAGE,
+    "video_too_short": CONTENT_VIDEO_TOO_SHORT_MESSAGE,
+    "video_too_long": CONTENT_VIDEO_TOO_LONG_MESSAGE,
+    "video_dimensions_invalid": CONTENT_VIDEO_DIMENSIONS_MESSAGE,
+    "video_codec_unsupported": CONTENT_VIDEO_CODEC_MESSAGE,
+    "video_unreadable": CONTENT_VIDEO_UNREADABLE_MESSAGE,
+    "invalid_video": CONTENT_VIDEO_INVALID_MESSAGE,
+}
 CONTENT_SCHEDULE_INVALID_MESSAGE = "Choose a future date and time."
+LEAD_ANALYSIS_DISABLED_MESSAGE = (
+    "Lead analysis is disabled in Postenza v2. "
+    "Gemini is used only to extract prompts written in images."
+)
+CONTENT_TYPE_UNSUPPORTED_MESSAGE = (
+    "Only image posts and Reels are supported in Postenza v2. "
+    "Video posts and carousels are not available yet."
+)
 
 MAX_INTERNAL_NOTE_LENGTH = 2000
 
@@ -792,57 +822,19 @@ def _mutate_lead(
 
 
 def _analyze_lead(user, selected):
-    """Run an owner-requested advisory analysis outside database transactions."""
+    """Lead analysis is disabled in Postenza v2 — never call Gemini.
 
-    session_factory = getattr(_auth_state(), "session_factory", None)
-    if session_factory is None:
-        return _safe_lead_unavailable()
-    try:
-        with session_factory.begin() as session:
-            lead = tenant_data.resolve_tenant_lead_action_reference(
-                session,
-                user_id=user.id,
-                instagram_account_id=selected.instagram_account_id,
-                reference=request.form.get("lead_action"),
-                purpose="lead-analysis",
-                secret_key=current_app.secret_key,
-            )
-            if lead is None:
-                return _safe_lead_unavailable()
-            context = lead_analysis_context(session, lead=lead)
-    except SQLAlchemyError:
-        return _safe_lead_unavailable()
+    The route answers 410 with a clear message; no analysis is run and
+    nothing is persisted. Previously stored advisory fields stay visible
+    read-only on the leads page.
+    """
 
-    analyzer = current_app.extensions.get("lead_intelligence_analyzer")
-    if not callable(analyzer):
-        return _lead_redirect()
-    try:
-        analysis = analyzer(context)
-    except Exception:
-        return _lead_redirect()
-    if not isinstance(analysis, LeadIntelligence):
-        return _lead_redirect()
-
-    try:
-        with session_factory.begin() as session:
-            lead = tenant_data.resolve_tenant_lead_action_reference(
-                session,
-                user_id=user.id,
-                instagram_account_id=selected.instagram_account_id,
-                reference=request.form.get("lead_action"),
-                purpose="lead-analysis",
-                secret_key=current_app.secret_key,
-            )
-            if lead is None:
-                return _safe_lead_unavailable()
-            lead.ai_intent = analysis.intent
-            lead.ai_priority = analysis.priority
-            lead.ai_summary = analysis.summary
-            lead.ai_suggested_followup = analysis.suggested_followup
-            lead.ai_analyzed_at = datetime.now(timezone.utc)
-    except SQLAlchemyError:
-        return _safe_lead_unavailable()
-    return _lead_redirect()
+    return (
+        _cache_control(
+            jsonify(error=_ui_text(LEAD_ANALYSIS_DISABLED_MESSAGE))
+        ),
+        410,
+    )
 
 
 def _legacy_automation_presentation():
@@ -1401,6 +1393,7 @@ def _render_admin_page(user, session_factory, *, confirm_delete_user_id=None):
         if confirm_delete_user is None:
             return _cache_control(make_response("User unavailable.", 404))
 
+    locale = locale_context(session_locale(browser_session))
     return _cache_control(
         render_template(
             "app_admin.html",
@@ -1409,7 +1402,10 @@ def _render_admin_page(user, session_factory, *, confirm_delete_user_id=None):
             users=users,
             csrf_token=csrf_token(),
             confirm_delete_user=confirm_delete_user,
-            display_time=lambda value: display_time(value, "en"),
+            display_time=lambda value: display_time(value, locale["code"]),
+            locale=locale,
+            locale_options=LOCALE_META,
+            t=lambda key, **values: translate(locale["code"], key, **values),
         )
     )
 
@@ -1878,6 +1874,9 @@ def register_tenant_dashboard(app) -> None:
         submit_action = str(request.form.get("submit_action") or "save").strip().lower()
         content_form = {
             "media_url": str(request.form.get("media_url") or ""),
+            "video_url": str(request.form.get("video_url") or ""),
+            "cover_url": str(request.form.get("cover_url") or ""),
+            "content_type": str(request.form.get("content_type") or "image"),
             "caption": caption_value,
             "date": str(request.form.get("date") or ""),
             "time": str(request.form.get("time") or ""),
@@ -1886,6 +1885,19 @@ def register_tenant_dashboard(app) -> None:
             return _safe_content_update_error()
         if not caption_value.strip() or len(caption_value.strip()) > MAX_CAPTION_LENGTH:
             return _safe_content_update_error()
+        try:
+            requested_type = normalize_content_type(
+                request.form.get("content_type") or "image"
+            )
+        except ValueError:
+            return _render_content_page(
+                user,
+                accounts,
+                selected,
+                content_error=CONTENT_TYPE_UNSUPPORTED_MESSAGE,
+                content_form=content_form,
+                status=400,
+            )
         if submit_action == "schedule" and getattr(selected, "is_legacy", False):
             # Publishing a scheduled post needs a stored OAuth credential,
             # which the server-managed account never has; the scheduler
@@ -1921,76 +1933,156 @@ def register_tenant_dashboard(app) -> None:
                 )
 
         uploaded_asset = None
-        image_file = request.files.get("image_file")
-        if image_file is not None and str(image_file.filename or "").strip():
-            try:
-                uploaded_asset = upload_content_image(
-                    image_file,
-                    instagram_account_id=selected.instagram_account_id,
-                )
-                media_value = uploaded_asset.url
-            except ContentMediaValidationError as exc:
-                message = (
-                    CONTENT_IMAGE_TOO_LARGE_MESSAGE
-                    if exc.code == "image_too_large"
-                    else CONTENT_IMAGE_INVALID_MESSAGE
-                )
-                return _render_content_page(
-                    user,
-                    accounts,
-                    selected,
-                    content_error=message,
-                    content_form=content_form,
-                    status=400,
-                )
-            except ContentMediaUnavailableError:
-                return _render_content_page(
-                    user,
-                    accounts,
-                    selected,
-                    content_error=CONTENT_UPLOAD_UNAVAILABLE_MESSAGE,
-                    content_form=content_form,
-                    status=503,
-                )
-            except ContentMediaProviderError:
-                return _render_content_page(
-                    user,
-                    accounts,
-                    selected,
-                    content_error=CONTENT_UPLOAD_FAILED_MESSAGE,
-                    content_form=content_form,
-                    status=502,
-                )
+        uploaded_video = None
+        cover_value = None
+        if requested_type == "reel":
+            video_file = request.files.get("video_file")
+            if video_file is not None and str(video_file.filename or "").strip():
+                try:
+                    uploaded_video = upload_content_video(
+                        video_file,
+                        instagram_account_id=selected.instagram_account_id,
+                    )
+                    media_value = uploaded_video.url
+                except ContentMediaValidationError as exc:
+                    return _render_content_page(
+                        user,
+                        accounts,
+                        selected,
+                        content_error=CONTENT_VIDEO_VALIDATION_MESSAGES.get(
+                            exc.code, CONTENT_VIDEO_INVALID_MESSAGE
+                        ),
+                        content_form=content_form,
+                        status=400,
+                    )
+                except ContentMediaUnavailableError:
+                    return _render_content_page(
+                        user,
+                        accounts,
+                        selected,
+                        content_error=CONTENT_VIDEO_UPLOAD_UNAVAILABLE_MESSAGE,
+                        content_form=content_form,
+                        status=503,
+                    )
+                except ContentMediaProviderError:
+                    return _render_content_page(
+                        user,
+                        accounts,
+                        selected,
+                        content_error=CONTENT_VIDEO_UPLOAD_FAILED_MESSAGE,
+                        content_form=content_form,
+                        status=502,
+                    )
+            else:
+                try:
+                    media_value = public_video_url(
+                        request.form.get("video_url")
+                        or request.form.get("media_url")
+                        or request.form.get("media_reference")
+                    )
+                except ValueError:
+                    return _render_content_page(
+                        user,
+                        accounts,
+                        selected,
+                        content_error=CONTENT_VIDEO_URL_MESSAGE,
+                        content_form=content_form,
+                        status=400,
+                    )
+            cover_raw = str(request.form.get("cover_url") or "").strip()
+            if cover_raw:
+                try:
+                    cover_value = public_image_url(cover_raw)
+                    cover_path = cover_value.split("?", 1)[0].split("#", 1)[0].lower()
+                    if not cover_path.endswith((".jpg", ".jpeg")):
+                        raise ValueError("invalid_cover")
+                except ValueError:
+                    return _render_content_page(
+                        user,
+                        accounts,
+                        selected,
+                        content_error=CONTENT_VIDEO_COVER_MESSAGE,
+                        content_form=content_form,
+                        status=400,
+                    )
         else:
-            try:
-                media_value = public_image_url(
-                    request.form.get("media_url")
-                    or request.form.get("media_reference")
-                )
-            except ValueError:
-                return _render_content_page(
-                    user,
-                    accounts,
-                    selected,
-                    content_error="Enter a public HTTPS image link without embedded credentials.",
-                    content_form=content_form,
-                    status=400,
-                )
+            image_file = request.files.get("image_file")
+            if image_file is not None and str(image_file.filename or "").strip():
+                try:
+                    uploaded_asset = upload_content_image(
+                        image_file,
+                        instagram_account_id=selected.instagram_account_id,
+                    )
+                    media_value = uploaded_asset.url
+                except ContentMediaValidationError as exc:
+                    message = (
+                        CONTENT_IMAGE_TOO_LARGE_MESSAGE
+                        if exc.code == "image_too_large"
+                        else CONTENT_IMAGE_INVALID_MESSAGE
+                    )
+                    return _render_content_page(
+                        user,
+                        accounts,
+                        selected,
+                        content_error=message,
+                        content_form=content_form,
+                        status=400,
+                    )
+                except ContentMediaUnavailableError:
+                    return _render_content_page(
+                        user,
+                        accounts,
+                        selected,
+                        content_error=CONTENT_UPLOAD_UNAVAILABLE_MESSAGE,
+                        content_form=content_form,
+                        status=503,
+                    )
+                except ContentMediaProviderError:
+                    return _render_content_page(
+                        user,
+                        accounts,
+                        selected,
+                        content_error=CONTENT_UPLOAD_FAILED_MESSAGE,
+                        content_form=content_form,
+                        status=502,
+                    )
+            else:
+                try:
+                    media_value = public_image_url(
+                        request.form.get("media_url")
+                        or request.form.get("media_reference")
+                    )
+                except ValueError:
+                    return _render_content_page(
+                        user,
+                        accounts,
+                        selected,
+                        content_error="Enter a public HTTPS image link without embedded credentials.",
+                        content_form=content_form,
+                        status=400,
+                    )
 
-        metadata = {"content_type": "image"}
+        metadata = {"content_type": requested_type}
         if uploaded_asset is not None:
             metadata["storage"] = {
                 "provider": "cloudinary",
                 "asset_id": uploaded_asset.asset_id,
+            }
+        if uploaded_video is not None:
+            metadata["storage"] = {
+                "provider": "cloudinary",
+                "asset_id": uploaded_video.asset_id,
+                "resource_type": "video",
             }
         try:
             with session_factory.begin() as session:
                 item = create_content_draft(
                     session,
                     instagram_account_id=selected.instagram_account_id,
-                    content_type="image",
+                    content_type=requested_type,
                     caption=caption_value,
                     media_url=media_value,
+                    cover_url=cover_value,
                     status="ready" if submit_action == "schedule" else "draft",
                     metadata_json=metadata,
                 )
@@ -2004,6 +2096,8 @@ def register_tenant_dashboard(app) -> None:
         except (SQLAlchemyError, ValueError):
             if uploaded_asset is not None:
                 delete_content_image(uploaded_asset.asset_id)
+            if uploaded_video is not None:
+                delete_content_video(uploaded_video.asset_id)
             return _safe_content_update_error()
 
         return _cache_control(
@@ -2037,15 +2131,63 @@ def register_tenant_dashboard(app) -> None:
 
         caption_value = request.form.get("caption")
         media_url_value = request.form.get("media_url")
-        if media_url_value is not None:
+        cover_url_value = request.form.get("cover_url")
+        # Postenza v2 publishes images and Reels. Plain video posts and
+        # carousels are rejected explicitly instead of failing silently.
+        requested_content_type = request.form.get("content_type")
+        if requested_content_type is not None:
             try:
-                media_url_value = public_image_url(media_url_value)
+                requested_type = normalize_content_type(requested_content_type)
             except ValueError:
                 return _render_content_page(
                     user,
                     accounts,
                     selected,
-                    content_error="Enter a public HTTPS image link without embedded credentials.",
+                    content_error=CONTENT_TYPE_UNSUPPORTED_MESSAGE,
+                    content_edit_form={
+                        "draft_ref": draft_ref,
+                        "media_url": str(request.form.get("media_url") or ""),
+                        "caption": str(request.form.get("caption") or ""),
+                    },
+                    status=400,
+                )
+        else:
+            requested_type = None
+        if media_url_value is not None:
+            try:
+                if requested_type == "reel":
+                    media_url_value = public_video_url(media_url_value)
+                else:
+                    media_url_value = public_image_url(media_url_value)
+            except ValueError:
+                return _render_content_page(
+                    user,
+                    accounts,
+                    selected,
+                    content_error=(
+                        CONTENT_VIDEO_URL_MESSAGE
+                        if requested_type == "reel"
+                        else "Enter a public HTTPS image link without embedded credentials."
+                    ),
+                    content_edit_form={
+                        "draft_ref": draft_ref,
+                        "media_url": str(request.form.get("media_url") or ""),
+                        "caption": str(request.form.get("caption") or ""),
+                    },
+                    status=400,
+                )
+        if cover_url_value is not None and str(cover_url_value).strip():
+            try:
+                cover_url_value = public_image_url(cover_url_value)
+                cover_path = cover_url_value.split("?", 1)[0].split("#", 1)[0].lower()
+                if not cover_path.endswith((".jpg", ".jpeg")):
+                    raise ValueError("invalid_cover")
+            except ValueError:
+                return _render_content_page(
+                    user,
+                    accounts,
+                    selected,
+                    content_error=CONTENT_VIDEO_COVER_MESSAGE,
                     content_edit_form={
                         "draft_ref": draft_ref,
                         "media_url": str(request.form.get("media_url") or ""),
@@ -2067,13 +2209,18 @@ def register_tenant_dashboard(app) -> None:
                     raise PermissionError("Draft not found for this account.")
                 if draft.status == "scheduled":
                     raise ValueError("Scheduled content must be returned to ready before editing.")
+                changes = {
+                    "content_type": request.form.get("content_type"),
+                    "caption": caption_value,
+                    "media_url": media_url_value,
+                }
+                if "cover_url" in request.form:
+                    changes["cover_url"] = cover_url_value
                 update_content_draft(
                     session,
                     selected.instagram_account_id,
                     draft.id,
-                    content_type=request.form.get("content_type"),
-                    caption=caption_value,
-                    media_url=media_url_value,
+                    **changes,
                 )
         except (PermissionError, SQLAlchemyError, ValueError):
             app.logger.exception(

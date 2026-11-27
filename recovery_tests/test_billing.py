@@ -120,24 +120,24 @@ def test_nonpaying_statuses_fall_back_to_free(status, client, factory, user, mon
     monkeypatch.setattr(billing, "provider_request", Mock(return_value=snapshot(status)))
     assert send(client, intent(factory, user), user).status_code == 200
     with factory() as db:
-        assert effective_plan(db.get(BillingSubscription, user.id)) == "free"
+        assert effective_plan(db.get(BillingSubscription, user.id)) == "trial"
 
 
 def test_cancelled_entitlement_ends_at_confirmed_date():
     subscription = BillingSubscription(plan="pro", status="cancelled", test_mode=False, ends_at=datetime.now(timezone.utc)+timedelta(days=1))
     assert effective_plan(subscription) == "pro"
-    assert effective_plan(subscription, now=datetime.now(timezone.utc)+timedelta(days=2)) == "free"
+    assert effective_plan(subscription, now=datetime.now(timezone.utc)+timedelta(days=2)) == "trial"
 
 
 def test_sandbox_never_unlocks_production(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
-    assert effective_plan(BillingSubscription(plan="pro", status="active", test_mode=True)) == "free"
+    assert effective_plan(BillingSubscription(plan="pro", status="active", test_mode=True)) == "trial"
 
 
 def test_onboarding_preference_never_grants_paid_plan(factory, user):
     with factory.begin() as db:
         db.add(UserOnboardingProfile(user_id=user.id, selected_plan="agency"))
-        assert effective_plan(db.get(BillingSubscription, user.id)) == "free"
+        assert effective_plan(db.get(BillingSubscription, user.id)) == "trial"
 
 
 def test_usage_is_backend_enforced_and_rollback_safe(factory, user, monkeypatch):

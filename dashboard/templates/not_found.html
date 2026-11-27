@@ -13,6 +13,7 @@
     <header class="site-header">
         <nav class="site-nav landing-container" aria-label="Postenza">
             <a class="site-brand" href="/"><img src="{{ url_for('static', filename='brand/postenza-logo-light.png') }}" alt="Postenza"></a>
+            <form class="locale-picker" method="post" action="{{ url_for('auth_locale') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="next" value="{{ request.path }}"><label for="not-found-locale" class="visually-hidden">{{ t('language') }}</label><select id="not-found-locale" name="locale" onchange="this.form.submit()">{% for code, meta in locale_options.items() %}<option value="{{ code }}" {% if locale.code == code %}selected{% endif %}>{{ meta.label }}</option>{% endfor %}</select></form>
         </nav>
     </header>
     <main id="main-content">

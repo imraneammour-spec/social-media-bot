@@ -1,5 +1,14 @@
 """Gemini client, retry, and fallback (extracted from webhook.py).
 
+Gemini v2 policy: vision-only, prompt extraction from images only.
+Gemini is used ONLY to read AI generation prompts visibly written in
+Instagram images (``extract_prompts_with_gemini`` in prompt_pages.py
+and ``extract_oauth_prompts`` in webhook.py). It must NOT be used for
+smart replies, content generation, content planning, advanced-analytics
+summaries, or lead analysis — those are disabled in v2 (replies use
+ready text only, see comment_pipeline.generic_ready_reply) and must
+never fail silently when Gemini is missing or errors.
+
 This module owns everything about talking to Gemini: the shared client
 built from ``GEMINI_API_KEY``, the primary/fallback model selection, the
 transient-503 retry with backoff, and the safe error summary (API keys

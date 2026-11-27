@@ -1,4 +1,11 @@
-"""Safe, fact-only analysis helpers for one tenant-owned prompt request."""
+"""Safe, fact-only analysis helpers for one tenant-owned prompt request.
+
+Postenza v2: AI lead analysis is DISABLED — Gemini is vision-only
+(prompt extraction from images). :func:`analyze_lead_intelligence`
+returns the deterministic low-evidence result without calling any AI
+provider; the tenant dashboard route answers 410. The parsing helpers
+below are kept for the already-persisted advisory records only.
+"""
 
 from __future__ import annotations
 
@@ -45,7 +52,7 @@ class LeadIntelligence:
 
 @dataclass(frozen=True)
 class LeadIntelligenceContext:
-    """Only non-identifying persisted interaction facts supplied to Gemini."""
+    """Only non-identifying persisted interaction facts (formerly supplied to Gemini)."""
 
     prompt_request_count: int
     source_post_available: bool
@@ -152,7 +159,10 @@ def lead_intelligence_from_values(
 
 
 def parse_lead_intelligence(text: object) -> LeadIntelligence | None:
-    """Parse only a complete, finite Gemini JSON result without logging raw output."""
+    """Parse only a complete, finite JSON result without logging raw output.
+
+    Kept for already-persisted advisory records; v2 never generates one.
+    """
 
     source = str(text or "").strip()
     if source.startswith("```"):
@@ -174,7 +184,7 @@ def parse_lead_intelligence(text: object) -> LeadIntelligence | None:
 
 
 def lead_intelligence_prompt(context: LeadIntelligenceContext) -> str:
-    """Build the bounded Gemini instruction from facts only."""
+    """Build the bounded instruction from facts only (kept for reference; v2 never sends it)."""
 
     facts = json.dumps(context.analysis_input(), sort_keys=True, separators=(",", ":"))
     return (
@@ -193,8 +203,12 @@ def analyze_lead_intelligence(
     context: LeadIntelligenceContext,
     generate: Callable[[str], object],
 ) -> LeadIntelligence | None:
-    """Generate a validated advisory result, with a deterministic low-evidence result."""
+    """Lead analysis is disabled in Postenza v2 — never call Gemini.
 
-    if context.prompt_request_count < 1:
-        return LeadIntelligence.safe_for_insufficient_context()
-    return parse_lead_intelligence(generate(lead_intelligence_prompt(context)))
+    The deterministic low-evidence result is returned without invoking
+    ``generate`` (previously the Gemini call). Callers must not treat
+    this as a real analysis: the tenant dashboard route answers 410
+    and the leads page no longer offers analysis.
+    """
+
+    return LeadIntelligence.safe_for_insufficient_context()

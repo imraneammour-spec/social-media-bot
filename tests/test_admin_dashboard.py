@@ -124,7 +124,7 @@ class AdminDashboardTest(unittest.TestCase):
                 [
                     UserOnboardingProfile(
                         user_id=self.owner_a.id,
-                        selected_plan="free",
+                        selected_plan="trial",
                     ),
                     UserOnboardingProfile(
                         user_id=self.owner_b.id,
@@ -138,7 +138,7 @@ class AdminDashboardTest(unittest.TestCase):
         page = self.client.get("/app/admin").get_data(as_text=True)
 
         self.assertEqual(page.count('data-admin-user="'), 3)
-        self.assertIn('data-admin-user-plan="Free"', page)
+        self.assertIn('data-admin-user-plan="Trial"', page)
         self.assertIn('data-admin-user-plan="Pro"', page)
         self.assertIn('data-admin-user-plan="Unknown / not provided"', page)
         self.assertIn('data-admin-user-status="active"', page)
@@ -359,7 +359,7 @@ class AdminDashboardTest(unittest.TestCase):
                         use_case="business_account",
                         main_goal="save_time",
                         onboarding_source="google",
-                        selected_plan="free",
+                        selected_plan="trial",
                         completed_at=datetime(2026, 9, 7, tzinfo=timezone.utc),
                     ),
                     UserOnboardingProfile(
@@ -378,9 +378,9 @@ class AdminDashboardTest(unittest.TestCase):
         page = self.client.get("/app/admin").get_data(as_text=True)
 
         self.assertIn("Active users are unavailable until a persisted activity definition exists.", page)
-        self.assertIn('<dd data-admin-plan="free">1</dd>', page)
+        self.assertIn('<dd data-admin-plan="trial">1</dd>', page)
         self.assertIn('<dd data-admin-plan="pro">1</dd>', page)
-        self.assertIn('<dd data-admin-plan="agency">0</dd>', page)
+        self.assertIn('<dd data-admin-plan="business">0</dd>', page)
         self.assertIn('<dd data-admin-plan="unknown">1</dd>', page)
         self.assertIn('<dd data-admin-source="google">1</dd>', page)
         self.assertIn('<dd data-admin-source="instagram">1</dd>', page)

@@ -12,9 +12,15 @@ from sqlalchemy.orm import Session
 from .models import InstagramAccount, InstagramContentItem
 from .billing import consume_usage
 
-CONTENT_TYPES = ("image", "video", "carousel", "reel")
+# Postenza v2: image posts and Reels are supported. Plain video posts
+# (media_type VIDEO is deprecated by Meta — use REELS) and carousels
+# cannot be published yet, so they are rejected here with a clear
+# message instead of failing silently later in scheduling/publishing.
+CONTENT_TYPES = ("image", "reel")
 VALID_STATUSES = {"draft", "ready", "scheduled"}
 MAX_CAPTION_LENGTH = 2200
+_VIDEO_URL_SUFFIXES = (".mp4", ".mov")
+_COVER_URL_SUFFIXES = (".jpg", ".jpeg")
 
 
 def normalize_content_type(value: object) -> str:
@@ -24,8 +30,31 @@ def normalize_content_type(value: object) -> str:
         raise ValueError("Content type is required.")
     normalized = str(value).strip().lower()
     if normalized not in CONTENT_TYPES:
-        raise ValueError("Unsupported content type.")
+        raise ValueError(
+            "Only image posts and Reels are supported in Postenza v2. "
+            "Video posts and carousels are not available yet."
+        )
     return normalized
+
+
+def _validate_reel_media_url(value: object) -> str:
+    """A Reel needs a public HTTPS MP4/MOV link Meta can fetch."""
+
+    url = _validate_media_url(value)
+    if urlsplit(url).scheme != "https":
+        raise ValueError("Reel video must use HTTPS.")
+    if not urlsplit(url).path.lower().endswith(_VIDEO_URL_SUFFIXES):
+        raise ValueError("Reel video must be an MP4 or MOV link.")
+    return url
+
+
+def _validate_reel_cover_url(value: object) -> str:
+    """A Reel cover must be a public HTTPS JPEG image link."""
+
+    url = _validate_media_url(value)
+    if not urlsplit(url).path.lower().endswith(_COVER_URL_SUFFIXES):
+        raise ValueError("Reel cover must be a JPEG image link.")
+    return url
 
 
 def _normalize_status(value: object) -> str:
@@ -85,7 +114,13 @@ def create_content_draft(
     account_id = uuid.UUID(str(instagram_account_id))
     normalized_status = _normalize_status(status)
     normalized_type = normalize_content_type(content_type)
-    validated_url = _validate_media_url(media_url)
+    if normalized_type == "reel":
+        validated_url = _validate_reel_media_url(media_url)
+        cover_raw = kwargs.get("cover_url")
+        validated_cover = _validate_reel_cover_url(cover_raw) if cover_raw else None
+    else:
+        validated_url = _validate_media_url(media_url)
+        validated_cover = kwargs.get("cover_url") or validated_url
     trimmed_caption = str(caption or "").strip()
     if not trimmed_caption:
         raise ValueError("Caption is required.")
@@ -102,7 +137,7 @@ def create_content_draft(
         content_type=normalized_type,
         caption=trimmed_caption,
         media_url=validated_url,
-        cover_url=kwargs.get("cover_url") or validated_url,
+        cover_url=validated_cover,
         alt_text=kwargs.get("alt_text"),
         metadata_json=kwargs.get("metadata_json") or {"content_type": normalized_type},
     )
@@ -145,7 +180,7 @@ def update_content_draft(
         item.content_type = normalize_content_type(changes["content_type"])
     if "media_url" in changes:
         item.media_url = _validate_media_url(changes["media_url"])
-        if not item.cover_url:
+        if not item.cover_url and item.content_type == "image":
             item.cover_url = item.media_url
     if "cover_url" in changes:
         item.cover_url = _validate_media_url(changes["cover_url"]) if changes["cover_url"] else None
@@ -155,6 +190,12 @@ def update_content_draft(
         item.status = _normalize_status(changes["status"])
     if "metadata_json" in changes:
         item.metadata_json = changes["metadata_json"]
+    if item.content_type == "reel":
+        # A draft that ends up a Reel must point at a video, with a JPEG
+        # cover at most — never silently keep an image URL as a Reel.
+        _validate_reel_media_url(item.media_url)
+        if item.cover_url:
+            _validate_reel_cover_url(item.cover_url)
     session.flush()
     return item
 

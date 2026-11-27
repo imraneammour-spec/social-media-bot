@@ -40,6 +40,12 @@ class User(TimestampMixin, Base):
     )
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Start of the 60-day free trial (database/billing.py TRIAL_DAYS). Set
+    # at registration; NULL for workspaces created before the trial was
+    # enforced -- those are stamped with the first run of the new code
+    # (deploy date), never backdated to created_at, so their trial does not
+    # expire the moment enforcement lands. See resolve_trial_start().
+    trial_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     instagram_accounts: Mapped[list["InstagramAccount"]] = relationship(
         back_populates="owner", cascade="all, delete-orphan"
@@ -486,6 +492,44 @@ class BillingUsage(Base):
     period: Mapped[str] = mapped_column(String(7), primary_key=True)
     metric: Mapped[str] = mapped_column(String(32), primary_key=True)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class BillingCreditLot(Base):
+    """One purchased Credits pack for one user (see database/billing.py).
+
+    1 credit = 1 AI use (image-prompt extraction / AI use). A lot is
+    consumed oldest-first (FIFO) only after the plan's monthly AI
+    allowance is exhausted. ``expires_at`` is NULL by decision: credits
+    never expire while the account is active (see CREDIT_EXPIRY_DAYS in
+    database/billing.py). The column stays so a future expiry policy can
+    be switched on per lot without a schema change.
+    ``provider_order_id`` is the Lemon Squeezy order id; it is unique so
+    a duplicate / replayed order webhook can never credit twice.
+    """
+
+    __tablename__ = "billing_credit_lots"
+    __table_args__ = (
+        Index("ix_billing_credit_lots_user_remaining", "user_id", "credits_remaining"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    pack_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    credits_total: Mapped[int] = mapped_column(Integer, nullable=False)
+    credits_remaining: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider_order_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
 
 
 class LegacyProcessedComment(TimestampMixin, Base):

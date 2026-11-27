@@ -64,6 +64,10 @@ class Phase7D1CliIsolationTest(unittest.TestCase):
         self.addCleanup(temporary_directory.cleanup)
         module_name = "phase7d1_webhook_runtime"
         environment = {
+            # The web runtime starts the embedded scheduler by default, but
+            # recovery_tests/conftest.py sets POSTENZA_EMBEDDED_SCHEDULER=false
+            # process-wide when the full suite runs, so pin it on here.
+            "POSTENZA_EMBEDDED_SCHEDULER": "true",
             "DATABASE_URL": f"sqlite:///{Path(temporary_directory.name) / 'webhook.db'}",
             "FLASK_SECRET_KEY": "phase7d1-test-secret",
             "VERIFY_TOKEN": "phase7d1-verify-token",

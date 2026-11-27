@@ -37,7 +37,20 @@ ONBOARDING_SOURCE_VALUES = (
     "ai_tool",
     "other",
 )
-PLAN_VALUES = ("free", "pro", "agency")
+PLAN_VALUES = ("trial", "pro", "business")
+# Legacy plan values stored before the v2 rename (same mapping as
+# database/billing.py _LEGACY_PLAN_KEYS). Old rows are read as their v2
+# equivalent so they keep working without a data migration.
+LEGACY_PLAN_ALIASES = {"free": "trial", "agency": "business"}
+
+
+def normalize_plan_value(value: object) -> str:
+    """Map a legacy plan value to its v2 name, then validate it."""
+
+    normalized = LEGACY_PLAN_ALIASES.get(str(value or "").strip(), str(value or "").strip())
+    if normalized not in PLAN_VALUES:
+        raise OnboardingValidationError("Invalid onboarding value for selected_plan.")
+    return normalized
 
 
 class OnboardingValidationError(ValueError):
@@ -103,7 +116,7 @@ def apply_onboarding_step(
         return
 
     if normalized_step == "plan":
-        profile.selected_plan = _allowlisted(values, "selected_plan", PLAN_VALUES)
+        profile.selected_plan = normalize_plan_value(values.get("selected_plan"))
         profile.completed_at = now or datetime.now(timezone.utc)
         return
 

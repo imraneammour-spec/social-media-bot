@@ -72,8 +72,8 @@ class Phase7AContentFoundationTest(unittest.TestCase):
                 session,
                 instagram_account_id=self.account_b_id,
                 caption="Other draft",
-                content_type="reel",
-                media_url="https://images.example.com/b.mp4",
+                content_type="image",
+                media_url="https://images.example.com/b.jpg",
             )
             self.assertEqual(other.instagram_account_id, self.account_b_id)
 
@@ -155,11 +155,14 @@ class Phase7AContentFoundationTest(unittest.TestCase):
             with self.assertRaises(PermissionError):
                 delete_content_draft(session, self.account_b_id, draft.id)
 
-    def test_supported_content_types_are_normalized(self):
+    def test_supported_content_types_are_image_and_reel_in_v2(self):
         self.assertEqual(normalize_content_type("Image"), "image")
-        self.assertEqual(normalize_content_type("REEL"), "reel")
-        self.assertIn("image", CONTENT_TYPES)
-        self.assertIn("reel", CONTENT_TYPES)
+        self.assertEqual(normalize_content_type("Reel"), "reel")
+        self.assertEqual(CONTENT_TYPES, ("image", "reel"))
+        for unsupported in ("video", "carousel"):
+            with self.subTest(content_type=unsupported):
+                with self.assertRaises(ValueError):
+                    normalize_content_type(unsupported)
 
     def test_recover_failed_content_draft_returns_owned_failed_item_to_draft(self):
         with self.session_factory.begin() as session:

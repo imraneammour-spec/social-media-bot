@@ -69,8 +69,11 @@ from database.oauth_webhook_ingress import (
     fail_oauth_webhook_work,
     oauth_webhook_work_account_matches,
 )
-from database.lead_intelligence import analyze_lead_intelligence
-from database.tenant_automation import oauth_automation_runtime_config
+from comment_pipeline import generic_ready_reply
+from database.tenant_automation import (
+    DEFAULT_CUSTOM_MESSAGE,
+    oauth_automation_runtime_config,
+)
 from auth import (
     configure_auth,
     csrf_token,
@@ -78,6 +81,7 @@ from auth import (
     get_current_user,
     install_auth_route_guard,
     register_auth_routes,
+    send_trial_reminder_email,
     verify_meta_signature,
     webhook_signature_verification_active,
 )
@@ -354,6 +358,7 @@ def page_not_found(error):
     locale = locale_context(session_locale(session))
     return render_template(
         "not_found.html",
+        csrf_token=csrf_token() if app.secret_key else "",
         locale=locale,
         locale_options=LOCALE_META,
         t=lambda key: translate(locale["code"], key),
@@ -1732,51 +1737,28 @@ def _oauth_words(value):
 
 
 def generate_oauth_smart_reply(comment_text, *, tone="friendly", api_key=None):
-    """Generate a tenant-neutral reply; no legacy account identity is supplied."""
-    source_text = str(comment_text or "").strip()
-    if not source_text or (GEMINI_CLIENT is None and not api_key):
-        return ""
-    instructions = f"""
-Write one short, natural {tone} reply to an Instagram comment for a professional account.
-Use the comment's language where practical. Do not mention automation, account
-names, credentials, or private information. Do not use links, hashtags, fake
-promises, or generic thanks unless it is genuinely appropriate. Do not invent
-facts about the post or business.
-Return only the reply text, under {SMART_REPLY_MAX_LENGTH} characters.
+    """Return the ready generic reply for a non-keyword comment (v2).
 
-Comment: {source_text}
-"""
-    try:
-        response = _gemini_generate_content(instructions, api_key=api_key)
-        reply = re.sub(r"\s+", " ", str(response.text or "")).strip().strip('"\'')
-        return reply[:SMART_REPLY_MAX_LENGTH].rstrip()
-    except Exception as error:
-        print("OAUTH ENGAGEMENT: smart reply unavailable.", _sanitized_gemini_error(error))
-        return ""
+    Postenza v2 policy: no Gemini smart replies. The reply is always the
+    shared ready generic text (see ``comment_pipeline.generic_ready_reply``)
+    so a reply goes out even with no Gemini key, no client, or a failed
+    provider call. ``tone``/``api_key`` are kept for call compatibility
+    only and are intentionally ignored; ``comment_text`` is unused.
+    """
+
+    return generic_ready_reply()
 
 
 def generate_oauth_lead_intelligence(context, *, api_key=None):
-    """Analyze only sanitized persisted lead facts through the existing Gemini client."""
+    """Lead analysis is disabled in Postenza v2 — never call Gemini.
 
-    if GEMINI_CLIENT is None and not api_key:
-        return None
-    try:
-        return analyze_lead_intelligence(
-            context,
-            lambda prompt: str(
-                _gemini_generate_content(
-                    prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                    ),
-                    api_key=api_key,
-                ).text
-                or ""
-            ),
-        )
-    except Exception:
-        print("LEAD INTELLIGENCE: analysis unavailable.")
-        return None
+    Kept as a no-op so the ``lead_intelligence_analyzer`` extension slot
+    still exists; it always returns None and the tenant dashboard route
+    answers 410. ``context``/``api_key`` are accepted and ignored.
+    """
+
+    print("LEAD INTELLIGENCE: analysis is disabled in Postenza v2.")
+    return None
 
 
 app.extensions["lead_intelligence_analyzer"] = generate_oauth_lead_intelligence
@@ -2037,6 +2019,62 @@ def _log_oauth_followup_claim_failure(exc):
     )
 
 
+def _oauth_prompt_extraction_fallback(session_factory, route, entry_external_id, automation_config, comment_id, commenter_id):
+    """Send the ready DM/Link message when prompt extraction fails (v2).
+
+    Prompt mode promised a prompt page; when extraction produces nothing
+    the comment must NOT go silent (golden rule: replies never stop).
+    Fall back to the account's ready direct-message text — link mode
+    appends its destination URL — with the configured public reply first
+    when enabled. Returns True when the private reply was sent.
+    """
+
+    if automation_config.public_reply_enabled:
+        if not send_oauth_public_comment_reply(
+            session_factory,
+            instagram_account_id=route.instagram_account_id,
+            instagram_user_id=entry_external_id,
+            comment_id=comment_id,
+            message=automation_config.public_reply_text,
+        ):
+            raise RuntimeError("oauth public reply unavailable")
+    private_message_text = str(
+        getattr(automation_config, "private_message_text", "") or ""
+    ).strip()
+    if automation_config.delivery_mode == "link":
+        destination_url = str(
+            getattr(automation_config, "destination_url", "") or ""
+        ).strip()
+        if destination_url:
+            private_message_text = (
+                f"{private_message_text}\n\n{destination_url}"
+                if private_message_text
+                else destination_url
+            )
+    if not private_message_text:
+        private_message_text = DEFAULT_CUSTOM_MESSAGE
+    recipient_id = send_oauth_private_comment_reply(
+        session_factory,
+        instagram_account_id=route.instagram_account_id,
+        instagram_user_id=entry_external_id,
+        comment_id=comment_id,
+        message=private_message_text,
+        recipient_id_fallback=commenter_id,
+    )
+    if not recipient_id:
+        return False
+    with session_factory.begin() as db_session:
+        record_oauth_direct_message_interaction(
+            db_session,
+            route.instagram_account_id,
+            comment_id,
+            recipient_id,
+        )
+        complete_oauth_event(db_session, route.instagram_account_id, comment_id, "comment")
+    print("OAUTH FOLLOW-UP: waiting_for_recipient_reply")
+    return True
+
+
 def _process_oauth_comment(value, route, entry_external_id, public_base_url, session_factory):
     # Shared pipeline decisions (see comment_pipeline.py): parse, own
     # comment guard, trigger-word check. The stage order below is the
@@ -2093,10 +2131,13 @@ def _process_oauth_comment(value, route, entry_external_id, public_base_url, ses
     print(f"OAUTH AUTOMATION: prompt_request_decision={prompt_request_decision}")
     try:
         if not is_keyword_match:
+            # v2: every non-keyword comment gets the ready generic reply.
+            # The only gates are the master automation switch, the
+            # eligibility check (empty/emoji-only), and the hourly cap —
+            # never Gemini availability. Replies must never stop.
             if (
                 automation_config is None
                 or not automation_config.enabled
-                or not automation_config.smart_reply_enabled
                 or not _oauth_smart_reply_eligible(comment_text)
             ):
                 _oauth_complete(session_factory, route.instagram_account_id, comment_id, "comment")
@@ -2112,9 +2153,6 @@ def _process_oauth_comment(value, route, entry_external_id, public_base_url, ses
             if not allowed:
                 _oauth_complete(session_factory, route.instagram_account_id, comment_id, "comment")
                 return
-            if GEMINI_CLIENT is not None or account_api_key:
-                from database.billing import reserve_account_ai
-                reserve_account_ai(session_factory, route.instagram_account_id)
             reply = generate_oauth_smart_reply(
                 comment_text,
                 tone=automation_config.smart_reply_tone,
@@ -2182,7 +2220,19 @@ def _process_oauth_comment(value, route, entry_external_id, public_base_url, ses
             return
         public_id = _oauth_prompt_post_for_comment(session_factory, route.instagram_account_id, entry_external_id, media_id, api_key=account_api_key)
         if not public_id:
-            raise RuntimeError("oauth prompt extraction unavailable")
+            # v2: extraction failed — fall back to the ready DM/Link
+            # message instead of going silent (golden rule).
+            print("OAUTH ENGAGEMENT: prompt extraction failed; falling back to ready DM.")
+            if _oauth_prompt_extraction_fallback(
+                session_factory,
+                route,
+                entry_external_id,
+                automation_config,
+                comment_id,
+                commenter_id,
+            ):
+                return
+            raise RuntimeError("oauth private reply unavailable")
         page_url = f"{public_base_url.rstrip('/')}/p/o/{public_id}"
         if automation_config.public_reply_enabled:
             if not send_oauth_public_comment_reply(session_factory, instagram_account_id=route.instagram_account_id, instagram_user_id=entry_external_id, comment_id=comment_id, message=automation_config.public_reply_text):
@@ -2692,149 +2742,20 @@ def receive_webhook():
 # RUN
 # ==================================================
 # ============================================================
-# DASHBOARD - GEMINI CONTENT GENERATOR
+# DASHBOARD - CONTENT GENERATOR (DISABLED IN V2 — see below)
 # ============================================================
 
 @app.route("/api/generate-content", methods=["POST"])
 def generate_dashboard_content():
-
-    if GEMINI_CLIENT is None:
-        return {
-            "error": "Gemini client is not available."
-        }, 500
-
-    images = request.files.getlist("images")
-
-    if not images:
-        return {
-            "error": "Please upload at least one image."
-        }, 400
-
-    prompt = """
-You are the content assistant for the Instagram account @imran.prompts.
-
-Analyze the uploaded image or carousel.
-
-Generate Instagram content and return ONLY valid JSON.
-
-Use exactly this structure:
-
-{
-  "caption": "...",
-  "cta": "...",
-  "hashtags": "...",
-  "music_suggestions": [
-    {"track": "...", "artist": "...", "reason": "..."},
-    {"track": "...", "artist": "...", "reason": "..."},
-    {"track": "...", "artist": "...", "reason": "..."},
-    {"track": "...", "artist": "...", "reason": "..."},
-    {"track": "...", "artist": "...", "reason": "..."}
-  ]
-}
-
-CAPTION RULES:
-- English.
-- Modern, premium and natural.
-- Suitable for AI photography / AI prompts content.
-- Describe the visual concept.
-- Do not invent personal information.
-- Keep it concise.
-- Do not put hashtags inside the caption.
-
-CTA RULES:
-- Short.
-- Encourage the user to comment AI.
-- Example style:
-  "Comment AI and I'll send you the prompt."
-
-HASHTAGS:
-- Exactly 5 relevant hashtags.
-- One line.
-- Avoid spammy or unrelated hashtags.
-
-MUSIC SUGGESTIONS:
-- Return exactly 5 real, recognizable songs/tracks that fit the visual mood.
-- Prefer recent/popular/trend-friendly music when you have confidence, but NEVER claim
-  that a track is currently trending because this request has no live Instagram Music data.
-- Mix strong mainstream choices with visually suitable choices.
-- Give the real track title and artist.
-- reason must be one short sentence explaining why it fits this specific post.
-- The user will manually search these tracks inside Instagram Music before publishing.
-"""
-
-    contents = [prompt]
-
-    image_count = 0
-
-    for image in images[:10]:
-
-        image_bytes = image.read()
-
-        if not image_bytes:
-            continue
-
-        mime_type = image.mimetype or "image/jpeg"
-
-        contents.append(
-            types.Part.from_bytes(
-                data=image_bytes,
-                mime_type=mime_type
-            )
+    # Postenza v2: AI content generation is disabled. Gemini is used only
+    # to extract prompts written in images; use ready replies instead.
+    return {
+        "error": (
+            "Content generation is disabled in Postenza v2. "
+            "Gemini is used only to extract prompts written in images."
         )
+    }, 410
 
-        image_count += 1
-
-    if image_count == 0:
-        return {
-            "error": "The uploaded images are empty."
-        }, 400
-
-    try:
-
-        response = GEMINI_CLIENT.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-            )
-        )
-
-        result = json.loads(response.text)
-
-        return {
-            "caption": str(
-                result.get("caption", "")
-            ).strip(),
-
-            "cta": str(
-                result.get("cta", "")
-            ).strip(),
-
-            "hashtags": str(
-                result.get("hashtags", "")
-            ).strip(),
-
-            "music_suggestions": [
-                {
-                    "track": str(item.get("track", "") or "").strip(),
-                    "artist": str(item.get("artist", "") or "").strip(),
-                    "reason": str(item.get("reason", "") or "").strip()
-                }
-                for item in (result.get("music_suggestions", []) or [])[:5]
-                if isinstance(item, dict) and str(item.get("track", "") or "").strip()
-            ]
-        }, 200
-
-    except Exception as error:
-
-        print(
-            "DASHBOARD GEMINI ERROR:",
-            type(error).__name__
-        )
-
-        return {
-            "error": "Gemini could not generate the content."
-        }, 500
 # ============================================================
 # DASHBOARD - DRAFT STORAGE / APPROVAL
 # ============================================================
@@ -3236,31 +3157,9 @@ def generate_advanced_analytics_summary(advanced):
         f"Recent performance trend is {direction} ({change:+.1f}%)."
     )
 
-    if GEMINI_CLIENT is None or not advanced.get("posts_analyzed"):
-        return fallback
-
-    prompt = f"""
-You are analyzing Instagram performance for @imran.prompts.
-Write exactly 3 concise sentences in English:
-1) what is working,
-2) what is weaker or changing,
-3) what to focus on next week.
-Do not invent numbers or claim causation. Be practical and premium, not hype.
-
-Advanced analytics JSON:
-{json.dumps(advanced, ensure_ascii=False)}
-"""
-    try:
-        response = GEMINI_CLIENT.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(),
-        )
-        summary = re.sub(r"\s+", " ", str(response.text or "")).strip()
-        return summary[:900] if summary else fallback
-    except Exception as error:
-        print("ADVANCED ANALYTICS GEMINI ERROR:", _sanitized_gemini_error(error))
-        return fallback
+    # Postenza v2: no Gemini summary — the deterministic fallback above
+    # is the whole answer (Gemini is vision-only, prompt extraction).
+    return fallback
 
 
 # In-memory cache for the /api/instagram-analytics success payload only
@@ -3529,95 +3428,14 @@ def get_instagram_analytics():
 
 @app.route("/api/content-planner", methods=["POST"])
 def generate_content_planner():
-    """
-    Analyze up to the latest 30 Instagram posts supplied by the dashboard's
-    live analytics response and return one actionable next-post recommendation.
-    This endpoint is read-only: it never publishes or schedules anything.
-    """
-    if GEMINI_CLIENT is None:
-        return {"error": "Gemini client is not available."}, 500
-
-    payload = request.get_json(silent=True) or {}
-    raw_posts = payload.get("posts", [])
-    if not isinstance(raw_posts, list) or not raw_posts:
-        return {"error": "No Instagram analytics are available to analyze."}, 400
-
-    posts = []
-    for raw in raw_posts[:30]:
-        if not isinstance(raw, dict):
-            continue
-        posts.append({
-            "caption": str(raw.get("caption", "") or "")[:900],
-            "media_type": str(raw.get("media_type", "") or ""),
-            "timestamp": str(raw.get("timestamp", "") or ""),
-            "likes": int(raw.get("like_count", 0) or 0),
-            "comments": int(raw.get("comments_count", 0) or 0),
-            "reach": int(raw.get("reach", 0) or 0),
-            "saved": int(raw.get("saved", 0) or 0),
-            "shares": int(raw.get("shares", 0) or 0),
-            "views": int(raw.get("views", 0) or 0),
-        })
-
-    if not posts:
-        return {"error": "No valid Instagram posts are available to analyze."}, 400
-
-    prompt = """
-You are the Smart Content Planner for @imran.prompts, an Instagram account
-focused on premium AI imagery and AI prompts.
-
-Analyze the supplied recent Instagram post performance and recommend ONE
-specific next post. Use the metrics as evidence; do not invent metrics.
-
-Return ONLY valid JSON with exactly these keys:
-{
-  "content_type": "...",
-  "reason": "...",
-  "best_time": "HH:MM",
-  "caption": "...",
-  "cta": "...",
-  "hashtags": "..."
-}
-
-Rules:
-- English output.
-- content_type: short concrete creative direction, not a generic word.
-- reason: maximum 2 concise sentences and mention the performance pattern.
-- best_time: Morocco local time in 24-hour HH:MM format. Infer from timestamps
-  of stronger posts when possible; otherwise use a sensible evening time.
-- caption: premium, natural, concise, suitable for the recommended next post.
-- CTA: short and encourage "Comment AI" naturally.
-- hashtags: exactly 5 relevant hashtags on one line.
-- Never claim certainty about causation.
-- Do not publish or schedule anything.
-
-Recent post data:
-""" + json.dumps(posts, ensure_ascii=False)
-
-    try:
-        response = GEMINI_CLIENT.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-            )
+    # Postenza v2: AI content planning is disabled. Gemini is used only
+    # to extract prompts written in images; use ready replies instead.
+    return {
+        "error": (
+            "Content planning is disabled in Postenza v2. "
+            "Gemini is used only to extract prompts written in images."
         )
-        result = json.loads(response.text or "{}")
-        required = ("content_type", "reason", "best_time", "caption", "cta", "hashtags")
-        cleaned = {key: str(result.get(key, "") or "").strip() for key in required}
-
-        if not cleaned["content_type"] or not cleaned["caption"]:
-            return {"error": "Gemini returned an incomplete recommendation."}, 502
-
-        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", cleaned["best_time"]):
-            cleaned["best_time"] = "20:30"
-
-        cleaned["posts_analyzed"] = len(posts)
-        cleaned["success"] = True
-        return cleaned, 200
-
-    except Exception as error:
-        print("CONTENT PLANNER GEMINI ERROR:", type(error).__name__)
-        return {"error": "Gemini could not generate the content plan."}, 500
+    }, 410
 
 
 @app.route("/api/published-permalink/<draft_id>", methods=["GET"])
@@ -3979,44 +3797,33 @@ def auto_story_fallback_comment(caption=""):
     return "Still one of my favorites ✨"
 
 
+# Postenza v2: Gemini is vision-only (prompt extraction from images).
+# Daily story overlays use ready templates only — no AI call, ever.
+# The pool rotates by day of year so the overlay changes daily.
+_DAILY_STORY_COMMENTS = (
+    "Still one of my favorites ✨",
+    "A little throwback for today ✨",
+    "Worth another look 👀",
+    "From the archive — enjoy ✨",
+    "One more time, because it deserves it ✨",
+)
+_DAILY_STORY_PROMPT_COMMENTS = (
+    "Missed this one? 👀 Comment AI for the prompt",
+    "Want the prompt? Comment AI ✨",
+    "Comment AI and I'll share the prompt 👀",
+    "The prompt is one comment away — just say AI ✨",
+    "Love this one? Comment AI for the prompt ✨",
+)
+
+
 def generate_daily_story_comment(caption=""):
-    fallback = auto_story_fallback_comment(caption)
-    if GEMINI_CLIENT is None:
-        return fallback
-
-    prompt = f"""
-You write one very short Instagram Story overlay for @imran.prompts.
-The Story is resurfacing an older Instagram post.
-
-Rules:
-- English.
-- One short line only.
-- Maximum 55 characters.
-- Natural and premium, not spammy.
-- If the post is about AI prompts, a light 'Comment AI' CTA is allowed.
-- No hashtags.
-- No links.
-- No quotation marks.
-- Do not say the post is new.
-- Return only the overlay text.
-
-Post caption:
-{str(caption or '')[:1200]}
-"""
-
-    try:
-        response = GEMINI_CLIENT.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(),
-        )
-        result = re.sub(r"\s+", " ", str(response.text or "")).strip().strip('"\'')
-        if result:
-            return result[:80]
-    except Exception as error:
-        print("DAILY AUTO STORY GEMINI ERROR:", type(error).__name__)
-
-    return fallback
+    caption_lc = re.sub(r"\s+", " ", str(caption or "")).strip().lower()
+    if "prompt" in caption_lc or "comment ai" in caption_lc:
+        pool = _DAILY_STORY_PROMPT_COMMENTS
+    else:
+        pool = _DAILY_STORY_COMMENTS
+    index = datetime.now(timezone.utc).timetuple().tm_yday % len(pool)
+    return pool[index]
 
 
 def _story_font(size, bold=True):
@@ -4427,7 +4234,7 @@ def _daily_archive_image_url(post):
     if media_type == "IMAGE":
         return str(post.get("media_url", "") or "").strip()
 
-    # For Reels/videos, use a thumbnail so Gemini text can be overlaid safely.
+    # For Reels/videos, use a thumbnail so the story text can be overlaid safely.
     return str(post.get("thumbnail_url", "") or "").strip()
 
 
@@ -5533,6 +5340,31 @@ def process_due_tenant_content():
 
 
 _oauth_maintenance_last_run = 0
+_trial_reminders_last_run = 0
+
+
+def process_trial_reminders():
+    """Hourly trial-reminder pass (day 45 / day 55 of the 60-day trial).
+
+    Same hourly-throttle shape as process_oauth_maintenance. The sender
+    is the existing stdlib-SMTP path in auth.send_trial_reminder_email;
+    when SMTP is unconfigured it returns False, the reminder is counted
+    as due-but-unsent (never marked sent) and retried on the next pass.
+    """
+    global _trial_reminders_last_run
+    if time.monotonic() - _trial_reminders_last_run < 3600:
+        return
+    factory = _oauth_session_factory()
+    if factory is not None:
+        from database.billing import send_trial_reminders
+        result = send_trial_reminders(factory, sender=send_trial_reminder_email)
+        if result["sent"] or result["due_unsent"]:
+            print(
+                "TRIAL REMINDERS:",
+                f"sent={result['sent']} due_unsent={result['due_unsent']} "
+                f"checked={result['checked']}",
+            )
+    _trial_reminders_last_run = time.monotonic()
 
 
 def process_oauth_maintenance():
@@ -5552,7 +5384,7 @@ def dashboard_scheduler_loop():
     print("Dashboard scheduler: ON", f"({SCHEDULER_POLL_SECONDS}s, Africa/Casablanca)")
     while True:
         # Keep legacy posts manual-only; tenant image posts use durable DB claims.
-        for job in (process_oauth_maintenance, process_daily_auto_story,
+        for job in (process_oauth_maintenance, process_trial_reminders, process_daily_auto_story,
                     process_due_scheduled_stories, process_due_followups,
                     process_due_oauth_webhook_work, process_due_oauth_followups,
                     process_due_tenant_content):
@@ -5657,10 +5489,11 @@ def get_v01_health():
         True,
     )
 
-    # Core AI/content dependencies.
+    # Core AI/content dependencies (v2: Gemini is vision-only — prompt
+    # extraction from images — so the check reports that capability).
     add_check(
         "gemini",
-        "Gemini content engine",
+        "Gemini vision (prompt extraction)",
         "pass" if GEMINI_CLIENT is not None else "fail",
         f"Configured model: {GEMINI_MODEL}"
         if GEMINI_CLIENT is not None

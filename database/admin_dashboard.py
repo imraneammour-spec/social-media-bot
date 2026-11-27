@@ -22,7 +22,7 @@ from database.models import (
     User,
     UserOnboardingProfile,
 )
-from database.onboarding import ONBOARDING_SOURCE_VALUES, PLAN_VALUES
+from database.onboarding import LEGACY_PLAN_ALIASES, ONBOARDING_SOURCE_VALUES, PLAN_VALUES
 
 
 @dataclass(frozen=True)
@@ -52,9 +52,9 @@ class AdminSnapshot:
 
 
 PLAN_LABELS = {
-    "free": "Free",
+    "trial": "Trial",
     "pro": "Pro",
-    "agency": "Agency",
+    "business": "Business",
 }
 ADMIN_USER_STATUSES = ("active", "disabled")
 UNKNOWN_PLAN_LABEL = "Unknown / not provided"
@@ -91,6 +91,7 @@ def _distribution(
     *,
     allowed: tuple[str, ...],
     labels: dict[str, str],
+    aliases: dict[str, str] | None = None,
 ) -> tuple[AdminDistributionItem, ...]:
     counts = {value: 0 for value in allowed}
     unknown = 0
@@ -102,6 +103,8 @@ def _distribution(
     )
     for value, count in rows:
         normalized = str(value or "").strip()
+        if aliases:
+            normalized = aliases.get(normalized, normalized)
         if normalized in counts:
             counts[normalized] += int(count or 0)
         else:
@@ -184,6 +187,7 @@ def admin_snapshot(session: Session, *, recent_limit: int = 15) -> AdminSnapshot
             UserOnboardingProfile.selected_plan,
             allowed=PLAN_VALUES,
             labels=PLAN_LABELS,
+            aliases=LEGACY_PLAN_ALIASES,
         ),
         onboarding_source_attribution=_distribution(
             session,
@@ -231,7 +235,10 @@ def admin_users(session: Session, *, limit: int = 100) -> tuple[AdminUserRow, ..
     rows = []
     for user in users:
         accounts = account_rows.get(user.id, [])
-        plan_value = str(plans.get(user.id) or "").strip()
+        plan_value = LEGACY_PLAN_ALIASES.get(
+            str(plans.get(user.id) or "").strip(),
+            str(plans.get(user.id) or "").strip(),
+        )
         rows.append(
             AdminUserRow(
                 user_id=user.id,

@@ -40,7 +40,7 @@
 </section>
 <section class="card" aria-label="{{ t('Gemini API key') }}">
     <h2>{{ t('Gemini API key') }}</h2>
-    <p class="muted">{{ t('Your own Gemini API key is used for smart replies and prompt extraction instead of the shared key. Get a free key from Google AI Studio.') }}</p>
+    <p class="muted">{{ t('Your own Gemini API key is used only to extract prompts written in images, instead of the shared key. Replies never use AI. Get a free key from Google AI Studio.') }}</p>
     {% if gemini_key_status and gemini_key_status.configured %}
     <p>{{ t('Key stored') }}: …{{ gemini_key_status.hint }} — {{ gemini_key_status.status }}{% if gemini_key_status.last_validated_at %} ({{ t('verified') }} {{ gemini_key_status.last_validated_at }}){% endif %}</p>
     {% else %}

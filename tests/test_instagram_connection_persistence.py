@@ -24,6 +24,7 @@ from database.oauth_webhook_subscription import (
 )
 from database.models import (
     Base,
+    BillingSubscription,
     InstagramAccount,
     InstagramAutomationConfig,
     InstagramCredential,
@@ -117,6 +118,22 @@ class InstagramConnectionPersistenceTest(unittest.TestCase):
             keyring=keyring or self.keyring,
             now=now or datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
         )
+
+    def _seed_pro_plan(self):
+        """Trial allows 1 account; scenarios connecting a second one need Pro (3).
+
+        effective_plan() only resolves a paid plan from an active subscription
+        with a future renews_at, so seed exactly that — test_mode=False keeps
+        it paid outside production too.
+        """
+        with self.Session.begin() as session:
+            session.add(BillingSubscription(
+                user_id=self.owner_id,
+                plan="pro",
+                status="active",
+                test_mode=False,
+                renews_at=datetime.now(timezone.utc) + timedelta(days=30),
+            ))
 
     def _repair(self, *, owner_id=None, keyring=None, now=None):
         return repair_owned_oauth_connection_identity(
@@ -290,6 +307,7 @@ class InstagramConnectionPersistenceTest(unittest.TestCase):
             self.assertEqual(session.get(InstagramAccount, existing.id).instagram_user_id, app_scoped_id)
 
     def test_repair_rejects_ambiguous_or_legacy_candidates_before_profile_lookup(self):
+        self._seed_pro_plan()
         self._persist()
         self._persist(discovery=self._discovery(instagram_user_id="17841438617458004"))
         with patch("database.instagram_connection.requests.get") as get:
@@ -560,6 +578,9 @@ class InstagramConnectionPersistenceTest(unittest.TestCase):
 
     def test_invalid_scopes_and_nonusable_usernames_remain_fail_soft(self):
         """Input diagnostics must not turn optional OAuth fields into rejections."""
+        # Two sub-cases connect two different accounts for the same owner;
+        # trial allows only one, so seed Pro before the first completes.
+        self._seed_pro_plan()
         cases = (
             ((), None),
             (("UPPERCASE_SCOPE",), "x" * 256),

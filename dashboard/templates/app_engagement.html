@@ -48,11 +48,7 @@
         <p>{{ t(lead.ai_summary) if lead.ai_summary == 'Limited recorded interaction is available for this lead.' else lead.ai_summary }}</p>
         <p class="muted">{{ t('Suggested next action:') }} {{ t(lead.ai_suggested_followup) if lead.ai_suggested_followup == 'Wait for another interaction before following up.' else lead.ai_suggested_followup }}</p>
         {% else %}<p class="muted">{{ t('Not analyzed') }}</p>{% endif %}
-        <form method="post" class="lead-action" action="{{ url_for('tenant_dashboard.app_lead_analyze', account=selected_account.selection_ref) }}">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <input type="hidden" name="lead_action" value="{{ lead.analysis_action }}">
-            <button class="button button-secondary" type="submit">{{ t('Refresh analysis') if lead.ai_intent else t('Analyze lead') }}</button>
-        </form>
+        <p class="muted">{{ t('Lead analysis is disabled in Postenza v2.') }}</p>
     </section>
     {% if lead.post_permalink %}<p><a class="button button-secondary" href="{{ lead.post_permalink }}" target="_blank" rel="noopener noreferrer">{{ t('View Instagram post') }}</a></p>{% endif %}
     <form method="post" class="lead-action" action="{{ url_for('tenant_dashboard.app_lead_status', account=selected_account.selection_ref) }}">

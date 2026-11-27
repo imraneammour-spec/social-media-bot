@@ -35,6 +35,24 @@ def public_image_url(value):
     return value
 
 
+def public_video_url(value):
+    """Validate a public HTTPS MP4/MOV link at the form boundary.
+
+    Same checks as :func:`public_image_url`, plus the video extension
+    Meta requires for a Reel ``video_url``. DNS and availability are
+    deliberately not probed here; Instagram validates the remote media
+    at publication time.
+    """
+
+    try:
+        url = public_image_url(value)
+    except ValueError:
+        raise ValueError("invalid_video_url") from None
+    if not urlsplit(url).path.lower().endswith((".mp4", ".mov")):
+        raise ValueError("invalid_video_url")
+    return url
+
+
 def display_time(value, locale="en"):
     """Format persisted UTC timestamps for the existing Casablanca scheduling UI."""
     try:

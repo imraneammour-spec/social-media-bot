@@ -3,8 +3,10 @@
 Covers ``webhook._gemini_generate_with_retry`` (transient 503s retried,
 permanent errors raised at once) and ``webhook._gemini_generate_content``
 (primary model, then the fallback model), plus the callers that must route
-through the helper: ``generate_smart_reply``, ``extract_prompts_with_gemini``
-and ``generate_oauth_lead_intelligence``.
+through the helper: ``extract_prompts_with_gemini`` (the only remaining
+Gemini caller in v2 — vision-only prompt extraction). Smart replies and
+lead intelligence no longer use Gemini in v2 and are covered here by
+their no-Gemini regressions instead.
 
 The real ``google.genai.errors.ServerError`` / ``ClientError`` types are
 used so the transient check in ``_gemini_generate_with_retry`` (``"503"``
@@ -183,15 +185,18 @@ class GeminiClientTest(unittest.TestCase):
 
     # -- callers route through _gemini_generate_content -------------------
 
-    def test_generate_smart_reply_routes_through_helper(self):
-        # generate_smart_reply now lives in legacy_bot.py and calls
-        # gemini_client._gemini_generate_content: patch those.
+    def test_generate_smart_reply_returns_generic_reply_without_gemini(self):
+        # Postenza v2: no Gemini smart replies. generate_smart_reply now
+        # lives in legacy_bot.py and returns the ready generic reply
+        # without calling gemini_client._gemini_generate_content.
+        from comment_pipeline import DEFAULT_GENERIC_REPLY
+
         gemini_client.GEMINI_CLIENT = MagicMock()
-        helper = MagicMock(return_value=_fake_response("Thanks so much!"))
+        helper = MagicMock(side_effect=AssertionError("Gemini must not be called"))
         with patch.object(gemini_client, "_gemini_generate_content", helper):
             reply = self.module.generate_smart_reply("lovely post", username="visitor")
-        helper.assert_called_once()
-        self.assertEqual(reply, "Thanks so much!")
+        helper.assert_not_called()
+        self.assertEqual(reply, DEFAULT_GENERIC_REPLY)
 
     def test_extract_prompts_routes_through_helper(self):
         # extract_prompts_with_gemini now lives in prompt_pages.py and
@@ -220,15 +225,10 @@ class GeminiClientTest(unittest.TestCase):
             prompts, [{"source_index": 1, "text": "a cat on a beach"}]
         )
 
-    def test_generate_oauth_lead_intelligence_routes_through_helper(self):
+    def test_generate_oauth_lead_intelligence_is_disabled_in_v2(self):
+        # Postenza v2: lead analysis is disabled and never calls Gemini.
         self.module.GEMINI_CLIENT = MagicMock()
-        helper = MagicMock(
-            return_value=_fake_response(
-                '{"intent": "interested", "priority": "high", '
-                '"summary": "Asked for the prompts twice.", '
-                '"suggested_followup": "Send the link again."}'
-            )
-        )
+        helper = MagicMock(side_effect=AssertionError("Gemini must not be called"))
         context = LeadIntelligenceContext(
             prompt_request_count=2,
             source_post_available=True,
@@ -237,11 +237,8 @@ class GeminiClientTest(unittest.TestCase):
         )
         with patch.object(self.module, "_gemini_generate_content", helper):
             result = self.module.generate_oauth_lead_intelligence(context)
-        helper.assert_called_once()
-        self.assertEqual(helper.call_args.kwargs["config"].response_mime_type, "application/json")
-        self.assertIsNotNone(result)
-        self.assertEqual(result.intent, "interested")
-        self.assertEqual(result.priority, "high")
+        helper.assert_not_called()
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":

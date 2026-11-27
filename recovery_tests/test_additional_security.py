@@ -24,7 +24,7 @@ def test_unicode_webhook_signature_is_rejected(client):
 def test_missed_renewal_does_not_grant_perpetual_paid_access():
     subscription = BillingSubscription(plan="pro", status="active", test_mode=False,
         renews_at=datetime.now(timezone.utc)-timedelta(days=3))
-    assert effective_plan(subscription) == "free"
+    assert effective_plan(subscription) == "trial"
 
 
 def test_disconnected_account_releases_slot(factory, user):

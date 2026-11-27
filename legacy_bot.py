@@ -28,9 +28,9 @@ import requests
 from dotenv import load_dotenv
 from filelock import FileLock
 
-import gemini_client
 from comment_pipeline import (
     comment_has_trigger_word,
+    generic_ready_reply,
     is_own_account_comment,
     parse_comment_event,
 )
@@ -1086,70 +1086,13 @@ def generate_smart_reply(
     username=""
 ):
 
-    if gemini_client.GEMINI_CLIENT is None:
-        return ""
+    # Postenza v2 policy: no Gemini smart replies. Every non-keyword
+    # comment gets the ready generic reply, so a reply goes out even
+    # with no Gemini key or a failed provider call (golden rule:
+    # replies must never stop). ``comment_text``/``username`` are kept
+    # for call compatibility only and are intentionally unused.
 
-    source_text = str(
-        comment_text or ""
-    ).strip()
-
-    if not source_text:
-        return ""
-
-    instructions = f"""
-You are replying as the owner of the Instagram account @imran.prompts.
-
-Write ONE short, natural Instagram comment reply to the user's comment below.
-
-Rules:
-- Reply in the same language as the comment whenever possible.
-- Keep it friendly, casual and human-sounding.
-- Maximum 1 short sentence, ideally under 120 characters.
-- Never mention that you are an AI, bot or automation.
-- Do not use hashtags or links.
-- Do not ask the user to DM unless their comment clearly asks for more information.
-- Do not invent facts, prices, personal details, project details or promises.
-- If the comment asks for specific information that is not present, answer politely without making up details.
-- Avoid repeating the exact wording of the user's comment.
-- Use at most one emoji, and only when it feels natural.
-- Do not use salesy language.
-- Return ONLY the reply text, nothing else.
-
-Username: @{username or 'visitor'}
-Comment: {source_text}
-"""
-
-    try:
-
-        response = gemini_client._gemini_generate_content(instructions)
-
-        reply = str(
-            response.text or ""
-        ).strip()
-
-        reply = re.sub(
-            r"\s+",
-            " ",
-            reply
-        ).strip()
-
-        reply = reply.strip(
-            '"\''
-        )
-
-        if len(reply) > SMART_REPLY_MAX_LENGTH:
-            reply = reply[:SMART_REPLY_MAX_LENGTH].rstrip()
-
-        return reply
-
-    except Exception as error:
-
-        print(
-            "SMART REPLY GEMINI ERROR:",
-            _sanitized_gemini_error(error)
-        )
-
-        return ""
+    return generic_ready_reply()
 
 
 def send_comment_reply_text(
@@ -1916,6 +1859,72 @@ def _process_legacy_direct_delivery(
         )
 
 
+def _process_legacy_prompt_extraction_fallback(
+    delivery,
+    comment_id,
+    media_id,
+    commenter_id,
+    username
+):
+
+    """Send the ready DM/Link message when prompt extraction fails (v2).
+
+    Prompt mode promised a prompt page; when no prompts can be extracted
+    the comment must NOT go silent (golden rule: replies never stop).
+    When the account already runs in direct_message/link mode, reuse
+    that mode's ready delivery (configured public reply + DM). Otherwise
+    send the ready generic DM text — never the prompt-opening message,
+    which would promise a page that does not exist. Returns True when a
+    fallback DM was sent.
+    """
+
+    from database.tenant_automation import DEFAULT_CUSTOM_MESSAGE
+
+    if delivery is not None and delivery.get(
+        "delivery_mode"
+    ) in (
+        "direct_message",
+        "link",
+    ):
+
+        _process_legacy_direct_delivery(
+            delivery,
+            comment_id,
+            media_id,
+            commenter_id,
+            username,
+        )
+
+        return True
+
+    recipient_id = send_private_comment_reply_text(
+        comment_id,
+        DEFAULT_CUSTOM_MESSAGE,
+    )
+
+    if recipient_id:
+
+        log_prompt_request(
+            media_id,
+            comment_id,
+            commenter_id,
+            username,
+            "",
+        )
+
+        mark_comment_done(
+            comment_id
+        )
+
+        print(
+            "Prompt extraction failed; ready DM sent instead."
+        )
+
+        return True
+
+    return False
+
+
 def process_comment(
     value,
     public_base_url
@@ -2035,6 +2044,18 @@ def process_comment(
             print(
                 "Could not create prompt page."
             )
+
+            # v2: extraction failed — fall back to the ready DM/Link
+            # message instead of going silent (golden rule).
+            if _process_legacy_prompt_extraction_fallback(
+                delivery,
+                comment_id,
+                media_id,
+                commenter_id,
+                username,
+            ):
+
+                return
 
             release_comment(
                 comment_id

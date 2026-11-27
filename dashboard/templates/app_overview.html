@@ -4,10 +4,17 @@
 {% block timezone_helper %}{% endblock %}
 {% block content %}
 <section class="connection-card card" aria-label="{{ t('Your Instagram connection') }}"><div><p class="eyebrow">{{ t('Your Instagram connection') }}</p><h2>{{ display_username(selected_account.username) }}</h2><p class="muted">{{ t(selected_account.connection_detail) }}</p></div><div class="connection-status"><span class="status-pill {% if selected_account.connection_label == 'Connected' %}status-success{% else %}status-warning{% endif %}">{{ t(selected_account.connection_label) }}</span>{% if selected_account.connection_label != 'Connected' %}<a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_accounts', account=selected_account.selection_ref) }}">{{ t('Review connection') }}</a>{% endif %}</div></section>
-{% if is_legacy_account %}<section class="card" aria-label="{{ t('Instagram snapshot') }}"><div class="section-heading"><div><p class="eyebrow">{{ t('Instagram snapshot') }}</p><h2>{{ t('Live performance') }}</h2></div></div><p class="muted" id="legacySnapshotStatus">{{ t('Loading live performance...') }}</p><dl class="metric-grid"><div><dt>{{ t('Followers') }}</dt><dd id="legacySnapshotFollowers" class="skeleton">—</dd></div><div><dt id="legacySnapshotLikesLabel" data-label-template="{{ t('Likes (latest {count} posts)', count='{count}') }}">{{ t('Likes (latest {count} posts)', count='…') }}</dt><dd id="legacySnapshotLikes" class="skeleton">—</dd></div><div><dt id="legacySnapshotViewsLabel" data-label-template="{{ t('Views (latest {count} posts)', count='{count}') }}">{{ t('Views (latest {count} posts)', count='…') }}</dt><dd id="legacySnapshotViews" class="skeleton">—</dd></div><div><dt id="legacySnapshotSharesLabel" data-label-template="{{ t('Shares (latest {count} posts)', count='{count}') }}">{{ t('Shares (latest {count} posts)', count='…') }}</dt><dd id="legacySnapshotShares" class="skeleton">—</dd></div><div><dt id="legacySnapshotCommentsLabel" data-label-template="{{ t('Comments (latest {count} posts)', count='{count}') }}">{{ t('Comments (latest {count} posts)', count='…') }}</dt><dd id="legacySnapshotComments" class="skeleton">—</dd></div></dl><div id="legacySnapshotBest"></div></section>
+{% if is_legacy_account %}<section class="card" aria-label="{{ t('Instagram snapshot') }}" data-i18n-error="{{ t('Could not load live performance.') }}" data-i18n-top-post="{{ t('Top Instagram post') }}" data-i18n-latest="{{ t('latest {count} posts', count='{count}') }}" data-i18n-likes="{{ t('likes') }}" data-i18n-comments="{{ t('comments') }}" data-i18n-reach="{{ t('reach') }}"><div class="section-heading"><div><p class="eyebrow">{{ t('Instagram snapshot') }}</p><h2>{{ t('Live performance') }}</h2></div></div><p class="muted" id="legacySnapshotStatus">{{ t('Loading live performance...') }}</p><dl class="metric-grid"><div><dt>{{ t('Followers') }}</dt><dd id="legacySnapshotFollowers" class="skeleton">—</dd></div><div><dt id="legacySnapshotLikesLabel" data-label-template="{{ t('Likes (latest {count} posts)', count='{count}') }}">{{ t('Likes (latest {count} posts)', count='…') }}</dt><dd id="legacySnapshotLikes" class="skeleton">—</dd></div><div><dt id="legacySnapshotViewsLabel" data-label-template="{{ t('Views (latest {count} posts)', count='{count}') }}">{{ t('Views (latest {count} posts)', count='…') }}</dt><dd id="legacySnapshotViews" class="skeleton">—</dd></div><div><dt id="legacySnapshotSharesLabel" data-label-template="{{ t('Shares (latest {count} posts)', count='{count}') }}">{{ t('Shares (latest {count} posts)', count='…') }}</dt><dd id="legacySnapshotShares" class="skeleton">—</dd></div><div><dt id="legacySnapshotCommentsLabel" data-label-template="{{ t('Comments (latest {count} posts)', count='{count}') }}">{{ t('Comments (latest {count} posts)', count='…') }}</dt><dd id="legacySnapshotComments" class="skeleton">—</dd></div></dl><div id="legacySnapshotBest"></div></section>
 <script>
 (function () {
+  var section = document.querySelector("[data-i18n-error]");
   var status = document.getElementById("legacySnapshotStatus");
+  var i18nError = (section && section.dataset.i18nError) || "Could not load live performance.";
+  var i18nTopPost = (section && section.dataset.i18nTopPost) || "Top Instagram post";
+  var i18nLatest = (section && section.dataset.i18nLatest) || "latest {count} posts";
+  var i18nLikes = (section && section.dataset.i18nLikes) || "likes";
+  var i18nComments = (section && section.dataset.i18nComments) || "comments";
+  var i18nReach = (section && section.dataset.i18nReach) || "reach";
   function metric(value) {
     var n = Number(value || 0);
     return Number.isFinite(n) ? n.toLocaleString() : "—";
@@ -16,7 +23,7 @@
     .then(function (response) {
       return response.json().then(function (data) {
         if (!response.ok) {
-          throw new Error((data && data.error) || "Could not load live performance.");
+          throw new Error((data && data.error) || i18nError);
         }
         return data;
       });
@@ -49,20 +56,20 @@
       setLabel("legacySnapshotSharesLabel");
       setLabel("legacySnapshotCommentsLabel");
       ["legacySnapshotFollowers", "legacySnapshotLikes", "legacySnapshotViews", "legacySnapshotShares", "legacySnapshotComments"].forEach(clearSkeleton);
-      status.textContent = (account.username ? "@" + account.username : "Instagram") + " • latest " + postCount + " posts";
+      status.textContent = (account.username ? "@" + account.username : "Instagram") + " • " + i18nLatest.replace("{count}", postCount);
       var best = topPosts[0];
       if (!best) return;
       var container = document.getElementById("legacySnapshotBest");
       var card = document.createElement("div");
       var image = document.createElement("img");
-      image.alt = "Top Instagram post";
+      image.alt = i18nTopPost;
       image.src = best.thumbnail_url || best.media_url || "";
       image.loading = "lazy";
       image.referrerPolicy = "no-referrer";
       image.onerror = function () { this.style.display = "none"; };
       var meta = document.createElement("p");
       meta.className = "muted";
-      meta.textContent = metric(best.like_count) + " likes • " + metric(best.comments_count) + " comments • " + metric(best.reach) + " reach";
+      meta.textContent = metric(best.like_count) + " " + i18nLikes + " • " + metric(best.comments_count) + " " + i18nComments + " • " + metric(best.reach) + " " + i18nReach;
       card.appendChild(image);
       if (best.permalink) {
         card.style.cursor = "pointer";
@@ -74,7 +81,7 @@
       container.appendChild(card);
     })
     .catch(function (error) {
-      status.textContent = (error && error.message) || "Could not load live performance.";
+      status.textContent = (error && error.message) || i18nError;
       ["legacySnapshotFollowers", "legacySnapshotLikes", "legacySnapshotViews", "legacySnapshotShares", "legacySnapshotComments"].forEach(function (id) {
         var value = document.getElementById(id);
         if (value) value.classList.remove("skeleton");
@@ -83,7 +90,7 @@
 })();
 </script>{% endif %}
 <section class="overview-actions" aria-label="{{ t('Content actions') }}"><a class="button button-primary" href="{{ url_for('tenant_dashboard.app_content', account=selected_account.selection_ref) }}">{{ t('Create image post') }}</a><a class="button button-secondary" href="{{ url_for('tenant_dashboard.app_scheduler', account=selected_account.selection_ref) }}">{{ t('View calendar') }}</a></section>
-<section class="overview-grid" aria-label="{{ t('Publishing overview') }}"><article class="card overview-card"><p class="eyebrow">{{ t('Next scheduled post') }}</p>{% if overview.next_scheduled_content %}<h2>{{ overview.next_scheduled_content.caption_preview or t('Untitled image post') }}</h2><p class="muted">{{ t('Scheduled for') }} {{ display_time(overview.next_scheduled_content.scheduled_for) }}</p>{% else %}<h2>{{ t('Nothing scheduled') }}</h2><p class="muted">{{ t('Create an image post when you are ready.') }}</p>{% endif %}</article><article class="card overview-card"><p class="eyebrow">{{ t('Automation') }}</p><h2>{{ t('automation_on') if overview.automation_enabled else t('automation_off') }}</h2><p class="muted">{% if is_legacy_account %}{{ t('The server-managed legacy bot is active for this account.') }}{% elif overview.automation_enabled %}{{ t('Automation settings are active for this account.') }}{% else %}{{ t('Automation is disabled for this account.') }}{% endif %}</p><a class="text-link" href="{{ url_for('tenant_dashboard.app_automations', account=selected_account.selection_ref) }}">{{ t('Review automation') }}</a></article></section>
+<section class="overview-grid" aria-label="{{ t('Publishing overview') }}"><article class="card overview-card"><p class="eyebrow">{{ t('Next scheduled post') }}</p>{% if overview.next_scheduled_content %}<h2>{{ overview.next_scheduled_content.caption_preview or t('Untitled image post') }}</h2><p class="muted">{{ t('Scheduled for') }} {{ display_time(overview.next_scheduled_content.scheduled_for) }}</p>{% else %}<h2>{{ t('Nothing scheduled') }}</h2><p class="muted">{{ t('Create an image post or a Reel when you are ready.') }}</p>{% endif %}</article><article class="card overview-card"><p class="eyebrow">{{ t('Automation') }}</p><h2>{{ t('automation_on') if overview.automation_enabled else t('automation_off') }}</h2><p class="muted">{% if is_legacy_account %}{{ t('The server-managed legacy bot is active for this account.') }}{% elif overview.automation_enabled %}{{ t('Automation settings are active for this account.') }}{% else %}{{ t('Automation is disabled for this account.') }}{% endif %}</p><a class="text-link" href="{{ url_for('tenant_dashboard.app_automations', account=selected_account.selection_ref) }}">{{ t('Review automation') }}</a></article></section>
 <section class="card" aria-label="{{ t('Content at a glance') }}"><div class="section-heading"><div><p class="eyebrow">{{ t('Content at a glance') }}</p><h2>{{ t('Your publishing workflow') }}</h2></div><a class="text-link" href="{{ url_for('tenant_dashboard.app_content', account=selected_account.selection_ref) }}">{{ t('View content') }}</a></div><dl class="metric-grid"><div><dt>{{ t('Drafts') }}</dt><dd>{{ overview.content_state_counts.draft + overview.content_state_counts.ready }}</dd></div><div><dt>{{ t('Scheduled') }}</dt><dd>{{ overview.content_state_counts.scheduled }}</dd></div><div><dt>{{ t('Published') }}</dt><dd>{{ overview.content_state_counts.published }}</dd></div><div><dt>{{ t('Needs attention') }}</dt><dd>{{ overview.content_state_counts.failed }}</dd></div></dl></section>
 {% if overview.content_state_counts.failed or selected_account.connection_label != 'Connected' %}<section class="alert alert-warning" aria-label="{{ t('Needs attention') }}"><strong>{{ t('Needs attention') }}</strong><span>{% if overview.content_state_counts.failed %}{{ t('Some posts need review before you create another version.') }}{% else %}{{ t('Reconnect Instagram before publishing or automation can continue.') }}{% endif %}</span></section>{% endif %}
 <section class="card" aria-label="{{ t('Recent activity') }}"><div class="section-heading"><div><p class="eyebrow">{{ t('Recent activity') }}</p><h2>{{ t('What happened recently') }}</h2></div></div><div class="activity-list">{% for item in overview.recent_activity %}<div class="activity-feed-item"><span class="activity-icon" aria-hidden="true">◆</span><div><strong>{{ t(item.type) }}</strong><p class="muted">{% if item.username %}{{ display_username(item.username) }} · {% endif %}<span class="status-pill {% if item.state == 'Completed' %}status-success{% elif item.state == 'Waiting' %}status-warning{% elif item.state == 'Unavailable' or item.state == 'Failed' %}status-error{% else %}status-neutral{% endif %}">{{ t(item.state) }}</span></p><p class="muted">{{ display_time(item.occurred_at) }}</p></div></div>{% else %}<p class="empty-state">{{ t('Activity will appear here when your account is used.') }}</p>{% endfor %}</div></section>
@@ -106,7 +113,7 @@
     <dl class="summary-card card"><dt>{{ t('Comment events') }}</dt><dd>{{ analytics.metrics.comments_handled }}</dd></dl>
     <dl class="summary-card card"><dt>{{ t('Message events') }}</dt><dd>{{ analytics.metrics.messages_handled }}</dd></dl>
     <dl class="summary-card card"><dt>{{ t('Custom-message interactions') }}</dt><dd>{{ analytics.metrics.direct_private_replies }}</dd></dl>
-    <dl class="summary-card card"><dt>{{ t('Smart replies sent') }}</dt><dd>{{ analytics.metrics.smart_replies_sent }}</dd></dl>
+    <dl class="summary-card card"><dt>{{ t('Ready replies sent') }}</dt><dd>{{ analytics.metrics.smart_replies_sent }}</dd></dl>
     <dl class="summary-card card"><dt>{{ t('Follow-ups queued') }}</dt><dd>{{ analytics.metrics.followups_scheduled }}</dd></dl>
 </section>
 <section class="summary-grid" aria-label="{{ t('Delivery metrics') }}">

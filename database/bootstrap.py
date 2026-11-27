@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -51,7 +52,12 @@ def bootstrap_current_owner(
     user = session.scalar(select(User).where(User.email == email))
     user_created = user is None
     if user is None:
-        user = User(email=email, display_name=name)
+        # The 60-day free trial starts at creation (same as /register).
+        user = User(
+            email=email,
+            display_name=name,
+            trial_started_at=datetime.now(timezone.utc),
+        )
         session.add(user)
         session.flush()
 
