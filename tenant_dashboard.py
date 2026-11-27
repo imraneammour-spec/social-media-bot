@@ -71,10 +71,12 @@ from database.content_media import (
 from database.models import InstagramAutomationConfig, InstagramContentItem, User
 from database.tenant_automation import (
     AUTOMATION_DELIVERY_MODES,
+    LEGACY_TRIGGER_KEYWORDS,
     SMART_REPLY_TONES,
     TenantAutomationConfigurationError,
     automation_mode_defaults,
     automation_mode_values,
+    ensure_legacy_automation_config,
     normalize_automation_delivery_mode,
     normalize_destination_url,
     normalize_followup_delay_minutes,
@@ -99,9 +101,6 @@ LEAD_UPDATE_ERROR_MESSAGE = "Lead update could not be completed."
 AUTOMATION_UPDATE_ERROR_MESSAGE = "Automation update could not be completed."
 AUTOMATION_DESTINATION_URL_ERROR_MESSAGE = (
     "Enter a valid http:// or https:// destination URL."
-)
-LEGACY_AUTOMATION_READONLY_MESSAGE = (
-    "Automation settings cannot be changed for the server-managed account."
 )
 LEGACY_SCHEDULING_UNAVAILABLE_MESSAGE = (
     "Scheduling is not available for the server-managed account. "
@@ -861,6 +860,9 @@ def _legacy_automation_presentation():
     for mode in ("prompt_request", "direct_message", "link"):
         values = automation_mode_defaults(mode)
         values["defaults"] = automation_mode_defaults(mode)
+        # The legacy bot matches its own hard-coded trigger words, not the
+        # tenant defaults ("send, info"), so show the words it answers to.
+        values["trigger_keywords"] = list(LEGACY_TRIGGER_KEYWORDS)
         modes[mode] = values
     active_values = modes["prompt_request"]
     return {
@@ -1190,6 +1192,109 @@ def _update_automation_config(selected, *, internal_prompt_access=False):
                 )
                 config.smart_reply_tone = smart_reply_tone
                 config.smart_reply_max_per_hour = smart_reply_max_per_hour
+
+            session.flush()
+
+    except ValueError:
+        return False
+    except SQLAlchemyError:
+        return _DATABASE_UNAVAILABLE
+
+    return True
+
+
+def _update_legacy_automation_config(selected):
+    """Save delivery-mode settings for the server-managed legacy account.
+
+    Only the fields the legacy bot actually reads are persisted:
+    ``delivery_mode`` plus the selected mode's public reply, private
+    message, and destination URL (link mode). Everything else the tenant
+    form carries stays untouched: the legacy bot is always on (no
+    ``enabled`` switch), matches its hard-coded trigger words, and runs
+    its own follow-up and smart-reply flows. The config row is created
+    with legacy defaults on the first save; the tenant scheduler never
+    picks it up because webhook routing keys on the Instagram user id,
+    not on this table, and the legacy account has no OAuth credential.
+    """
+
+    session_factory = getattr(
+        _auth_state(),
+        "session_factory",
+        None,
+    )
+
+    if session_factory is None:
+        return _DATABASE_UNAVAILABLE
+
+    try:
+        delivery_mode_value = request.form.get("delivery_mode")
+        delivery_mode = (
+            normalize_automation_delivery_mode(delivery_mode_value)
+            if delivery_mode_value is not None
+            else None
+        )
+    except ValueError:
+        return False
+
+    try:
+        with session_factory.begin() as session:
+            config = ensure_legacy_automation_config(
+                session,
+                instagram_account_id=selected.instagram_account_id,
+            )
+
+            if config is None:
+                return None
+
+            if delivery_mode is None:
+                delivery_mode = normalize_automation_delivery_mode(
+                    getattr(config, "delivery_mode", "prompt_request")
+                    or "prompt_request"
+                )
+
+            mode_values = {
+                mode: automation_mode_values(config, mode)
+                for mode in AUTOMATION_DELIVERY_MODES
+            }
+            for mode in AUTOMATION_DELIVERY_MODES:
+                try:
+                    mode_values[mode] = _submitted_mode_values(
+                        mode, delivery_mode, mode_values[mode]
+                    )
+                except TenantAutomationConfigurationError:
+                    if mode != delivery_mode:
+                        continue
+                    if delivery_mode == "link":
+                        return _INVALID_DESTINATION_URL
+                    return False
+
+            selected_values = mode_values[delivery_mode]
+            if delivery_mode == "link" and not selected_values["destination_url"]:
+                return _INVALID_DESTINATION_URL
+
+            config.delivery_mode = delivery_mode
+            config.public_reply_enabled = bool(selected_values["public_reply_enabled"])
+            config.public_reply_text = str(selected_values["public_reply_text"])
+            if delivery_mode == "prompt_request":
+                config.prompt_opening_message_text = str(
+                    selected_values["private_message_text"]
+                )
+            else:
+                config.private_message_text = str(
+                    selected_values["private_message_text"]
+                )
+            if delivery_mode == "link":
+                config.destination_url = str(selected_values["destination_url"])
+
+            inactive_modes = {
+                mode: values
+                for mode, values in mode_values.items()
+                if mode != delivery_mode
+            }
+            config.inactive_mode_settings = normalize_inactive_mode_settings({
+                "version": 1,
+                "modes": inactive_modes,
+            })
 
             session.flush()
 
@@ -2522,27 +2627,27 @@ def register_tenant_dashboard(app) -> None:
                 return _safe_automation_update_error()
 
             if getattr(selected, "is_legacy", False):
-                # Tenant automation settings never apply to the
-                # server-managed account, so never create a config row
-                # the tenant scheduler could pick up without a credential.
-                automation_error = LEGACY_AUTOMATION_READONLY_MESSAGE
+                # The legacy bot reads its delivery mode from the same
+                # config store, so delivery-mode saves are allowed; every
+                # other tenant setting stays locked for this account.
+                updated = _update_legacy_automation_config(selected)
             else:
                 updated = _update_automation_config(
                     selected,
                     internal_prompt_access=internal_prompt_access,
                 )
 
-                if updated is _DATABASE_UNAVAILABLE:
-                    return _workspace_unavailable()
+            if updated is _DATABASE_UNAVAILABLE:
+                return _workspace_unavailable()
 
-                if updated is None:
-                    return _safe_account_unavailable()
+            if updated is None:
+                return _safe_account_unavailable()
 
-                if updated is _INVALID_DESTINATION_URL:
-                    automation_error = AUTOMATION_DESTINATION_URL_ERROR_MESSAGE
+            if updated is _INVALID_DESTINATION_URL:
+                automation_error = AUTOMATION_DESTINATION_URL_ERROR_MESSAGE
 
-                if updated is False:
-                    automation_error = AUTOMATION_UPDATE_ERROR_MESSAGE
+            if updated is False:
+                automation_error = AUTOMATION_UPDATE_ERROR_MESSAGE
 
         automation = _automation_config(
             selected,

@@ -94,6 +94,88 @@ def _legacy_state_error(context):
     print("LEGACY STATE DB ERROR", context)
 
 
+def _legacy_delivery_config():
+    """Return the legacy account's saved delivery settings, or None.
+
+    None means "no saved choice": the caller keeps today's prompt
+    behavior. Any database problem also returns None, so a storage blip
+    can never break the prompt flow. The row is keyed by the legacy
+    account's ``InstagramAccount.id``; it is created with prompt
+    defaults the first time the owner saves on /app/automations.
+    """
+
+    try:
+
+        provider = _SESSION_FACTORY_PROVIDER
+
+        factory = provider() if provider is not None else None
+
+        if factory is None:
+
+            return None
+
+        legacy_id = str(INSTAGRAM_USER_ID or "").strip()
+
+        if not legacy_id:
+
+            return None
+
+        from sqlalchemy import select
+
+        from database.models import (
+            InstagramAccount,
+            InstagramAutomationConfig,
+        )
+        from database.tenant_automation import (
+            normalize_automation_delivery_mode,
+        )
+
+        with factory() as session:
+
+            account = session.scalar(
+                select(InstagramAccount).where(
+                    InstagramAccount.instagram_user_id == legacy_id
+                )
+            )
+
+            if account is None:
+
+                return None
+
+            config = session.scalar(
+                select(InstagramAutomationConfig).where(
+                    InstagramAutomationConfig.instagram_account_id == account.id
+                )
+            )
+
+            if config is None:
+
+                return None
+
+            return {
+                "delivery_mode": normalize_automation_delivery_mode(
+                    getattr(config, "delivery_mode", "prompt_request")
+                    or "prompt_request"
+                ),
+                "public_reply_enabled": bool(
+                    getattr(config, "public_reply_enabled", True)
+                ),
+                "public_reply_text": str(
+                    getattr(config, "public_reply_text", "") or ""
+                ),
+                "private_message_text": str(
+                    getattr(config, "private_message_text", "") or ""
+                ),
+                "destination_url": str(
+                    getattr(config, "destination_url", "") or ""
+                ),
+            }
+
+    except Exception:
+
+        return None
+
+
 API_VERSION = "v25.0"
 
 RAILWAY_DATA_DIR = Path("/app/data")
@@ -1443,6 +1525,85 @@ def send_public_comment_reply(
     )
 
 
+def send_private_comment_reply_text(
+    comment_id,
+    text
+):
+
+    """Send a plain-text private reply to a commenter.
+
+    Same endpoint as the prompt flow's private reply, without the quick
+    reply button: used for direct_message / link delivery, where the
+    configured message itself is the delivery. Returns the recipient id
+    on success, None otherwise. The prompt flow's own
+    ``send_access_request`` is left untouched.
+    """
+
+    if (
+        not INSTAGRAM_ACCESS_TOKEN
+        or not comment_id
+        or not text
+    ):
+
+        return None
+
+    url = (
+        f"https://graph.instagram.com/"
+        f"{API_VERSION}/"
+        f"{INSTAGRAM_USER_ID}/messages"
+    )
+
+    headers = {
+        "Authorization":
+            f"Bearer {INSTAGRAM_ACCESS_TOKEN}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "recipient": {
+            "comment_id": comment_id
+        },
+        "message": {
+            "text": text
+        }
+    }
+
+    try:
+
+        response = requests.post(
+            url,
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+
+        print(
+            "Private Reply:",
+            response.status_code
+        )
+
+        if not response.ok:
+
+            print(response.text)
+
+            return None
+
+        data = response.json()
+
+        return data.get(
+            "recipient_id"
+        )
+
+    except requests.RequestException as error:
+
+        print(
+            "PRIVATE REPLY ERROR:",
+            type(error).__name__
+        )
+
+        return None
+
+
 def send_access_request(
     comment_id
 ):
@@ -1655,6 +1816,106 @@ def send_view_prompts_button(
         return False
 
 
+def _process_legacy_direct_delivery(
+    delivery,
+    comment_id,
+    media_id,
+    commenter_id,
+    username
+):
+
+    """Handle one trigger comment in direct_message / link mode.
+
+    No prompt extraction and no prompt page: the configured private
+    message goes straight to the commenter by DM (link mode appends the
+    configured destination URL), with the configured public reply first
+    when enabled. The send is logged like a prompt request (with no page
+    URL) so the same 10-minute cooldown applies to repeat triggers.
+    Called from inside ``process_comment``'s try block, so errors are
+    handled there.
+    """
+
+    if delivery.get(
+        "public_reply_enabled",
+        True,
+    ):
+
+        reply_text = str(
+            delivery.get(
+                "public_reply_text",
+                "",
+            ) or ""
+        ).strip()
+
+        if reply_text:
+
+            send_comment_reply_text(
+                comment_id,
+                reply_text,
+            )
+
+    message_text = str(
+        delivery.get(
+            "private_message_text",
+            "",
+        ) or ""
+    ).strip()
+
+    if delivery.get("delivery_mode") == "link":
+
+        destination_url = str(
+            delivery.get(
+                "destination_url",
+                "",
+            ) or ""
+        ).strip()
+
+        if destination_url:
+
+            message_text = (
+                f"{message_text}\n\n{destination_url}"
+                if message_text
+                else destination_url
+            )
+
+    if not message_text:
+
+        release_comment(
+            comment_id
+        )
+
+        return
+
+    recipient_id = send_private_comment_reply_text(
+        comment_id,
+        message_text,
+    )
+
+    if recipient_id:
+
+        log_prompt_request(
+            media_id,
+            comment_id,
+            commenter_id,
+            username,
+            "",
+        )
+
+        mark_comment_done(
+            comment_id
+        )
+
+        print(
+            "Direct message sent successfully."
+        )
+
+    else:
+
+        release_comment(
+            comment_id
+        )
+
+
 def process_comment(
     value,
     public_base_url
@@ -1742,6 +2003,25 @@ def process_comment(
 
             mark_comment_done(
                 comment_id
+            )
+
+            return
+
+        delivery = _legacy_delivery_config()
+
+        if delivery is not None and delivery.get(
+            "delivery_mode"
+        ) in (
+            "direct_message",
+            "link",
+        ):
+
+            _process_legacy_direct_delivery(
+                delivery,
+                comment_id,
+                media_id,
+                commenter_id,
+                username,
             )
 
             return

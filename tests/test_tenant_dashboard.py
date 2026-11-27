@@ -263,12 +263,12 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertEqual(payload["accounts"][0]["activation_label"], "Active")
         self.assertTrue(payload["accounts"][0]["is_selected"])
 
-    def test_legacy_automations_page_shows_disabled_defaults_and_rejects_saves(self):
+    def test_legacy_automations_page_shows_delivery_mode_editable_and_saves(self):
         self._login_as(self.legacy_owner)
         response = self.client.get("/app/automations")
         self.assertEqual(response.status_code, 200)
         self.assertIn(
-            b"Automation for the server-managed account is managed by the legacy bot.",
+            b"Delivery mode and message settings apply to the server-managed account.",
             response.data,
         )
         self.assertIn(
@@ -276,22 +276,135 @@ class TenantDashboardTest(unittest.TestCase):
             b"(ai, prompt, prompts, send, access).",
             response.data,
         )
-        self.assertIn(b'<form method="post" class="settings-form is-readonly">', response.data)
+        # The legacy trigger words are shown, not the tenant defaults.
+        self.assertIn(b'value="access, ai, prompt, prompts, send" disabled', response.data)
+        # Delivery mode is editable and the form can be saved; the enable
+        # toggle, keywords, follow-ups and smart replies stay locked.
+        self.assertIn(b'<select id="delivery_mode" name="delivery_mode">', response.data)
+        self.assertIn(b"Save automation settings", response.data)
         self.assertIn(b"<fieldset disabled>", response.data)
-        self.assertNotIn(b"Save automation settings", response.data)
+        self.assertIn(
+            b'<input id="automation_enabled" type="checkbox" name="enabled" checked>',
+            response.data,
+        )
         csrf_token = re.search(
             r'name="csrf_token" value="([^"]+)"', response.get_data(as_text=True)
         ).group(1)
 
         response = self.client.post(
             "/app/automations",
+            data={
+                "csrf_token": csrf_token,
+                "delivery_mode": "direct_message",
+                "message_public_reply_enabled": "on",
+                "message_public_reply_text": "Thanks! DM sent.",
+                "message_private_message_text": "Here is your custom message.",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Automation settings saved.", response.data)
+        with self.Session.begin() as session:
+            config = session.scalar(
+                select(InstagramAutomationConfig).where(
+                    InstagramAutomationConfig.instagram_account_id == self.legacy_account.id
+                )
+            )
+        self.assertIsNotNone(config)
+        self.assertEqual(config.delivery_mode, "direct_message")
+        self.assertEqual(config.private_message_text, "Here is your custom message.")
+        self.assertEqual(config.public_reply_text, "Thanks! DM sent.")
+        self.assertTrue(config.public_reply_enabled)
+        # Untouched by the legacy save: always on, legacy trigger words.
+        self.assertTrue(config.enabled)
+        self.assertEqual(
+            config.trigger_keywords, ["access", "ai", "prompt", "prompts", "send"]
+        )
+
+    def test_legacy_automations_empty_save_creates_prompt_defaults(self):
+        self._login_as(self.legacy_owner)
+        page = self.client.get("/app/automations").get_data(as_text=True)
+        csrf_token = re.search(
+            r'name="csrf_token" value="([^"]+)"', page
+        ).group(1)
+
+        response = self.client.post(
+            "/app/automations",
             data={"csrf_token": csrf_token},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Automation settings saved.", response.data)
+        with self.Session.begin() as session:
+            config = session.scalar(
+                select(InstagramAutomationConfig).where(
+                    InstagramAutomationConfig.instagram_account_id == self.legacy_account.id
+                )
+            )
+        self.assertIsNotNone(config)
+        self.assertEqual(config.delivery_mode, "prompt_request")
+        self.assertTrue(config.enabled)
+        self.assertEqual(
+            config.trigger_keywords, ["access", "ai", "prompt", "prompts", "send"]
+        )
+
+    def test_legacy_automations_link_mode_requires_destination_url(self):
+        self._login_as(self.legacy_owner)
+        page = self.client.get("/app/automations").get_data(as_text=True)
+        csrf_token = re.search(
+            r'name="csrf_token" value="([^"]+)"', page
+        ).group(1)
+
+        response = self.client.post(
+            "/app/automations",
+            data={
+                "csrf_token": csrf_token,
+                "delivery_mode": "link",
+                "link_public_reply_enabled": "on",
+                "link_public_reply_text": "Thanks! Link sent.",
+                "link_private_message_text": "Here is the link you asked for.",
+                "link_destination_url": "not a url",
+            },
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn(
-            b"Automation settings cannot be changed for the server-managed account.",
+            b"Enter a valid http:// or https:// destination URL.",
             response.data,
         )
+
+        response = self.client.post(
+            "/app/automations",
+            data={
+                "csrf_token": csrf_token,
+                "delivery_mode": "link",
+                "link_public_reply_enabled": "on",
+                "link_public_reply_text": "Thanks! Link sent.",
+                "link_private_message_text": "Here is the link you asked for.",
+                "link_destination_url": "https://example.invalid/guide",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Automation settings saved.", response.data)
+        with self.Session.begin() as session:
+            config = session.scalar(
+                select(InstagramAutomationConfig).where(
+                    InstagramAutomationConfig.instagram_account_id == self.legacy_account.id
+                )
+            )
+        self.assertEqual(config.delivery_mode, "link")
+        self.assertEqual(config.destination_url, "https://example.invalid/guide")
+
+    def test_legacy_automations_rejects_invalid_delivery_mode(self):
+        self._login_as(self.legacy_owner)
+        page = self.client.get("/app/automations").get_data(as_text=True)
+        csrf_token = re.search(
+            r'name="csrf_token" value="([^"]+)"', page
+        ).group(1)
+
+        response = self.client.post(
+            "/app/automations",
+            data={"csrf_token": csrf_token, "delivery_mode": "bogus"},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"Automation update could not be completed.", response.data)
         with self.Session.begin() as session:
             config = session.scalar(
                 select(InstagramAutomationConfig).where(
