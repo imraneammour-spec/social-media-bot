@@ -543,7 +543,7 @@
                         <span id="overviewStoriesBadge" class="overview-pill">—</span>
                     </div>
                     <div class="overview-row">
-                        <div><div class="overview-row-title">Post workflow</div><div class="overview-row-sub">Create a Post Kit with Gemini, then publish manually in Instagram.</div></div>
+                        <div><div class="overview-row-title">Post workflow</div><div class="overview-row-sub">Write the Post Kit yourself, then publish manually in Instagram. AI generation is disabled in Postenza v2.</div></div>
                         <span class="overview-pill">Manual</span>
                     </div>
                     <div class="overview-actions">
@@ -573,20 +573,20 @@
         <div class="grid">
             <section class="card">
                 <h2>1. Upload Post</h2>
-                <div class="view-note">Posts are now manual-publish only. Upload the image or carousel here and Gemini will prepare everything for you.</div>
+                <div class="view-note">Posts are now manual-publish only. Upload the image here and write the caption yourself — AI post-kit generation is disabled in Postenza v2.</div>
                 <label class="upload" for="images">
                     <div><strong>Upload images</strong><br><br>Click here to select your Instagram post images.</div>
                 </label>
                 <input id="images" type="file" accept="image/jpeg,image/png,image/webp" multiple>
                 <div id="preview" class="preview-images"></div>
-                <button id="generateButton" class="btn btn-primary" type="button">Generate Post Kit with Gemini ✨</button>
+                <button id="generateButton" class="btn btn-primary" type="button" disabled>Post Kit generation disabled in v2</button>
                 <div id="generationMessage" class="message"></div>
             </section>
 
             <section class="card">
                 <h2>2. Post Kit</h2>
                 <label>Caption</label>
-                <textarea id="caption" placeholder="Gemini will generate the Instagram caption here..."></textarea>
+                <textarea id="caption" placeholder="Write the Instagram caption here..."></textarea>
                 <button class="btn btn-secondary copy-post-field" type="button" data-copy-target="caption">Copy Caption</button>
 
                 <label>Call to Action</label>
@@ -602,11 +602,10 @@
         <div class="section-title">Music Suggestions</div>
         <section class="card">
             <div class="view-note">
-                Gemini suggests 5 recognizable tracks that fit the post. Search the selected track in Instagram Music when you publish manually.
-                Suggestions are not claimed to be live Instagram trend rankings.
+                Music suggestions are disabled in Postenza v2. Search a track in Instagram Music when you publish manually.
             </div>
             <div id="musicSuggestions" class="music-suggestions">
-                <div class="view-note">Generate the Post Kit to get music suggestions.</div>
+                <div class="view-note">Music suggestions are disabled in Postenza v2.</div>
             </div>
         </section>
 
@@ -736,16 +735,15 @@
                 <section class="card">
                     <h2>Smart Content Planner</h2>
                     <div class="view-note">
-                        V0.2 analyzes your latest 30 Instagram posts and uses their real
-                        performance data to recommend the next content direction.
+                        Content planning is disabled in Postenza v2. Gemini is used only to extract prompts written in images.
                     </div>
-                    <button id="plannerAnalyzeButton" class="btn btn-primary" type="button">Analyze Instagram ✨</button>
-                    <div id="plannerStatus" class="planner-message">No analysis generated yet.</div>
+                    <button id="plannerAnalyzeButton" class="btn btn-primary" type="button" disabled>Content Planner disabled in v2</button>
+                    <div id="plannerStatus" class="planner-message">Content planning is disabled in Postenza v2.</div>
                 </section>
 
                 <section class="card">
                     <h2>Next post recommendation</h2>
-                    <div id="plannerEmpty" class="view-note">Press Analyze Instagram to generate a recommendation.</div>
+                    <div id="plannerEmpty" class="view-note">Content planning is disabled in Postenza v2.</div>
                     <div id="plannerResult" class="planner-result hidden">
                         <div class="planner-field">
                             <div class="planner-field-label">Recommended next post</div>
@@ -979,7 +977,7 @@ generateButton.addEventListener("click", async function () {
     });
 
     generateButton.disabled = true;
-    generateButton.textContent = "Generating with Gemini... ✨";
+    generateButton.textContent = "Generating Post Kit... ✨";
     setMessage("", "");
 
     try {
@@ -990,7 +988,7 @@ generateButton.addEventListener("click", async function () {
         });
         const data = await response.json();
         if (!response.ok) {
-            throw new Error(data.error || "Gemini generation failed.");
+            throw new Error(data.error || "Post Kit generation failed.");
         }
         caption.value = data.caption || "";
         cta.value = data.cta || "";
@@ -998,11 +996,11 @@ generateButton.addEventListener("click", async function () {
         renderMusicSuggestions(data.music_suggestions || []);
         setMessage("success", "Post Kit generated ✓ Copy the text, choose a track, then publish manually in Instagram.");
     } catch (error) {
-        console.error("Dashboard Gemini error:", error);
+        console.error("Dashboard Post Kit error:", error);
         setMessage("error", error.message);
     } finally {
         generateButton.disabled = false;
-        generateButton.textContent = "Generate with Gemini ✨";
+        generateButton.textContent = "Generate Post Kit ✨";
     }
 });
 
@@ -1779,7 +1777,7 @@ async function analyzeContentPlanner(forceAnalytics = false) {
             throw new Error("No Instagram posts are available for analysis.");
         }
 
-        status.textContent = "Gemini is finding the strongest content pattern...";
+        status.textContent = "Finding the strongest content pattern...";
 
         const response = await fetch("/api/content-planner", {
             method: "POST",
@@ -1818,7 +1816,7 @@ document.getElementById("plannerCreateDraft").addEventListener("click", function
     switchView("new");
     setMessage(
         "success",
-        "Content Planner kit loaded ✓ Upload the image or carousel, then generate the Post Kit with Gemini."
+        "Content Planner kit loaded ✓ Upload the image, then write the Post Kit yourself."
     );
     window.scrollTo({ top: 0, behavior: "smooth" });
 });
@@ -1831,7 +1829,7 @@ function renderCurrentView() {
         stories: ["Stories", "Publish or schedule Instagram Stories", ""],
         leads: ["Requests / Leads", "Instagram prompt requests and delivery status", ""],
         analytics: ["Analytics", "Live Instagram performance", ""],
-        planner: ["Content Planner", "V0.2 • AI recommendations from your latest 30 posts", ""],
+        planner: ["Content Planner", "Disabled in Postenza v2", ""],
         system: ["System Check", "V0.1 readiness • read-only diagnostics", ""]
     };
     const meta = names[currentView] || names.dashboard;

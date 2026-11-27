@@ -1378,10 +1378,13 @@ class TenantDashboardTest(unittest.TestCase):
         self.assertIn('for="automation_enabled"', page)
         self.assertIn('for="message_public_reply_enabled"', page)
         self.assertIn('for="link_public_reply_enabled"', page)
-        self.assertIn("Smart replies", page)
-        self.assertIn('for="smart_reply_enabled"', page)
-        self.assertIn('id="smart_reply_tone"', page)
-        self.assertIn('id="smart_reply_max_per_hour"', page)
+        # Postenza v2: no smart-reply controls — non-keyword comments
+        # always get the ready generic reply (see the notice instead).
+        self.assertIn("Replies to other comments", page)
+        self.assertIn("Generic reply:", page)
+        self.assertNotIn('for="smart_reply_enabled"', page)
+        self.assertNotIn('id="smart_reply_tone"', page)
+        self.assertNotIn('id="smart_reply_max_per_hour"', page)
 
     def test_automations_updates_smart_reply_settings_only_for_selected_account(self):
         self._login_as(self.owner_a)
@@ -1590,15 +1593,16 @@ class TenantDashboardTest(unittest.TestCase):
             ))
         page = self.client.get("/app/automations").get_data(as_text=True)
 
-        for label in ("Automation status", "Reply to matching comments", "Private message and follow-up", "Smart replies"):
+        for label in ("Automation status", "Reply to matching comments", "Private message and follow-up", "Replies to other comments"):
             self.assertIn(label, page)
         for field in (
             "automation_enabled",
             "message_public_reply_enabled",
             "message_followup_enabled",
-            "smart_reply_enabled",
         ):
             self.assertIn(f'id="{field}"', page)
+        # Postenza v2: no smart-reply controls on the page.
+        self.assertNotIn('id="smart_reply_enabled"', page)
         self.assertIn("Public replies appear on your Instagram post.", page)
         self.assertNotIn("Required system step", page)
 

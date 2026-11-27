@@ -134,7 +134,22 @@ class Phase7CScheduledPublishingTest(unittest.TestCase):
 
     def test_unsupported_content_type_fails_before_provider_or_credential_request(self):
         api = self._api()
-        item_id = self._scheduled(content_type="carousel")
+        # Pre-v2 row inserted directly: create_content_draft rejects
+        # non-image types in v2, but the publisher must still fail a
+        # legacy non-image row explicitly instead of publishing it.
+        with self.Session.begin() as session:
+            legacy = InstagramContentItem(
+                instagram_account_id=self.account_a.id,
+                status="scheduled",
+                content_type="carousel",
+                caption="Legacy carousel",
+                media_url="https://example.test/carousel.jpg",
+                cover_url="https://example.test/carousel.jpg",
+                scheduled_for=self.now - timedelta(minutes=1),
+            )
+            session.add(legacy)
+            session.flush()
+            item_id = legacy.id
         invoked = []
 
         result = api.execute_due_scheduled_content(

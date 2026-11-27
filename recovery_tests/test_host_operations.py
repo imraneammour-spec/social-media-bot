@@ -53,6 +53,17 @@ def host_root(tmp_path, monkeypatch):
     # Tiny synthetic captures need a small test cap, not 7 GiB on a shared runner.
     # Production's default remains 2 GiB/file + its conservative scratch reserve.
     monkeypatch.setenv("POSTENZA_BACKUP_MAX_FILE_BYTES", str(4 * 1024 ** 2))
+    # run_backup also demands 3x the cap + a 1 GiB application reserve of free
+    # disk. pytest's tmp_path lives on /tmp, a 512M tmpfs here, so that check
+    # can never pass however small the cap is. Fake the free-space reading the
+    # same way test_backup_reserves_capacity_for_captures_bundle_and_ciphertext
+    # does; the reserve behaviour itself is covered by that test, which sets
+    # its own disk_usage value after this fixture.
+    from scripts import host_backup
+    monkeypatch.setattr(
+        host_backup.shutil, "disk_usage",
+        lambda root: SimpleNamespace(free=2 * 1024 ** 3),
+    )
     root = tmp_path / "disposable-host"
     recovered = root / "backups" / "production-recovery"
     recovered.mkdir(parents=True)

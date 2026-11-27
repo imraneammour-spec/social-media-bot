@@ -1005,6 +1005,7 @@ def content_drafts(
             "updated_at": _timestamp(draft.updated_at) or "",
             "media_url": preview_url,
             "media_link": preview_url,
+            "video_url": draft.media_url if draft.content_type == "reel" else None,
             "scheduled_for": _timestamp(draft.scheduled_for),
             "published_at": _timestamp(draft.published_at),
         })

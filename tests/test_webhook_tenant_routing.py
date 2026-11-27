@@ -693,19 +693,25 @@ class OAuthCommentAutomationConfigTest(unittest.TestCase):
         public_reply.assert_called_once()
         prompt_page.assert_not_called()
 
-    def test_disabled_smart_reply_does_not_reply_to_a_normal_comment(self):
+    def test_disabled_smart_reply_flag_no_longer_silences_a_normal_comment(self):
+        # Postenza v2: the old smart_reply_enabled flag no longer gates
+        # replies — a normal comment always gets the ready generic reply.
         self._set_config(
             self.primary_external_id,
             trigger_keywords=["prompt"],
             smart_reply_enabled=False,
         )
-        with patch.object(self.module, "generate_oauth_smart_reply") as generate, patch.object(
-            self.module, "send_oauth_public_comment_reply"
+        with patch.object(self.module, "generate_oauth_smart_reply", return_value="شكرا على رسالتك، غادي نجاوبك قريبا") as generate, patch.object(
+            self.module, "send_oauth_public_comment_reply", return_value=True
         ) as public_reply:
             self._process(self.primary_external_id, "smart-disabled-comment", "How does this work?")
 
-        generate.assert_not_called()
-        public_reply.assert_not_called()
+        generate.assert_called_once()
+        public_reply.assert_called_once()
+        self.assertEqual(
+            public_reply.call_args.kwargs["message"],
+            "شكرا على رسالتك، غادي نجاوبك قريبا",
+        )
 
     def test_keyword_automation_never_generates_a_smart_reply(self):
         self._set_config(

@@ -199,7 +199,7 @@ class CustomerOnboardingFlowTest(unittest.TestCase):
                 self.assertTrue(response.headers["Location"].endswith(expected_suffix))
                 with self.Session() as session:
                     profile = session.get(UserOnboardingProfile, user_id)
-                    self.assertEqual(profile.selected_plan, "agency")
+                    self.assertEqual(profile.selected_plan, "business")  # legacy "agency" normalizes to "business"
                     self.assertIsNotNone(profile.completed_at)
                     user = session.get(User, user_id)
                     self.assertEqual(user.status, "active")

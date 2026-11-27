@@ -1,6 +1,7 @@
 import tempfile
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,6 +18,7 @@ from auth import (
 )
 from database.models import (
     Base,
+    BillingSubscription,
     InstagramAccount,
     InstagramCredential,
     User,
@@ -210,6 +212,16 @@ class InstagramConnectionCallbackTest(unittest.TestCase):
         """OAuth completion keeps the newly connected account in app context."""
 
         with self.Session.begin() as session:
+            # Trial allows 1 account; connecting a second one needs a paid
+            # plan (Pro: 3). Without this the limit rejects the callback and
+            # no new account is persisted at all.
+            session.add(BillingSubscription(
+                user_id=self.user_id,
+                plan="pro",
+                status="active",
+                test_mode=False,
+                renews_at=datetime.now(timezone.utc) + timedelta(days=30),
+            ))
             session.add(
                 InstagramAccount(
                     user_id=self.user_id,

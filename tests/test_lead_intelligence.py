@@ -189,7 +189,9 @@ class LeadIntelligenceTest(unittest.TestCase):
         self.assertEqual(analysis.intent, "unclear")
         self.assertEqual(analysis.priority, "low")
 
-    def test_analyze_action_persists_valid_advisory_without_changing_manual_stage(self):
+    def test_analyze_action_is_disabled_in_v2_and_persists_nothing(self):
+        # Postenza v2: POST /app/leads/analyze answers 410 and never runs
+        # any analyzer — no Gemini, no persistence.
         self._login_as_owner_a()
         received_contexts = []
 
@@ -211,20 +213,15 @@ class LeadIntelligenceTest(unittest.TestCase):
             },
         )
 
-        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.status_code, 410)
+        self.assertIn("disabled in Postenza v2", response.get_data(as_text=True))
         lead = self._lead(self.lead_a.id)
         self.assertEqual(lead.lead_status, "new")
-        self.assertEqual(lead.ai_intent, "prompt_request")
-        self.assertEqual(lead.ai_priority, "medium")
-        self.assertEqual(lead.ai_summary, "Requested prepared prompts from one recorded post.")
-        self.assertEqual(
-            lead.ai_suggested_followup,
-            "Wait for another interaction before following up.",
-        )
-        self.assertIsNotNone(lead.ai_analyzed_at)
-        self.assertEqual(len(received_contexts), 1)
+        self.assertIsNone(lead.ai_intent)
+        self.assertIsNone(lead.ai_analyzed_at)
+        self.assertEqual(received_contexts, [])
 
-    def test_failed_or_invalid_reanalysis_preserves_previous_valid_intelligence(self):
+    def test_disabled_reanalysis_preserves_previous_valid_intelligence(self):
         self._login_as_owner_a()
         with self.Session.begin() as session:
             lead = session.get(InstagramPromptRequest, self.lead_a.id)
@@ -239,13 +236,13 @@ class LeadIntelligenceTest(unittest.TestCase):
             f"/app/leads/analyze?account={self._account_reference(self.account_a)}",
             data={"csrf_token": self.CSRF_TOKEN, "lead_action": self._analysis_reference(self.account_a, self.lead_a)},
         )
-        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.status_code, 410)
         lead = self._lead(self.lead_a.id)
         self.assertEqual(lead.ai_intent, "potential_customer")
         self.assertEqual(lead.ai_priority, "high")
         self.assertEqual(lead.ai_summary, "Previous safe summary.")
 
-    def test_analysis_action_rejects_foreign_lead_and_requires_csrf(self):
+    def test_analysis_action_is_disabled_before_lead_resolution_but_still_requires_csrf(self):
         self._login_as_owner_a()
         calls = []
         self.app.extensions["lead_intelligence_analyzer"] = lambda context: calls.append(context)
@@ -259,11 +256,11 @@ class LeadIntelligenceTest(unittest.TestCase):
             f"/app/leads/analyze?account={account_reference}",
             data={"lead_action": self._analysis_reference(self.account_a, self.lead_a)},
         )
-        self.assertEqual(foreign.status_code, 404)
+        self.assertEqual(foreign.status_code, 410)
         self.assertEqual(csrf_failure.status_code, 400)
         self.assertEqual(calls, [])
 
-    def test_leads_render_not_analyzed_then_safe_intelligence_without_ai_on_get(self):
+    def test_leads_render_not_analyzed_and_analysis_button_is_gone(self):
         self._login_as_owner_a()
         calls = []
         self.app.extensions["lead_intelligence_analyzer"] = lambda context: calls.append(context)
@@ -271,9 +268,12 @@ class LeadIntelligenceTest(unittest.TestCase):
         # /app/leads redirects to the merged engagement view (section=leads).
         before = self.client.get(url, follow_redirects=True).get_data(as_text=True)
         self.assertIn("Not analyzed", before)
-        self.assertIn("Analyze lead", before)
+        self.assertIn("Lead analysis is disabled in Postenza v2.", before)
+        self.assertNotIn("Analyze lead", before)
+        self.assertNotIn("Refresh analysis", before)
         self.assertEqual(calls, [])
 
+        # Previously stored advisory fields stay visible read-only.
         with self.Session.begin() as session:
             lead = session.get(InstagramPromptRequest, self.lead_a.id)
             lead.ai_intent = "prompt_request"
@@ -286,7 +286,7 @@ class LeadIntelligenceTest(unittest.TestCase):
         self.assertIn("Medium", after)
         self.assertIn("Safe summary &lt;script&gt;must be escaped&lt;/script&gt;.", after)
         self.assertIn("Wait for another interaction.", after)
-        self.assertIn("Refresh analysis", after)
+        self.assertNotIn("Refresh analysis", after)
         self.assertEqual(calls, [])
 
 

@@ -142,6 +142,11 @@ class SchedulerConfigurationTest(unittest.TestCase):
             runtime["process_due_followups"] = lambda: calls.append("followups")
             runtime["process_due_oauth_webhook_work"] = lambda: calls.append("oauth_ingress")
             runtime["process_due_oauth_followups"] = lambda: calls.append("oauth_followups")
+            # dashboard_scheduler_loop also calls these three; the AST loader
+            # only extracts the loop itself, so stub them like the rest.
+            runtime["process_oauth_maintenance"] = lambda: calls.append("maintenance")
+            runtime["process_trial_reminders"] = lambda: calls.append("trial")
+            runtime["process_due_tenant_content"] = lambda: calls.append("tenant")
             runtime["time"] = SimpleNamespace(
                 sleep=lambda seconds: (_ for _ in ()).throw(StopSchedulerLoop(seconds))
             )
@@ -151,7 +156,8 @@ class SchedulerConfigurationTest(unittest.TestCase):
 
             self.assertEqual(stopped.exception.args, (15,))
             self.assertEqual(calls, [
-                "daily", "stories", "followups", "oauth_ingress", "oauth_followups",
+                "maintenance", "trial", "daily", "stories", "followups",
+                "oauth_ingress", "oauth_followups", "tenant",
             ])
 
 

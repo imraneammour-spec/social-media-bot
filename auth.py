@@ -121,9 +121,9 @@ ONBOARDING_SOURCE_OPTIONS = tuple(zip(ONBOARDING_SOURCE_VALUES, (
     "Other",
 )))
 ONBOARDING_PLAN_OPTIONS = tuple(zip(PLAN_VALUES, (
-    ("Free", "A simple starting preference for exploring Postenza."),
+    ("Trial", "A simple starting preference for exploring Postenza."),
     ("Pro", "A growth-focused preference for established Instagram workflows."),
-    ("Agency", "A service-focused preference for teams managing client work."),
+    ("Business", "A service-focused preference for teams managing client work."),
 )))
 
 F = TypeVar("F", bound=Callable)
@@ -525,6 +525,38 @@ def _smtp_configuration() -> dict[str, object] | None:
     }
 
 
+def _deliver_email(message: EmailMessage) -> bool:
+    """Deliver one already-built message with stdlib SMTP; False if unsent.
+
+    Silent on failure (no logging): callers decide what to log. Shares
+    the SMTP settings of the verification-mail path below.
+    """
+
+    configuration = _smtp_configuration()
+    if configuration is None:
+        return False
+    try:
+        if configuration["port"] == 465:
+            server = smtplib.SMTP_SSL(
+                str(configuration["host"]), int(configuration["port"]), timeout=30
+            )
+        else:
+            server = smtplib.SMTP(
+                str(configuration["host"]), int(configuration["port"]), timeout=30
+            )
+            if configuration["use_tls"]:
+                server.starttls()
+        with server:
+            if configuration["username"] and configuration["password"]:
+                server.login(
+                    str(configuration["username"]), str(configuration["password"])
+                )
+            server.send_message(message)
+    except (OSError, smtplib.SMTPException):
+        return False
+    return True
+
+
 def _send_email_message(address: str, verification_url: str) -> bool:
     """Send one plain-text verification email with stdlib SMTP only."""
 
@@ -563,6 +595,46 @@ def _send_email_message(address: str, verification_url: str) -> bool:
         current_app.logger.warning("Email verification message could not be sent.")
         return False
     return True
+
+
+def send_trial_reminder_email(user: User, days_remaining: int) -> bool:
+    """Email a trial-expiry reminder; True only when it was delivered.
+
+    Uses the same stdlib SMTP settings as verification email
+    (SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS/SMTP_FROM). Returns False
+    when SMTP is unconfigured or delivery fails, so the reminder job
+    counts it as due-but-unsent and retries on the next run instead of
+    marking it sent.
+    """
+
+    if not user.email:
+        return False
+    billing_url = (
+        os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
+        or "https://postenza.app"
+    ) + "/app/billing"
+    message = EmailMessage()
+    configuration = _smtp_configuration()
+    message["From"] = (
+        str(configuration["sender"]) if configuration else "no-reply@postenza.app"
+    )
+    message["To"] = str(user.email)
+    message["Subject"] = (
+        f"Your Postenza free trial ends in {days_remaining} days"
+    )
+    message.set_content(
+        "Hi,\n\n"
+        f"Your Postenza free trial ends in {days_remaining} days. "
+        "After that, scheduled posts, AI replies and new Instagram "
+        "connections stop until you choose a paid plan -- your account "
+        "and data stay as they are.\n\n"
+        f"Choose a plan here: {billing_url}\n\n"
+        "Thanks for trying Postenza.\n"
+    )
+    delivered = _deliver_email(message)
+    if not delivered:
+        current_app.logger.warning("Trial reminder email could not be sent.")
+    return delivered
 
 
 def send_email_verification(user: User) -> str:
@@ -775,6 +847,8 @@ def register_auth_routes(app) -> None:
                     email=email,
                     display_name=display_name,
                     password_hash=generate_password_hash(password),
+                    # The 60-day free trial starts at registration.
+                    trial_started_at=datetime.now(timezone.utc),
                 )
                 db_session.add(user)
                 try:

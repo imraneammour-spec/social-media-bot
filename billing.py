@@ -10,13 +10,17 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
 import requests
-from flask import Blueprint, current_app, g, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, current_app, g, jsonify, redirect, render_template, request, session, url_for
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from auth import csrf_token, get_current_user, login_required, request_csrf_token, validate_csrf_token
-from database.billing import BillingLimitError, consume_usage, effective_plan, lock_user, plans, usage_snapshot, utc
-from database.models import BillingCheckout, BillingSubscription, BillingUsage, BillingWebhook
+from dashboard.i18n import LOCALE_META, locale_context, session_locale, translate
+from database.billing import (TRIAL_DAYS, TRIAL_REMINDER_DAYS, CREDIT_PACKS, BillingLimitError,
+                             add_credits, consume_ai_usage, credit_packs,
+                             credits_alert, credits_snapshot, effective_plan, lock_user, plans,
+                             refund_ai_usage, resolve_trial_start, usage_snapshot, utc)
+from database.models import BillingCheckout, BillingCreditLot, BillingSubscription, BillingWebhook
 
 
 class BillingProviderError(ValueError):
@@ -42,10 +46,20 @@ def mode():
 
 
 def variants():
+    """Lemon Squeezy variant ids per paid plan and interval.
+
+    Env vars: LEMON_<STARTER|PRO|BUSINESS>_<MONTHLY|ANNUAL>_VARIANT_ID.
+    LEMON_AGENCY_* is still read as a legacy alias for Business (Business
+    was previously called Agency); a BUSINESS var wins when both are set.
+    No variant is configured by default, so configured() stays False and
+    checkout stays disabled until billing is set up by hand.
+    """
     result = {}
-    for plan in ("pro", "agency"):
+    for plan in ("starter", "pro", "business"):
         for interval in ("monthly", "annual"):
             value = os.getenv(f"LEMON_{plan.upper()}_{interval.upper()}_VARIANT_ID", "")
+            if plan == "business" and not value:
+                value = os.getenv(f"LEMON_AGENCY_{interval.upper()}_VARIANT_ID", "")
             if value:
                 if not value.isdigit() or value in result:
                     raise BillingProviderError("Invalid payment plan configuration.")
@@ -55,6 +69,44 @@ def variants():
 
 def configured():
     return bool(mode() != "disabled" and os.getenv("LEMON_API_KEY") and os.getenv("LEMON_STORE_ID") and os.getenv("LEMON_WEBHOOK_SECRET") and variants())
+
+
+def credit_variants():
+    """Lemon Squeezy variant ids for the one-time credit packs.
+
+    Env vars: LEMON_CREDITS_<500|1200|2500>_VARIANT_ID, one per pack in
+    database/billing.py CREDIT_PACKS. Each variant must be created by hand
+    in Lemon Squeezy as a one-time (non-subscription) product variant;
+    no variant is configured by default, so credit checkout stays
+    disabled until billing is set up by hand, exactly like subscriptions.
+    A credit variant id must not collide with a subscription variant id.
+    Returns {variant_id: pack_key}.
+    """
+    result = {}
+    subscription_variants = variants()
+    for pack_key, pack in CREDIT_PACKS.items():
+        value = os.getenv(f"LEMON_CREDITS_{pack['credits']}_VARIANT_ID", "")
+        if value:
+            if not value.isdigit() or value in result or value in subscription_variants:
+                raise BillingProviderError("Invalid credit pack configuration.")
+            result[value] = pack_key
+    return result
+
+
+def credits_configured():
+    """True only when credit checkout can actually sell a pack."""
+    return bool(mode() != "disabled" and os.getenv("LEMON_API_KEY") and os.getenv("LEMON_STORE_ID") and os.getenv("LEMON_WEBHOOK_SECRET") and credit_variants())
+
+
+def credit_offers():
+    """Packs for the billing page, each with its variant id (or None).
+
+    A pack without a variant is shown but not buyable: its variant still
+    has to be created by hand in Lemon Squeezy.
+    """
+    variant_by_pack = {pack_key: variant for variant, pack_key in credit_variants().items()}
+    return [{**pack, "key": key, "variant": variant_by_pack.get(key)}
+            for key, pack in credit_packs().items()]
 
 
 def provider_request(method, path, **kwargs):
@@ -172,6 +224,45 @@ def synchronize(db, subscription_id, data, *, checkout_id=None, user_id=None):
     return subscription
 
 
+def synchronize_credit_order(db, order_id, data, *, checkout_id=None, user_id=None):
+    """Grant a paid one-time credit order from a fresh API snapshot.
+
+    Mirrors synchronize() for subscriptions: ownership comes from the
+    checkout intent (custom_data), the pack comes from the fresh order's
+    variant, and the grant is idempotent -- a lot already recorded for
+    this provider order id is returned without crediting twice, so a
+    replayed webhook can never double-grant. Only "paid" orders grant.
+    """
+    if data.get("type") != "orders" or str(data.get("id")) != order_id:
+        raise BillingProviderError("Order mismatch.")
+    attributes = provider_attributes(data)
+    if attributes.get("status") != "paid":
+        raise BillingProviderError("Order is not paid.")
+    first_item = attributes.get("first_order_item") or {}
+    variant = str(first_item.get("variant_id") or attributes.get("variant_id") or "")
+    pack_key = credit_variants().get(variant)
+    if pack_key is None:
+        raise BillingProviderError("Unrecognized credit variant.")
+    existing = db.scalar(select(BillingCreditLot).where(BillingCreditLot.provider_order_id == order_id))
+    if existing is not None:
+        if user_id is not None and str(existing.user_id) != str(user_id):
+            raise BillingProviderError("Checkout ownership could not be verified.")
+        return existing
+    checkout_key = uuid.UUID(str(checkout_id))
+    checkout_owner = db.scalar(select(BillingCheckout.user_id).where(BillingCheckout.id == checkout_key))
+    if checkout_owner is None or str(checkout_owner) != str(user_id):
+        raise BillingProviderError("Checkout ownership could not be verified.")
+    user_id = checkout_owner
+    lock_user(db, user_id)
+    checkout = db.get(BillingCheckout, checkout_key, populate_existing=True, with_for_update=True)
+    if not checkout or str(checkout.user_id) != str(user_id) or checkout.variant_id != variant or checkout.test_mode != attributes["test_mode"] or checkout.consumed_by not in {None, order_id}:
+        raise BillingProviderError("Checkout ownership could not be verified.")
+    if utc(checkout.created_at) < datetime.now(timezone.utc) - timedelta(hours=48):
+        raise BillingProviderError("Checkout expired.")
+    checkout.consumed_by = order_id
+    return add_credits(db, user_id, pack_key, provider_order_id=order_id)
+
+
 def reconcile_subscriptions(factory):
     if not configured():
         return 0
@@ -213,7 +304,22 @@ def register_billing(app):
         with factory()() as db:
             subscription = db.get(BillingSubscription, user.id)
             usage = usage_snapshot(db, user.id)
-            current_plan = plans()[effective_plan(subscription)]
+            credits = credits_snapshot(db, user.id)
+            credit_alert = credits_alert(db, user.id)
+            # True when the monthly AI allowance is used up but credits
+            # remain: AI now draws on credits instead of being blocked.
+            ai_row = next((row for row in usage if row["metric"] == "ai"), None)
+            ai_on_credits = bool(
+                ai_row and ai_row["limit"] >= 0
+                and ai_row["used"] >= ai_row["limit"] and credits["balance"] > 0
+            )
+            # Show the real plan: an expired trial must read "Trial expired",
+            # not "Trial" (usage_snapshot resolves the start read-only, so
+            # pass the same value here explicitly).
+            current_plan = plans()[effective_plan(
+                subscription,
+                trial_started_at=resolve_trial_start(db, user.id, stamp=False),
+            )]
         if configured() and subscription and subscription.provider_id:
             try:
                 data = provider_request("GET", "subscription-invoices", params={"filter[subscription_id]": subscription.provider_id, "page[size]": 25})
@@ -226,9 +332,15 @@ def register_billing(app):
                                      "status": attributes.get("status"), "url": hosted_url(link) if link else None})
             except BillingProviderError as exc:
                 error = str(exc)
+        locale = locale_context(session_locale(session))
         return render_template("billing.html", current_user=user, subscription=subscription,
             current_plan=current_plan, usage=usage, invoices=invoices, error=error,
-            csrf_token=csrf_token(), plans=plans(), variants=variants(), available=configured(), mode=mode())
+            csrf_token=csrf_token(), plans=plans(), variants=variants(), available=configured(), mode=mode(),
+            trial_days=TRIAL_DAYS, trial_reminder_days=TRIAL_REMINDER_DAYS,
+            credits=credits, credit_alert=credit_alert, ai_on_credits=ai_on_credits,
+            credit_offers=credit_offers(), credits_available=credits_configured(),
+            locale=locale, locale_options=LOCALE_META,
+            t=lambda key, **values: translate(locale["code"], key, **values))
 
     @routes.post("/app/billing/checkout")
     @login_required
@@ -283,6 +395,64 @@ def register_billing(app):
             raise BillingProviderError("Checkout environment mismatch.")
         return redirect(hosted_url(result["attributes"]["url"]), 303)
 
+    @routes.post("/app/billing/credits/checkout")
+    @login_required
+    def credits_checkout():
+        """Start a one-time Lemon Squeezy checkout for one credit pack.
+
+        Same intent lifecycle as the subscription checkout: a definitive
+        provider failure frees the intent for retry, an ambiguous failure
+        keeps it pending so a duplicate checkout cannot be created.
+        Credits supplement any plan (including the free trial); unlike a
+        subscription checkout there is no "existing subscription" conflict.
+        Until the pack variants are created by hand in Lemon Squeezy,
+        credit_variants() is empty and this route answers 503.
+        """
+        if not validate_csrf_token(request_csrf_token()):
+            return jsonify(error="Invalid form token."), 400
+        variant = request.form.get("variant")
+        pack_key = credit_variants().get(variant) if variant else None
+        if pack_key is None or not credits_configured():
+            return jsonify(error="Credit packs are not available for purchase yet. The variants still have to be set up in Lemon Squeezy."), 503
+        user = get_current_user()
+        with factory().begin() as db:
+            lock_user(db, user.id)
+            # Only a pending *credit* checkout blocks a new one; a pending
+            # subscription checkout is a different purchase and does not.
+            pending = db.scalar(select(BillingCheckout).where(BillingCheckout.user_id == user.id,
+                BillingCheckout.consumed_by.is_(None), BillingCheckout.created_at > datetime.now(timezone.utc) - timedelta(hours=1),
+                BillingCheckout.variant_id.in_(list(credit_variants().keys()))))
+            if pending:
+                return jsonify(error="A credit checkout is already in progress. Complete it or wait for it to expire before trying again."), 409
+            intent = BillingCheckout(user_id=user.id, variant_id=variant, test_mode=mode() == "test")
+            db.add(intent)
+            db.flush()
+            intent_id = str(intent.id)
+        origin = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+        attributes = {"test_mode": mode() == "test", "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+            "checkout_data": {"email": user.email, "custom": {"user_id": str(user.id), "checkout_id": intent_id, "pack_key": pack_key}},
+            "product_options": {"enabled_variants": [int(variant)], "redirect_url": origin + "/app/billing"}}
+        payload = {"data": {"type": "checkouts", "attributes": attributes, "relationships": {
+            "store": {"data": {"type": "stores", "id": os.environ["LEMON_STORE_ID"]}},
+            "variant": {"data": {"type": "variants", "id": variant}}}}}
+        try:
+            result = provider_request("POST", "checkouts", json=payload)
+        except BillingProviderAmbiguousError:
+            # The checkout may have been created server-side; keep the intent
+            # pending so the user cannot immediately create a duplicate.
+            raise
+        except BillingProviderError:
+            # Definitive failure: the provider never created a checkout, so
+            # the intent would otherwise block retries with 409 for an hour.
+            with factory().begin() as db:
+                stale = db.get(BillingCheckout, uuid.UUID(intent_id))
+                if stale is not None and stale.consumed_by is None:
+                    db.delete(stale)
+            raise
+        if result.get("attributes", {}).get("test_mode") != (mode() == "test"):
+            raise BillingProviderError("Checkout environment mismatch.")
+        return redirect(hosted_url(result["attributes"]["url"]), 303)
+
     @routes.post("/app/billing/portal")
     @login_required
     def portal():
@@ -314,6 +484,28 @@ def register_billing(app):
             data = payload["data"]
             if not isinstance(event, str):
                 raise ValueError
+            if event == "order_created":
+                # One-time credit purchase: verify against a fresh API
+                # snapshot, never the webhook payload alone. An unpaid
+                # order grants nothing and is ignored (no retry storm).
+                if data.get("type") != "orders":
+                    raise ValueError
+                order_id = str(data["id"])
+                if not order_id.isdigit():
+                    raise ValueError
+                provider_attributes(data)
+                digest = hashlib.sha256(raw).hexdigest()
+                with factory()() as db:
+                    if db.get(BillingWebhook, digest):
+                        return jsonify(status="duplicate")
+                fresh = provider_request("GET", "orders/" + order_id)
+                if (fresh.get("attributes") or {}).get("status") != "paid":
+                    return jsonify(status="ignored")
+                custom = payload["meta"].get("custom_data", {})
+                with factory().begin() as db:
+                    synchronize_credit_order(db, order_id, fresh, checkout_id=custom.get("checkout_id"), user_id=custom.get("user_id"))
+                    db.add(BillingWebhook(digest=digest, event_name=event[:64]))
+                return jsonify(status="processed")
             if not event.startswith("subscription_"):
                 return jsonify(status="ignored")
             attributes = provider_attributes(data)
@@ -358,8 +550,10 @@ def register_billing(app):
         user = get_current_user()
         if user:
             with factory().begin() as db:
-                period = consume_usage(db, user.id, "ai")
-            g.billing_ai_reservation = (user.id, period)
+                reservation = consume_ai_usage(db, user.id)
+            # Plan allowance first, credits second; the refund below needs
+            # to know which source was used.
+            g.billing_ai_reservation = {"user_id": user.id, **reservation}
 
     @app.after_request
     def refund_failed_ai(response):
@@ -367,11 +561,7 @@ def register_billing(app):
         if reservation and response.status_code >= 400:
             try:
                 with factory().begin() as db:
-                    user_id, period = reservation
-                    lock_user(db, user_id)
-                    usage = db.get(BillingUsage, (user_id, period, "ai"))
-                    if usage:
-                        usage.quantity = max(0, usage.quantity - 1)
+                    refund_ai_usage(db, reservation)
             except SQLAlchemyError:
                 current_app.logger.error("billing_usage_refund_failed")
         return response

@@ -25,6 +25,25 @@ from typing import Any
 
 _WORD_PATTERN = re.compile(r"\b\w+\b")
 
+# Postenza v2 reply policy (owner rule — replies must never stop):
+# there is no AI-generated "smart reply" any more. A comment that does
+# not match a trigger keyword always gets this ready generic reply
+# (or the account's own configured generic reply text when one exists).
+# It is a plain constant on purpose: replying must never depend on an
+# AI provider being configured, reachable, or returning text.
+DEFAULT_GENERIC_REPLY = "شكرا على رسالتك، غادي نجاوبك قريبا"
+
+
+def generic_ready_reply(configured_text=None):
+    """Return the ready generic reply for a non-keyword comment.
+
+    ``configured_text`` is an account-configured generic reply when one
+    exists; otherwise the shared default above is used. Never returns "".
+    """
+
+    text = str(configured_text or "").strip()
+    return text or DEFAULT_GENERIC_REPLY
+
 
 def parse_comment_event(value: Any) -> dict[str, str]:
     """Normalize one Instagram comment webhook payload to plain strings.

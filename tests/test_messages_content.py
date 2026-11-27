@@ -488,7 +488,7 @@ class MessagesContentDashboardTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("No tracked Instagram posts yet", response.get_data(as_text=True))
 
-    def test_content_renders_image_only_workflow_and_safe_lifecycle_labels(self):
+    def test_content_renders_image_and_reel_workflow_and_safe_lifecycle_labels(self):
         """A publishing UI mutation cannot re-enable unsupported formats or expose provider errors."""
         self._login_as(self.owner_a)
         ref = self._reference(self.owner_a, self.account_a)
@@ -531,11 +531,17 @@ class MessagesContentDashboardTest(unittest.TestCase):
 
         page = self.client.get(f"/app/content?account={ref}").get_data(as_text=True)
 
+        self.assertIn("Image and Reel publishing", page)
         self.assertIn('name="content_type" value="image"', page)
-        self.assertIn("Create image post", page)
+        self.assertIn('name="content_type" value="reel"', page)
+        self.assertIn("Create post", page)
         self.assertIn('type="file" name="image_file"', page)
         self.assertIn('accept="image/jpeg,.jpg,.jpeg"', page)
         self.assertIn("Use a public image URL instead", page)
+        self.assertIn('type="file" name="video_file"', page)
+        self.assertIn('accept="video/mp4,.mp4,.mov"', page)
+        self.assertIn("Use a public video URL instead", page)
+        self.assertIn("Carousel posts are not available yet.", page)
         self.assertIn('name="submit_action" value="save"', page)
         self.assertIn('name="submit_action" value="schedule"', page)
         self.assertIn("Scheduling uses Africa/Casablanca time.", page)
@@ -546,7 +552,7 @@ class MessagesContentDashboardTest(unittest.TestCase):
         self.assertIn("Published", page)
         self.assertIn("Needs attention", page)
         self.assertIn("Instagram could not publish this image", page)
-        for unsupported in ("video", "carousel", "reel"):
+        for unsupported in ("video", "carousel"):
             self.assertNotIn(f'<option value="{unsupported}">', page)
         self.assertNotIn("provider_rejected", page)
 
@@ -718,6 +724,86 @@ class MessagesContentDashboardTest(unittest.TestCase):
             ))
         self.assertEqual(item.media_url, "https://images.example.com/fallback.jpg")
         self.assertEqual(item.metadata_json, {"content_type": "image"})
+
+    def test_content_reel_create_via_public_video_url_creates_reel_draft(self):
+        """A Reel draft can be created from a public MP4 link, with an optional JPEG cover."""
+        self._login_as(self.owner_a)
+        ref = self._reference(self.owner_a, self.account_a)
+        page = self.client.get(f"/app/content?account={ref}").get_data(as_text=True)
+        csrf = re.search(r'name="csrf_token" value="([^"]+)"', page).group(1)
+
+        response = self.client.post(
+            f"/app/content/drafts/create?account={ref}",
+            data={
+                "csrf_token": csrf,
+                "content_type": "reel",
+                "caption": "New Reel draft",
+                "submit_action": "save",
+                "video_url": "https://videos.example.com/reel.mp4",
+                "cover_url": "https://images.example.com/cover.jpg",
+            },
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 303)
+        with self.Session() as session:
+            item = session.scalar(select(InstagramContentItem).where(
+                InstagramContentItem.instagram_account_id == self.account_a.id
+            ))
+        self.assertIsNotNone(item)
+        self.assertEqual(item.content_type, "reel")
+        self.assertEqual(item.status, "draft")
+        self.assertEqual(item.media_url, "https://videos.example.com/reel.mp4")
+        self.assertEqual(item.cover_url, "https://images.example.com/cover.jpg")
+        self.assertEqual(item.metadata_json, {"content_type": "reel"})
+
+    def test_content_reel_create_rejects_bad_video_url_and_plain_video_type(self):
+        """An image link as a Reel, or a plain video type, fails with a clear message and no row."""
+        self._login_as(self.owner_a)
+        ref = self._reference(self.owner_a, self.account_a)
+        page = self.client.get(f"/app/content?account={ref}").get_data(as_text=True)
+        csrf = re.search(r'name="csrf_token" value="([^"]+)"', page).group(1)
+
+        bad_url = self.client.post(
+            f"/app/content/drafts/create?account={ref}",
+            data={
+                "csrf_token": csrf,
+                "content_type": "reel",
+                "caption": "Not a video",
+                "submit_action": "save",
+                "video_url": "https://images.example.com/not-a-video.jpg",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(bad_url.status_code, 400)
+        self.assertIn(
+            "Enter a public HTTPS MP4 or MOV video link",
+            bad_url.get_data(as_text=True),
+        )
+
+        bad_type = self.client.post(
+            f"/app/content/drafts/create?account={ref}",
+            data={
+                "csrf_token": csrf,
+                "content_type": "video",
+                "caption": "Plain video is not a Reel",
+                "submit_action": "save",
+                "video_url": "https://videos.example.com/reel.mp4",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(bad_type.status_code, 400)
+        self.assertIn(
+            "Only image posts and Reels are supported in Postenza v2.",
+            bad_type.get_data(as_text=True),
+        )
+        with self.Session() as session:
+            self.assertEqual(
+                session.scalars(select(InstagramContentItem).where(
+                    InstagramContentItem.instagram_account_id == self.account_a.id
+                )).all(),
+                [],
+            )
 
     def test_content_upload_errors_are_safe_and_do_not_create_rows(self):
         """Validation, configuration, and provider failures must remain user-facing and secret-free."""
@@ -892,9 +978,9 @@ class MessagesContentDashboardTest(unittest.TestCase):
             data={
                 "csrf_token": rendered_csrf_token,
                 "draft_ref": rendered_draft_ref,
-                "content_type": "video",
+                "content_type": "image",
                 "caption": "Updated caption",
-                "media_url": "https://cdn.example.com/updated.mp4",
+                "media_url": "https://cdn.example.com/updated.jpg",
             },
             follow_redirects=False,
         )
@@ -905,8 +991,32 @@ class MessagesContentDashboardTest(unittest.TestCase):
         with self.Session.begin() as session:
             updated = session.get(InstagramContentItem, draft.id)
             self.assertEqual(updated.caption, "Updated caption")
-            self.assertEqual(updated.content_type, "video")
-            self.assertEqual(updated.media_url, "https://cdn.example.com/updated.mp4")
+            self.assertEqual(updated.content_type, "image")
+            self.assertEqual(updated.media_url, "https://cdn.example.com/updated.jpg")
+
+        # Postenza v2: a plain video edit is rejected with a clear message
+        # and nothing is persisted. (Reels are supported; plain "video"
+        # is not, because Meta deprecated media_type VIDEO — use REELS.)
+        rejected = self.client.post(
+            f"/app/content/drafts/edit?account={ref}",
+            data={
+                "csrf_token": rendered_csrf_token,
+                "draft_ref": rendered_draft_ref,
+                "content_type": "video",
+                "caption": "Mutated caption",
+                "media_url": "https://cdn.example.com/updated.mp4",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(rejected.status_code, 400)
+        self.assertIn(
+            "Only image posts and Reels are supported in Postenza v2.",
+            rejected.get_data(as_text=True),
+        )
+        with self.Session.begin() as session:
+            unchanged = session.get(InstagramContentItem, draft.id)
+            self.assertEqual(unchanged.caption, "Updated caption")
+            self.assertEqual(unchanged.content_type, "image")
 
     def test_content_draft_edit_route_rejects_cross_account_and_invalid_input(self):
         """Cross-account edits and invalid payloads are rejected without partial persistence."""
