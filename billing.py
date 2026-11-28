@@ -18,7 +18,8 @@ from auth import csrf_token, get_current_user, login_required, request_csrf_toke
 from dashboard.i18n import LOCALE_META, locale_context, session_locale, translate
 from database.billing import (TRIAL_DAYS, TRIAL_REMINDER_DAYS, CREDIT_PACKS, BillingLimitError,
                              add_credits, consume_ai_usage, credit_packs,
-                             credits_alert, credits_snapshot, effective_plan, lock_user, plans,
+                             credits_alert, credits_snapshot, deduct_credits_for_refund,
+                             effective_plan, lock_user, plans,
                              refund_ai_usage, resolve_trial_start, usage_snapshot, utc)
 from database.models import BillingCheckout, BillingCreditLot, BillingSubscription, BillingWebhook
 
@@ -107,6 +108,23 @@ def credit_offers():
     variant_by_pack = {pack_key: variant for variant, pack_key in credit_variants().items()}
     return [{**pack, "key": key, "variant": variant_by_pack.get(key)}
             for key, pack in credit_packs().items()]
+
+
+def _refund_fraction(attributes):
+    """Share of a refunded credit order to claw back (0 < fraction <= 1).
+
+    A full refund is 1. A partial refund deducts the proportional share
+    when the fresh order snapshot carries a refunded amount; Lemon
+    Squeezy's order object carries no refunded amount, so a partial
+    refund without one falls back to the whole pack (approved 2026-11-28:
+    deduct all rather than guess) and the caller logs it.
+    """
+    refunded = attributes.get("refunded_amount")
+    total = attributes.get("total")
+    if (isinstance(refunded, (int, float)) and isinstance(total, (int, float))
+            and total > 0 and 0 < refunded <= total):
+        return refunded / total
+    return 1.0
 
 
 def provider_request(method, path, **kwargs):
@@ -506,6 +524,44 @@ def register_billing(app):
                     synchronize_credit_order(db, order_id, fresh, checkout_id=custom.get("checkout_id"), user_id=custom.get("user_id"))
                     db.add(BillingWebhook(digest=digest, event_name=event[:64]))
                 return jsonify(status="processed")
+            if event == "order_refunded":
+                # Automatic credit claw-back (decision 2026-11-28): a
+                # refunded credit purchase deducts its credits from the
+                # buyer's balance, capped at the balance so it can never
+                # go below zero. Verified against a fresh API snapshot,
+                # never the webhook payload alone. A refund for an order
+                # with no credit lot (e.g. a subscription order) deducts
+                # nothing and is ignored, never an error.
+                if data.get("type") != "orders":
+                    raise ValueError
+                order_id = str(data["id"])
+                if not order_id.isdigit():
+                    raise ValueError
+                provider_attributes(data)
+                fresh = provider_request("GET", "orders/" + order_id)
+                attributes = provider_attributes(fresh)
+                status = attributes.get("status")
+                if status not in {"refunded", "partially_refunded"} and attributes.get("refunded") is not True:
+                    return jsonify(status="ignored")
+                digest = hashlib.sha256(raw).hexdigest()
+                with factory().begin() as db:
+                    if db.get(BillingWebhook, digest):
+                        return jsonify(status="duplicate")
+                    lot = db.scalar(select(BillingCreditLot).where(
+                        BillingCreditLot.provider_order_id == order_id))
+                    if lot is None:
+                        return jsonify(status="ignored")
+                    pack_credits = CREDIT_PACKS[lot.pack_key]["credits"]
+                    fraction = _refund_fraction(attributes)
+                    if status == "partially_refunded" and fraction >= 1:
+                        # Partial refund, amount unknown: approved fallback
+                        # deducts the whole pack rather than guessing.
+                        current_app.logger.warning("billing_credit_partial_refund_unknown_fraction")
+                    to_deduct = max(0, int(round(pack_credits * fraction)))
+                    deducted = deduct_credits_for_refund(
+                        db, lot.user_id, to_deduct, provider_order_id=order_id)
+                    db.add(BillingWebhook(digest=digest, event_name=event[:64]))
+                return jsonify(status="processed", credits_deducted=deducted)
             if not event.startswith("subscription_"):
                 return jsonify(status="ignored")
             attributes = provider_attributes(data)

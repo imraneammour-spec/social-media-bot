@@ -121,9 +121,14 @@ ONBOARDING_SOURCE_OPTIONS = tuple(zip(ONBOARDING_SOURCE_VALUES, (
     "Other",
 )))
 ONBOARDING_PLAN_OPTIONS = tuple(zip(PLAN_VALUES, (
-    ("Trial", "A simple starting preference for exploring Postenza."),
-    ("Pro", "A growth-focused preference for established Instagram workflows."),
-    ("Business", "A service-focused preference for teams managing client work."),
+    ("Trial", "A simple starting preference for exploring Postenza.",
+     "$0 — free for 60 days · No card required"),
+    ("Starter", "A starter preference for consistent Instagram scheduling.",
+     "$9 per month · $7 per month billed annually (−20%)"),
+    ("Pro", "A growth-focused preference for established Instagram workflows.",
+     "$19 per month · $15 per month billed annually (−20%)"),
+    ("Business", "A service-focused preference for teams managing client work.",
+     "$39 per month · $31 per month billed annually (−20%)"),
 )))
 
 F = TypeVar("F", bound=Callable)

@@ -77,7 +77,7 @@ class UserOnboardingDomainTest(unittest.TestCase):
                 "other",
             ),
         )
-        self.assertEqual(PLAN_VALUES, ("trial", "pro", "business"))
+        self.assertEqual(PLAN_VALUES, ("trial", "starter", "pro", "business"))
 
     def test_server_derives_each_step_from_persisted_state(self):
         with self.Session.begin() as session:

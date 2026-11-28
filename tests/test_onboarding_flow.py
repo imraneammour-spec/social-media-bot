@@ -128,7 +128,14 @@ class CustomerOnboardingFlowTest(unittest.TestCase):
         self.assertEqual(source_response.status_code, 303)
         plan_page = self.client.get("/onboarding").get_data(as_text=True)
         self.assertIn("Step 3 of 4", plan_page)
-        self.assertEqual(plan_page.count("Pricing coming soon"), 3)
+        # Real prices on all four plan cards, never "Pricing coming soon".
+        self.assertNotIn("Pricing coming soon", plan_page)
+        for value in ("trial", "starter", "pro", "business"):
+            self.assertIn(f'value="{value}"', plan_page)
+        for price in ("$0", "$9", "$19", "$39"):
+            self.assertIn(price, plan_page)
+        self.assertIn("free for 60 days", plan_page)
+        self.assertIn("No card required", plan_page)
         self.assertIn("does not change your current access", plan_page)
 
         with self.Session() as session:
@@ -138,6 +145,43 @@ class CustomerOnboardingFlowTest(unittest.TestCase):
             self.assertEqual(profile.onboarding_source, "friend_colleague")
             self.assertIsNone(profile.selected_plan)
             self.assertIsNone(profile.completed_at)
+
+    def test_plan_step_shows_real_prices_in_all_three_languages_and_accepts_starter(self):
+        user_id = self._create_user("prices@example.test")
+        self._login(user_id)
+        self._post(step="profile", use_case="agency_clients", main_goal="multiple_accounts")
+        self._post(step="source", onboarding_source="friend_colleague")
+        expected = {
+            "en": ("$0 — free for 60 days · No card required",
+                   "$9 per month · $7 per month billed annually (−20%)",
+                   "$19 per month · $15 per month billed annually (−20%)",
+                   "$39 per month · $31 per month billed annually (−20%)"),
+            "fr": ("0 $ — gratuit pendant 60 jours · Aucune carte requise",
+                   "9 $ par mois · 7 $ par mois facturé annuellement (−20 %)",
+                   "19 $ par mois · 15 $ par mois facturé annuellement (−20 %)",
+                   "39 $ par mois · 31 $ par mois facturé annuellement (−20 %)"),
+            "ar": ("0 دولار — مجاني لمدة 60 يومًا · دون بطاقة",
+                   "9 دولارات شهريًا · 7 دولارات شهريًا تُدفع سنويًا (−20٪)",
+                   "19 دولارًا شهريًا · 15 دولارًا شهريًا تُدفع سنويًا (−20٪)",
+                   "39 دولارًا شهريًا · 31 دولارًا شهريًا تُدفع سنويًا (−20٪)"),
+        }
+        for locale, price_lines in expected.items():
+            with self.subTest(locale=locale):
+                self._login(user_id, locale=locale)
+                plan_page = self.client.get("/onboarding").get_data(as_text=True)
+                self.assertNotIn("Pricing coming soon", plan_page)
+                self.assertNotIn("Tarifs bientôt disponibles", plan_page)
+                self.assertNotIn("الأسعار قريبًا", plan_page)
+                for line in price_lines:
+                    self.assertIn(line, plan_page)
+        # Starter is a real, submittable plan preference.
+        self._login(user_id)
+        response = self._post(step="plan", selected_plan="starter")
+        self.assertEqual(response.status_code, 303)
+        with self.Session() as session:
+            profile = session.get(UserOnboardingProfile, user_id)
+            self.assertEqual(profile.selected_plan, "starter")
+            self.assertIsNotNone(profile.completed_at)
 
     def test_invalid_and_out_of_order_values_render_expected_step_without_mutation(self):
         user_id = self._create_user("invalid@example.test")

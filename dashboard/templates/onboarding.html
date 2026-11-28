@@ -43,7 +43,7 @@
 <form class="onboarding-form" method="post" action="{{ url_for('onboarding') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="step" value="plan">
     <fieldset><legend class="visually-hidden">{{ t('Plan preference') }}</legend><div class="plan-grid">
-        {% for value, details in plan_options %}<label class="choice-card plan-card"><input type="radio" name="selected_plan" value="{{ value }}" {% if submitted.selected_plan == value %}checked{% endif %} required><span><strong>{{ t(details[0]) }}</strong><small>{{ t(details[1]) }}</small><em>{{ t('Pricing coming soon') }}</em></span></label>{% endfor %}
+        {% for value, details in plan_options %}<label class="choice-card plan-card"><input type="radio" name="selected_plan" value="{{ value }}" {% if submitted.selected_plan == value %}checked{% endif %} required><span><strong>{{ t(details[0]) }}</strong><small>{{ t(details[1]) }}</small><em>{{ t(details[2]) }}</em></span></label>{% endfor %}
     </div></fieldset>
     <p class="auth-note onboarding-note">{{ t('Plan selection is informational only. No billing or entitlement changes are applied.') }}</p>
     <button class="button button-primary" type="submit">{{ t('Finish setup') }}</button>
