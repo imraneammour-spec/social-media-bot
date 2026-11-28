@@ -43,12 +43,14 @@ def test_native_fresh_migration_probe_and_lease_recovery(tmp_path):
         engine = create_engine(target)
         tables = inspect(engine).get_table_names()
         # Migration 20261126_02 added five tables (four legacy-state tables
-        # plus the per-account Gemini key table); keep the count in step with
-        # the migration chain and name the additions so the next table
-        # addition fails with a readable message instead of a bare count.
-        assert len(tables) == 25
+        # plus the per-account Gemini key table); migration 20261127_02 added
+        # billing_credit_lots for one-time AI credit packs. Keep the count in
+        # step with the migration chain and name the additions so the next
+        # table addition fails with a readable message instead of a bare count.
+        # Count includes the alembic_version table (25 migration tables + 1).
+        assert len(tables) == 26
         assert {"legacy_processed_comments", "legacy_prompt_requests", "legacy_pending_access",
-                "legacy_prompt_posts", "user_gemini_keys"} <= set(tables)
+                "legacy_prompt_posts", "user_gemini_keys", "billing_credit_lots"} <= set(tables)
         with engine.connect() as db:
             assert db.scalar(text("SELECT count(*) FROM users")) == 0
         with pytest.raises(ValueError, match="nonempty"):
