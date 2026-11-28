@@ -37,7 +37,7 @@ ONBOARDING_SOURCE_VALUES = (
     "ai_tool",
     "other",
 )
-PLAN_VALUES = ("trial", "pro", "business")
+PLAN_VALUES = ("trial", "starter", "pro", "business")
 # Legacy plan values stored before the v2 rename (same mapping as
 # database/billing.py _LEGACY_PLAN_KEYS). Old rows are read as their v2
 # equivalent so they keep working without a data migration.

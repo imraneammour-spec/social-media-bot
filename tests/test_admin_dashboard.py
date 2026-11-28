@@ -379,13 +379,14 @@ class AdminDashboardTest(unittest.TestCase):
 
         self.assertIn("Active users are unavailable until a persisted activity definition exists.", page)
         self.assertIn('<dd data-admin-plan="trial">1</dd>', page)
+        self.assertIn('<dd data-admin-plan="starter">0</dd>', page)
         self.assertIn('<dd data-admin-plan="pro">1</dd>', page)
         self.assertIn('<dd data-admin-plan="business">0</dd>', page)
         self.assertIn('<dd data-admin-plan="unknown">1</dd>', page)
         self.assertIn('<dd data-admin-source="google">1</dd>', page)
         self.assertIn('<dd data-admin-source="instagram">1</dd>', page)
         self.assertIn('<dd data-admin-source="unknown">1</dd>', page)
-        self.assertEqual(page.count('data-admin-plan="'), 4)
+        self.assertEqual(page.count('data-admin-plan="'), 5)
         self.assertEqual(page.count('data-admin-source="'), 9)
 
     def test_unrecognized_persisted_answers_are_counted_as_unknown(self):

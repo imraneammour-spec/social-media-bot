@@ -1,13 +1,17 @@
 """Credits top-up: plan allowance first, credits second, never silent.
 
 Covers database/billing.py (consume_ai_usage / add_credits /
-credits_balance / credits_alert / refund_ai_usage) and billing.py
-(credit checkout route, order_created webhook, /app/billing display):
+credits_balance / credits_alert / refund_ai_usage /
+deduct_credits_for_refund) and billing.py
+(credit checkout route, order_created and order_refunded webhooks,
+ /app/billing display):
 - the monthly AI allowance is consumed before any credit;
 - when allowance AND credits are both gone the use is refused with a
   clear message (never silent);
 - a purchase increases the balance, and a replayed order never
   credits twice;
+- a refund deducts automatically, never below zero, and a replayed
+  refund never deducts twice;
 - credits never expire while the account is active.
 """
 import hashlib
@@ -35,6 +39,7 @@ from database.billing import (
     credits_alert,
     credits_balance,
     credits_snapshot,
+    deduct_credits_for_refund,
     refund_ai_usage,
 )
 from database.models import (
@@ -154,6 +159,58 @@ class CreditsCoreTest(unittest.TestCase):
         # Read after commit: the plan row is untouched by a credit refund.
         self.assertEqual(self._ai_used(user_id), 300)
 
+    def test_full_refund_deducts_the_whole_pack_automatically(self):
+        # Decision 2026-11-28: refund deduction is AUTOMATIC.
+        user_id = self._add_user(trial_started_at=datetime.now(timezone.utc))
+        with self.Session.begin() as session:
+            add_credits(session, user_id, "credits_1200", provider_order_id="ord-1")
+            self.assertEqual(credits_balance(session, user_id), 1200)
+            deducted = deduct_credits_for_refund(session, user_id, 1200, provider_order_id="ord-1")
+        self.assertEqual(deducted, 1200)
+        with self.Session() as session:
+            self.assertEqual(credits_balance(session, user_id), 0)
+
+    def test_refund_never_drives_balance_below_zero(self):
+        user_id = self._add_user(trial_started_at=datetime.now(timezone.utc))
+        with self.Session.begin() as session:
+            lot = add_credits(session, user_id, "credits_500", provider_order_id="ord-1")
+            lot.credits_remaining = 10  # most of the pack already spent
+            deducted = deduct_credits_for_refund(session, user_id, 500, provider_order_id="ord-1")
+        self.assertEqual(deducted, 10)
+        with self.Session() as session:
+            self.assertEqual(credits_balance(session, user_id), 0)
+            self.assertEqual(session.get(BillingCreditLot, lot.id).credits_remaining, 0)
+
+    def test_refund_takes_the_refunded_order_lot_first(self):
+        user_id = self._add_user(trial_started_at=datetime.now(timezone.utc))
+        with self.Session.begin() as session:
+            first = add_credits(session, user_id, "credits_500", provider_order_id="ord-1")
+            second = add_credits(session, user_id, "credits_500", provider_order_id="ord-2")
+            first.created_at = _days_ago(2)
+            second.created_at = _days_ago(1)
+            # Spend one credit: plan allowance (300) is exhausted first,
+            # then the oldest lot (ord-1) is consumed.
+            for _ in range(300):
+                consume_ai_usage(session, user_id)
+            consume_ai_usage(session, user_id)
+            self.assertEqual(credits_balance(session, user_id), 999)
+            # Refund the NEWER order: its own lot is emptied first,
+            # the older lot keeps its 499.
+            deducted = deduct_credits_for_refund(session, user_id, 500, provider_order_id="ord-2")
+        self.assertEqual(deducted, 500)
+        with self.Session() as session:
+            self.assertEqual(session.get(BillingCreditLot, first.id).credits_remaining, 499)
+            self.assertEqual(session.get(BillingCreditLot, second.id).credits_remaining, 0)
+            self.assertEqual(credits_balance(session, user_id), 499)
+
+    def test_refund_of_zero_or_unknown_amount_deducts_nothing(self):
+        user_id = self._add_user(trial_started_at=datetime.now(timezone.utc))
+        with self.Session.begin() as session:
+            add_credits(session, user_id, "credits_500", provider_order_id="ord-1")
+            self.assertEqual(deduct_credits_for_refund(session, user_id, 0), 0)
+            self.assertEqual(deduct_credits_for_refund(session, user_id, -50), 0)
+            self.assertEqual(credits_balance(session, user_id), 500)
+
     def test_legacy_unlimited_plan_never_touches_credits(self):
         user_id = self._add_user(trial_started_at=datetime.now(timezone.utc))
         self._add_legacy(user_id)
@@ -246,7 +303,7 @@ CHECKOUT_SUCCESS = {
 }
 
 
-def _order_payload(*, order_id="9001", variant=50, status="paid"):
+def _order_payload(*, order_id="9001", variant=50, status="paid", **extra_attributes):
     return {
         "type": "orders",
         "id": order_id,
@@ -256,6 +313,7 @@ def _order_payload(*, order_id="9001", variant=50, status="paid"):
             "status": status,
             "order_number": int(order_id),
             "first_order_item": {"variant_id": variant},
+            **extra_attributes,
         },
     }
 
@@ -394,6 +452,87 @@ class CreditsBillingHttpTest(unittest.TestCase):
             response = self._send_order(row)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json["status"], "ignored")
+        self.assertEqual(self._balance(), 0)
+
+    def _grant_credits(self, row):
+        with patch("billing.provider_request", return_value=_order_payload()):
+            response = self._send_order(row)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["status"], "processed")
+        self.assertEqual(self._balance(), 500)
+
+    def test_refunded_order_webhook_deducts_credits_automatically(self):
+        # Decision 2026-11-28: refund deduction is AUTOMATIC.
+        row = self._intent()
+        self._grant_credits(row)
+        with patch("billing.provider_request", return_value=_order_payload(status="refunded")):
+            response = self._send_order(row, event="order_refunded",
+                                        data=_order_payload(status="refunded"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["status"], "processed")
+        self.assertEqual(response.json["credits_deducted"], 500)
+        self.assertEqual(self._balance(), 0)
+        # Replaying the same signed refund must not deduct twice.
+        with patch("billing.provider_request", return_value=_order_payload(status="refunded")):
+            self.assertEqual(self._send_order(row, event="order_refunded",
+                                              data=_order_payload(status="refunded")).json["status"],
+                             "duplicate")
+        self.assertEqual(self._balance(), 0)
+
+    def test_refund_never_drives_balance_below_zero_via_webhook(self):
+        row = self._intent()
+        self._grant_credits(row)
+        with self.Session.begin() as session:
+            for _ in range(300):  # trial allowance
+                consume_ai_usage(session, self.user.id)
+            consume_ai_usage(session, self.user.id)  # 1 credit spent
+        self.assertEqual(self._balance(), 499)
+        with patch("billing.provider_request", return_value=_order_payload(status="refunded")):
+            response = self._send_order(row, event="order_refunded",
+                                        data=_order_payload(status="refunded"))
+        self.assertEqual(response.json["status"], "processed")
+        self.assertEqual(response.json["credits_deducted"], 499)
+        self.assertEqual(self._balance(), 0)
+
+    def test_refunded_unknown_order_is_ignored_not_an_error(self):
+        row = self._intent()
+        with patch("billing.provider_request", return_value=_order_payload(status="refunded")):
+            response = self._send_order(row, event="order_refunded",
+                                        data=_order_payload(status="refunded"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["status"], "ignored")
+        self.assertEqual(self._balance(), 0)
+
+    def test_unrefunded_order_refund_event_is_ignored(self):
+        row = self._intent()
+        self._grant_credits(row)
+        with patch("billing.provider_request", return_value=_order_payload(status="paid")):
+            response = self._send_order(row, event="order_refunded",
+                                        data=_order_payload(status="paid"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["status"], "ignored")
+        self.assertEqual(self._balance(), 500)
+
+    def test_partial_refund_deducts_proportional_share_when_amount_known(self):
+        row = self._intent()
+        self._grant_credits(row)
+        refunded = _order_payload(status="partially_refunded", total=500, refunded_amount=250)
+        with patch("billing.provider_request", return_value=refunded):
+            response = self._send_order(row, event="order_refunded", data=refunded)
+        self.assertEqual(response.json["status"], "processed")
+        self.assertEqual(response.json["credits_deducted"], 250)
+        self.assertEqual(self._balance(), 250)
+
+    def test_partial_refund_without_amount_deducts_whole_pack(self):
+        # Lemon's order object carries no refunded amount: the approved
+        # fallback (2026-11-28) deducts the whole pack, never a guess.
+        row = self._intent()
+        self._grant_credits(row)
+        refunded = _order_payload(status="partially_refunded")
+        with patch("billing.provider_request", return_value=refunded):
+            response = self._send_order(row, event="order_refunded", data=refunded)
+        self.assertEqual(response.json["status"], "processed")
+        self.assertEqual(response.json["credits_deducted"], 500)
         self.assertEqual(self._balance(), 0)
 
     def test_dashboard_shows_balance_warning_and_exhaustion(self):

@@ -440,6 +440,50 @@ def refund_ai_usage(session, reservation):
     session.flush()
 
 
+def deduct_credits_for_refund(session, user_id, credits, *, provider_order_id=None):
+    """Automatically claw back credits when a credit purchase is refunded.
+
+    Decision 2026-11-28: a refund deducts AUTOMATICALLY (no manual step).
+    Deducts ``credits`` from the user's lots, starting with the lot of
+    the refunded order, then the oldest remaining lots (FIFO). The
+    deduction is capped at the current balance, so it can never drive
+    the balance below zero; returns the number of credits actually
+    deducted. Returns 0 when there is nothing to deduct (no lots, or
+    ``credits`` <= 0). Idempotency is the caller's job: the webhook
+    handler records the event digest in the same transaction (see
+    billing.webhook), so a replayed order_refunded cannot deduct twice.
+    """
+    if not credits or credits <= 0:
+        return 0
+    lock_user(session, user_id)
+    now = datetime.now(timezone.utc)
+    lots = session.scalars(
+        select(BillingCreditLot)
+        .where(BillingCreditLot.user_id == user_id, BillingCreditLot.credits_remaining > 0)
+        .order_by(BillingCreditLot.created_at, BillingCreditLot.id)
+        .with_for_update()
+    ).all()
+    # The refunded order's own lot goes first: a refund claws back the
+    # purchase it refunds before touching other packs.
+    if provider_order_id is not None:
+        refunded = [lot for lot in lots if str(lot.provider_order_id) == str(provider_order_id)]
+        others = [lot for lot in lots if str(lot.provider_order_id) != str(provider_order_id)]
+        lots = refunded + others
+    remaining = int(credits)
+    deducted = 0
+    for lot in lots:
+        if remaining <= 0:
+            break
+        if lot.expires_at is not None and utc(lot.expires_at) <= now:
+            continue
+        take = min(remaining, lot.credits_remaining)
+        lot.credits_remaining -= take
+        remaining -= take
+        deducted += take
+    session.flush()
+    return deducted
+
+
 def credits_alert(session, user_id):
     """Billing-page AI alert: None, "warning" (80% of allowance used) or "exhausted".
 

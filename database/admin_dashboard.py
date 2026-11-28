@@ -53,6 +53,7 @@ class AdminSnapshot:
 
 PLAN_LABELS = {
     "trial": "Trial",
+    "starter": "Starter",
     "pro": "Pro",
     "business": "Business",
 }

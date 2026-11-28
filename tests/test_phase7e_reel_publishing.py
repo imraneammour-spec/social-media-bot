@@ -23,6 +23,7 @@ from werkzeug.datastructures import FileStorage
 from database.account_runtime import InstagramAccountRuntime
 from database.content import CONTENT_TYPES, create_content_draft, normalize_content_type, update_content_draft
 from database.content_media import (
+    REEL_MAX_DURATION_SECONDS,
     ContentMediaValidationError,
     upload_content_video,
 )
@@ -220,6 +221,32 @@ class ReelVideoUploadTest(unittest.TestCase):
         self.assertEqual(asset.url, secure_url)
         self.assertEqual(asset.asset_id, asset_id)
         self.assertIn("/video/upload", post.call_args.args[0])
+
+    def test_reel_max_duration_stays_15_minutes(self):
+        # Decision 2026-11-28: the Reel cap stays 15 minutes (Meta Graph
+        # API limit), NOT 90 seconds. A 14-minute video must pass
+        # validation; a 16-minute one must be rejected.
+        self.assertEqual(REEL_MAX_DURATION_SECONDS, 15 * 60.0)
+        with patch.dict("os.environ", self.configuration), patch(
+            "database.content_media.uuid.uuid4",
+            return_value=type("Uuid", (), {"hex": "0123456789abcdef0123456789abcdef"})(),
+        ), patch(
+            "database.content_media.requests.post",
+            return_value=self._cloudinary_response(
+                "postenza/content/11111111222233334444555555555555/0123456789abcdef0123456789abcdef",
+                "https://res.cloudinary.com/postenza-test/video/upload/postenza/content/11111111222233334444555555555555/0123456789abcdef0123456789abcdef.mp4",
+            ),
+        ):
+            upload_content_video(
+                _video_upload(_minimal_mp4(duration_ms=14 * 60 * 1000)),
+                instagram_account_id=self.account_id,
+            )
+        with self.assertRaises(ContentMediaValidationError):
+            with patch.dict("os.environ", self.configuration):
+                upload_content_video(
+                    _video_upload(_minimal_mp4(duration_ms=16 * 60 * 1000)),
+                    instagram_account_id=self.account_id,
+                )
 
     def test_moov_at_end_of_file_is_found_in_tail_sample(self):
         asset_id = "postenza/content/11111111222233334444555555555555/abcdef0123456789abcdef0123456789"
