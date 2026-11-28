@@ -67,6 +67,16 @@ class _FakeRequests:
         return _FakeResponse(200, {"recipient_id": "recipient9"})
 
 
+class _FlakyRequests(_FakeRequests):
+    """First send fails, the retry succeeds."""
+
+    def post(self, url, headers=None, json=None, timeout=None):
+        self.calls.append({"url": url, "json": json})
+        if len(self.calls) == 1:
+            return _FakeResponse(400, {"error": {"message": "template_rejected"}})
+        return _FakeResponse(200, {"recipient_id": "recipient9"})
+
+
 def _load_webhook_module(environment, module_name, data_dir):
     spec = importlib.util.spec_from_file_location(module_name, MODULE_PATH)
     module = importlib.util.module_from_spec(spec)
@@ -227,6 +237,54 @@ class LegacyDeliveryModesTest(unittest.TestCase):
         self.assertEqual(len(self.module.load_requests()), 1)
         self.assertEqual(self.module.load_processed_comments(), {"c1": "done"})
         self.assertTrue(self.module.is_request_on_cooldown("m1", "u1", "alice"))
+
+    def test_view_prompts_button_sends_prompt_card_without_bare_link(self):
+        import legacy_bot
+
+        fake_requests = _FakeRequests()
+        with patch.object(legacy_bot, "requests", fake_requests):
+            sent = legacy_bot.send_view_prompts_button(
+                "recipient9", "https://example.test/p/m1"
+            )
+        self.assertTrue(sent)
+        self.assertEqual(len(fake_requests.calls), 1)
+        payload = fake_requests.calls[0]["json"]["message"]["attachment"]["payload"]
+        self.assertEqual(payload["template_type"], "generic")
+        element = payload["elements"][0]
+        self.assertEqual(
+            element["title"],
+            "Thanks! ✨ Your AI prompts are ready to view and copy.",
+        )
+        self.assertEqual(element["subtitle"], "Tap the button below to open them.")
+        self.assertEqual(element["buttons"][0]["title"], "View AI Prompts")
+        self.assertEqual(element["buttons"][0]["url"], "https://example.test/p/m1")
+        self.assertNotIn("https://", element["title"])
+        self.assertNotIn("https://", element["subtitle"])
+
+    def test_view_prompts_button_falls_back_to_button_template_when_rejected(self):
+        import legacy_bot
+
+        fake_requests = _FlakyRequests()
+        with patch.object(legacy_bot, "requests", fake_requests):
+            sent = legacy_bot.send_view_prompts_button(
+                "recipient9", "https://example.test/p/m1"
+            )
+        self.assertTrue(sent)
+        self.assertEqual(len(fake_requests.calls), 2)
+        self.assertEqual(
+            fake_requests.calls[0]["json"]["message"]["attachment"]["payload"][
+                "template_type"
+            ],
+            "generic",
+        )
+        fallback = fake_requests.calls[1]["json"]["message"]["attachment"]["payload"]
+        self.assertEqual(fallback["template_type"], "button")
+        self.assertEqual(
+            fallback["text"],
+            "Thanks! ✨ Your AI prompts are ready to view and copy.",
+        )
+        self.assertNotIn("https://", fallback["text"])
+        self.assertEqual(fallback["buttons"][0]["url"], "https://example.test/p/m1")
 
     def test_direct_message_mode_skips_public_reply_when_disabled(self):
         import legacy_bot
