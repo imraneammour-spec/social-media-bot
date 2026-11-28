@@ -886,7 +886,7 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
             )
 
         self.assertEqual(
-            graph_request.call_args.kwargs["json_body"]["message"]["attachment"]["payload"]["buttons"][0]["url"],
+            graph_request.call_args.kwargs["json_body"]["message"]["attachment"]["payload"]["elements"][0]["buttons"][0]["url"],
             "https://example.test/p/o/prompt",
         )
 
@@ -1347,7 +1347,7 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
                 event, self._route(self.account_a_id), "17841438617458101", self.Session
             )
         self.assertEqual(
-            graph_request.call_args.kwargs["json_body"]["message"]["attachment"]["payload"]["buttons"][0]["url"],
+            graph_request.call_args.kwargs["json_body"]["message"]["attachment"]["payload"]["elements"][0]["buttons"][0]["url"],
             "https://example.test/p/o/prompt",
         )
 
@@ -1475,8 +1475,8 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
         # No pending access for account B, so no button should be sent.
         button.assert_not_called()
 
-    def test_second_dm_uses_view_prompts_button_with_correct_text(self):
-        """The second DM uses 'Your requested prompts are ready to view.' with button."""
+    def test_second_dm_uses_prompt_card_with_correct_text(self):
+        """The second DM uses a Generic Template card; the link is only in the button."""
         from database import oauth_graph
 
         with patch.object(oauth_graph, "_request_with_runtime", return_value={}) as graph_request:
@@ -1489,9 +1489,49 @@ class OAuthWebhookEngagementTest(unittest.TestCase):
             )
         body = graph_request.call_args.kwargs["json_body"]
         template = body["message"]["attachment"]["payload"]
-        self.assertEqual(template["text"], "Your requested prompts are ready to view.")
-        self.assertEqual(template["buttons"][0]["title"], "View prompts")
-        self.assertEqual(template["buttons"][0]["url"], "https://example.test/p/o/prompt")
+        self.assertEqual(template["template_type"], "generic")
+        element = template["elements"][0]
+        self.assertEqual(element["title"], "Your requested prompts are ready to view.")
+        self.assertEqual(element["subtitle"], "Tap the button to open your prompts.")
+        self.assertEqual(element["buttons"][0]["title"], "View prompts")
+        self.assertEqual(element["buttons"][0]["url"], "https://example.test/p/o/prompt")
+        self.assertNotIn("https://", element["title"])
+        self.assertNotIn("https://", element["subtitle"])
+
+    def test_prompt_card_falls_back_to_button_template_when_rejected(self):
+        """A rejected Generic Template card falls back to the Button Template."""
+        from database import oauth_graph
+
+        calls = []
+
+        def fake_request(*args, **kwargs):
+            calls.append(kwargs["json_body"])
+            if len(calls) == 1:
+                raise oauth_graph.OAuthGraphOperationError(
+                    http_status="400",
+                    provider_code="100",
+                    provider_subcode="2018278",
+                    provider_message="template_rejected",
+                )
+            return {}
+
+        with patch.object(oauth_graph, "_request_with_runtime", side_effect=fake_request):
+            sent = oauth_graph.send_oauth_prompt_access_button(
+                lambda: self.Session(),
+                instagram_account_id=self.account_a_id,
+                instagram_user_id="17841438617458001",
+                recipient_id="customer",
+                page_url="https://example.test/p/o/prompt",
+            )
+        self.assertTrue(sent)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(
+            calls[0]["message"]["attachment"]["payload"]["template_type"], "generic"
+        )
+        fallback = calls[1]["message"]["attachment"]["payload"]
+        self.assertEqual(fallback["template_type"], "button")
+        self.assertEqual(fallback["text"], "Your requested prompts are ready to view.")
+        self.assertNotIn("https://", fallback["text"])
 
 
 if __name__ == "__main__":

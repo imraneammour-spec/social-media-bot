@@ -1680,7 +1680,12 @@ def send_view_prompts_button(
     page_url
 ):
 
-    """Send a documented Instagram Button Template after user response."""
+    """Send the prompt-page link as a Generic Template button card.
+
+    The link lives only in the web_url button: a bare link in the message
+    text is what Meta's spam filters flag. If Meta rejects the card,
+    fall back to the Button Template with clean text (no URL in it).
+    """
 
     if (
         not INSTAGRAM_ACCESS_TOKEN
@@ -1701,7 +1706,40 @@ def send_view_prompts_button(
         "Content-Type": "application/json"
     }
 
-    payload = {
+    card_payload = {
+        "recipient": {
+            "id": str(recipient_id)
+        },
+        "messaging_type": "RESPONSE",
+        "message": {
+            "attachment": {
+                "type": "template",
+                "payload": {
+                    "template_type": "generic",
+                    "elements": [
+                        {
+                            "title": (
+                                "Thanks! ✨ Your AI prompts are ready "
+                                "to view and copy."
+                            ),
+                            "subtitle": (
+                                "Tap the button below to open them."
+                            ),
+                            "buttons": [
+                                {
+                                    "type": "web_url",
+                                    "url": page_url,
+                                    "title": "View AI Prompts"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        }
+    }
+
+    button_payload = {
         "recipient": {
             "id": str(recipient_id)
         },
@@ -1713,10 +1751,7 @@ def send_view_prompts_button(
                     "template_type": "button",
                     "text": (
                         "Thanks! ✨ Your AI prompts are ready "
-                        "to view and copy.\n\n"
-                        "If the button is not visible on desktop, "
-                        "open this link:\n"
-                        f"{page_url}"
+                        "to view and copy."
                     ),
                     "buttons": [
                         {
@@ -1730,33 +1765,39 @@ def send_view_prompts_button(
         }
     }
 
-    try:
+    for label, payload in (
+        ("Prompt Card", card_payload),
+        ("Button Template", button_payload),
+    ):
+        try:
 
-        response = requests.post(
-            url,
-            headers=headers,
-            json=payload,
-            timeout=30
-        )
+            response = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+
+        except requests.RequestException as error:
+
+            print(
+                f"{label} ERROR:",
+                type(error).__name__
+            )
+
+            continue
 
         print(
-            "Button Template:",
+            f"{label}:",
             response.status_code
         )
 
-        if not response.ok:
-            print(response.text)
+        if response.ok:
+            return True
 
-        return response.ok
+        print(response.text)
 
-    except requests.RequestException as error:
-
-        print(
-            "BUTTON TEMPLATE ERROR:",
-            type(error).__name__
-        )
-
-        return False
+    return False
 
 
 def _process_legacy_direct_delivery(

@@ -287,22 +287,83 @@ def send_oauth_private_comment_reply(
         return None
 
 
+def _prompt_access_card_body(recipient: str, url: str) -> dict[str, object]:
+    """Generic Template button card carrying the prompt-page link.
+
+    Title/subtitle carry no URL: Meta's spam filters flag repeated bare
+    text links in DMs, while the official Generic Template card carries
+    the link only in the web_url button. Limits: title/subtitle <= 80
+    chars, button title <= 20 chars.
+    """
+    return {
+        "recipient": {"id": recipient},
+        "messaging_type": "RESPONSE",
+        "message": {
+            "attachment": {
+                "type": "template",
+                "payload": {
+                    "template_type": "generic",
+                    "elements": [
+                        {
+                            "title": "Your requested prompts are ready to view.",
+                            "subtitle": "Tap the button to open your prompts.",
+                            "buttons": [
+                                {"type": "web_url", "url": url, "title": "View prompts"}
+                            ],
+                        }
+                    ],
+                },
+            },
+        },
+    }
+
+
+def _prompt_access_button_body(recipient: str, url: str) -> dict[str, object]:
+    """Fallback Button Template (proven in production) with no URL in text."""
+    return {
+        "recipient": {"id": recipient},
+        "messaging_type": "RESPONSE",
+        "message": {
+            "attachment": {
+                "type": "template",
+                "payload": {
+                    "template_type": "button",
+                    "text": "Your requested prompts are ready to view.",
+                    "buttons": [{"type": "web_url", "url": url, "title": "View prompts"}],
+                },
+            },
+        },
+    }
+
+
 def send_oauth_prompt_access_button(session_factory: Callable[[], Any], *, instagram_account_id: object, instagram_user_id: object, recipient_id: object, page_url: object) -> bool:
+    """Send the prompt-page link as a Generic Template button card.
+
+    Tries the card first; if Meta rejects it, falls back to the Button
+    Template that already works in production. Either way the link lives
+    only in the web_url button, never as bare text in the message.
+    """
     recipient = str(recipient_id or "").strip()
     url = str(page_url or "").strip()
     if not recipient or not url.startswith("https://"):
         return False
-    body = {"recipient": {"id": recipient}, "messaging_type": "RESPONSE", "message": {"attachment": {"type": "template", "payload": {"template_type": "button", "text": "Your requested prompts are ready to view.", "buttons": [{"type": "web_url", "url": url, "title": "View prompts"}]}}}}
-    try:
-        _request_with_runtime(session_factory, instagram_account_id=instagram_account_id, instagram_user_id=instagram_user_id, method="POST", path=f"/{instagram_user_id}/messages", json_body=body)
-        return True
-    except OAuthGraphOperationError as error:
+    last_error: OAuthGraphOperationError | None = None
+    for body in (
+        _prompt_access_card_body(recipient, url),
+        _prompt_access_button_body(recipient, url),
+    ):
+        try:
+            _request_with_runtime(session_factory, instagram_account_id=instagram_account_id, instagram_user_id=instagram_user_id, method="POST", path=f"/{instagram_user_id}/messages", json_body=body)
+            return True
+        except OAuthGraphOperationError as error:
+            last_error = error
+    if last_error is not None:
         print(
             "OAUTH PROMPT BUTTON: delivery_failed "
-            f"status={error.http_status} code={error.provider_code} "
-            f"subcode={error.provider_subcode} message={error.provider_message}"
+            f"status={last_error.http_status} code={last_error.provider_code} "
+            f"subcode={last_error.provider_subcode} message={last_error.provider_message}"
         )
-        return False
+    return False
 
 
 def send_oauth_delayed_followup(
